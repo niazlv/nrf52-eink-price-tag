@@ -1,15 +1,25 @@
 #include "ssd1675a.h"
 
+// Set to 1 to use the ported Python LUT. Set to 0 to use Display Internal OTP LUT (often better).
+#define USE_CUSTOM_LUT 1
+
 static const struct device *eink_gpio_dev;
+static uint8_t vcom_register_value = 0x68;
 
 // LUT Data from Python driver port
-static const uint8_t lut_data[] = {
+static uint8_t lut_data[] = {
     0x22, 0x11, 0x10, 0x00, 0x10, 0x00, 0x00, 0x11, 0x88, 0x80, 0x80, 0x80, 0x00, 0x00,
     0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00, 0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x18, 0x04, 0x16, 0x01, 0x0A, 0x0A,
     0x0A, 0x0A, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
-    0x04, 0x08, 0x3C, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    0x04, 0x08 /* ЯРКОСТЬ */, 0x3C /* Длительность */, 0x07 /* Повтор */, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
+
+void ssd1675a_set_lut_byte(int index, uint8_t val) {
+    if (index >= 0 && index < sizeof(lut_data)) {
+        lut_data[index] = val;
+    }
+}
 
 static void send_cmd(uint8_t cmd) {
     soft_spi_write_9bit(cmd, SPI_CMD);
@@ -109,9 +119,15 @@ void ssd1675a_init(const struct device *gpio_dev) {
     send_data(0x32);
 
     send_cmd(0x2C); // VCOM
-    send_data(0x68);
+    send_data(vcom_register_value);
 
+#if USE_CUSTOM_LUT
     write_lut();
+#endif
+}
+
+void ssd1675a_set_vcom_register(uint8_t val) {
+    vcom_register_value = val;
 }
 
 void ssd1675a_power_on(void) {
@@ -129,10 +145,45 @@ void ssd1675a_sleep(void) {
 }
 
 void ssd1675a_update_display(void) {
+    ssd1675a_load_default_lut(); // Ensure standard LUT is active
     send_cmd(0x22); 
     send_data(0xC7); // Update Control (from Python)
     send_cmd(0x20); 
     ssd1675a_wait_busy();
+}
+
+// "Fast" LUT (Based on Standard, but Red Disabled)
+// We copy the standard LUT logic but zero out the Red phases.
+// Standard LUT has 70 bytes.
+static uint8_t lut_fast[70]; 
+
+void ssd1675a_init_fast_lut(void) {
+    memcpy(lut_fast, lut_data, sizeof(lut_fast));
+    
+    // Modify Red Channel params (Indices 57, 58, 59 based on previous research)
+    // 57: Voltage, 58: Duration, 59: Repeat
+    lut_fast[57] = 0x00;
+    lut_fast[58] = 0x00;
+    lut_fast[59] = 0x00;
+    
+    // Also try to reduce BW durations?
+    // The standard LUT seems to have phases defined earlier.
+    // Let's just try disabling Red first.
+}
+
+void ssd1675a_update_partial(void) {
+    // Fallback to Standard Update to ensure reliability.
+    // The previous "Fast" LUT caused empty runs.
+    // We will use the standard (slow) update for now to verify the Demo logic.
+    ssd1675a_update_display();
+}
+
+// Helper to reload standard LUT (if needed by main app)
+void ssd1675a_load_default_lut(void) {
+    send_cmd(0x32);
+    for (int i = 0; i < sizeof(lut_data); i++) {
+        send_data(lut_data[i]);
+    }
 }
 
 void ssd1675a_display_buffer(const uint8_t *bw_buffer, const uint8_t *red_buffer) {

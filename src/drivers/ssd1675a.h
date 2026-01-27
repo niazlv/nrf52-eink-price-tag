@@ -21,6 +21,12 @@ void ssd1675a_power_off(void);
 void ssd1675a_display_buffer(const uint8_t *bw_buffer, const uint8_t *red_buffer);
 void ssd1675a_update_display(void);
 void ssd1675a_sleep(void);
+void ssd1675a_set_vcom_register(uint8_t val);
+void ssd1675a_set_lut_byte(int index, uint8_t val);
 void ssd1675a_wait_busy(void);
+
+// Partial Update
+void ssd1675a_update_partial(void);
+void ssd1675a_load_default_lut(void);
 
 #endif // SSD1675A_H

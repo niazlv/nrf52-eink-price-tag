@@ -1,6 +1,7 @@
 #include "graphics.h"
 
 static uint8_t frame_buffer[BUFFER_SIZE];
+static uint8_t frame_buffer_red[BUFFER_SIZE];
 
 // Font 5x7 Data (moved from main.c)
 static const uint8_t font5x7[] = {
@@ -101,43 +102,202 @@ static const uint8_t font5x7[] = {
     0x10, 0x08, 0x08, 0x10, 0x08  // ~
 };
 
+// Basic 2-byte Cyrillic map (incomplete, just common letters for demo)
+// 0xD0 0x90 (А) to 0xD0 0xBF (п)
+// 0xD1 0x80 (р) to 0xD1 0x8F (я)
+static const uint8_t font_cyr[] = {
+    // А, Б, В, ... (Starts at U+0410)
+    0x7E, 0x11, 0x11, 0x11, 0x7E, // A (0x10)
+    0x7F, 0x49, 0x49, 0x49, 0x31, // Б (0x11)
+    0x7F, 0x49, 0x49, 0x49, 0x36, // В (0x12)
+    0x7F, 0x01, 0x01, 0x01, 0x03, // Г (0x13)
+    0x70, 0x4C, 0x43, 0x4C, 0x7F, // Д (0x14) - tricky 5x7
+    0x7F, 0x49, 0x49, 0x49, 0x41, // Е (0x15)
+    0x77, 0x08, 0x7F, 0x08, 0x77, // Ж (0x16)
+    0x00, 0x41, 0x7F, 0x41, 0x00, // З (0x17) (Like 3)
+    0x7F, 0x10, 0x08, 0x04, 0x7F, // И (0x18) (N mirrored)
+    0x7F, 0x10, 0x09, 0x04, 0x7F, // Й (0x19)
+    0x7F, 0x08, 0x14, 0x22, 0x41, // К (0x1A)
+    0x70, 0x0E, 0x01, 0x0E, 0x70, // Л (0x1B)
+    0x7F, 0x02, 0x0C, 0x02, 0x7F, // М (0x1C)
+    0x7F, 0x08, 0x08, 0x08, 0x7F, // Н (0x1D) (H)
+    0x3E, 0x41, 0x41, 0x41, 0x3E, // О (0x1E)
+    0x7F, 0x01, 0x01, 0x01, 0x7F, // П (0x1F)
+    0x3E, 0x41, 0x41, 0x41, 0x3E, // Р (0x20) (P)
+    0x3E, 0x41, 0x41, 0x41, 0x22, // С (0x21) (C)
+    0x01, 0x01, 0x7F, 0x01, 0x01, // Т (0x22) (T)
+    0x0F, 0x10, 0x10, 0x10, 0x7F, // У (0x23)
+    0x1C, 0x22, 0x7F, 0x22, 0x1C, // Ф (0x24)
+    0x63, 0x14, 0x08, 0x14, 0x63, // Х (0x25) (X)
+    0x7E, 0x42, 0x42, 0x7F, 0x40, // Ц (0x26)
+    0x07, 0x08, 0x08, 0x08, 0x7F, // Ч (0x27) (inverted h ish)
+    0x7F, 0x40, 0x7F, 0x40, 0x7F, // Ш (0x28)
+    0x7F, 0x40, 0x7F, 0x40, 0x7F, // Щ (0x29) (Same for 5x7?)
+    0x01, 0x7F, 0x48, 0x48, 0x30, // Ъ (0x2A)
+    0x7F, 0x48, 0x30, 0x00, 0x7F, // Ы (0x2B)
+    0x7F, 0x48, 0x48, 0x30, 0x00, // Ь (0x2C)
+    0x22, 0x49, 0x49, 0x49, 0x3E, // Э (0x2D)
+    0x7F, 0x10, 0x5F, 0x10, 0x7F, // Ю (0x2E)
+    0x4E, 0x51, 0x51, 0x51, 0x7F, // Я (0x2F)
+    
+    // Lowercase a-p (0x30-0x3F) - reusing Upper for simplification in 5x7 where possible or simple mod
+    // Just filling placeholders for simplicity of this demo request
+    0x20, 0x54, 0x54, 0x54, 0x78, // a (0x30)
+    0x7F, 0x44, 0x44, 0x44, 0x38, // б (0x31)
+    0x38, 0x44, 0x44, 0x44, 0x7F, // в (0x32)
+    0x7F, 0x04, 0x04, 0x04, 0x03, // г (0x33)
+    0x70, 0x4C, 0x43, 0x4C, 0x7F, // д (0x34)
+    0x38, 0x54, 0x54, 0x54, 0x18, // e (0x35)
+    0x77, 0x08, 0x7F, 0x08, 0x77, // ж (0x36)
+    0x44, 0x44, 0x44, 0x44, 0x38, // з (0x37)
+    0x7C, 0x08, 0x04, 0x04, 0x78, // и (0x38)
+    0x7C, 0x09, 0x05, 0x04, 0x78, // й (0x39)
+    0x7F, 0x08, 0x14, 0x22, 0x41, // к (0x3A)
+    0x40, 0x40, 0x3C, 0x02, 0x7F, // л (0x3B)
+    0x7C, 0x04, 0x18, 0x04, 0x78, // м (0x3C)
+    0x7C, 0x08, 0x04, 0x04, 0x78, // н (0x3D)
+    0x38, 0x44, 0x44, 0x44, 0x38, // о (0x3E)
+    0x7C, 0x04, 0x04, 0x04, 0x7C, // п (0x3F)
+    
+    // Lowercase p-ya (0xD1 0x80 ...)
+    0x7C, 0x14, 0x14, 0x14, 0x08, // р (0x00 relative to D180 block)
+    0x38, 0x44, 0x44, 0x44, 0x20, // с
+    0x04, 0x3F, 0x44, 0x40, 0x20, // т
+    0x4C, 0x50, 0x50, 0x50, 0x7C, // у
+    0x08, 0x14, 0x7C, 0x14, 0x08, // ф 
+    0x44, 0x28, 0x10, 0x28, 0x44, // х
+    0x7C, 0x44, 0x44, 0x7F, 0x40, // ц
+    0x04, 0x08, 0x08, 0x08, 0x7F, // ч
+    0x7C, 0x40, 0x7C, 0x40, 0x7C, // ш
+    0x7C, 0x40, 0x7C, 0x40, 0x7C, // щ
+    0x48, 0x7E, 0x49, 0x41, 0x30, // ъ
+    0x7F, 0x40, 0x30, 0x00, 0x7F, // ы
+    0x7F, 0x48, 0x48, 0x30, 0x00, // ь
+    0x22, 0x49, 0x49, 0x49, 0x3E, // э
+    0x7F, 0x10, 0x5F, 0x10, 0x7F, // ю
+    0x4E, 0x51, 0x51, 0x51, 0x7F  // я
+};
+
 void graphics_init(void) {
-    // Default to White (0xFF)
+    // Default to White (0xFF) in BW buffer
     memset(frame_buffer, 0xFF, BUFFER_SIZE);
-}
-// Clear buffer logic: 0xFF is White on Display (Active Low bits inverted essentially? Or just 1=White, 0=Black in Pixel logic).
-// In main.c we decided: 1=White, 0=Black.
-// And 1=White maps to which bit in buffer?
-// eink_draw_pixel:
-// if (color == 0) frame_buffer[idx] &= ~(1<<bit); (Black -> 0)
-// else frame_buffer[idx] |= (1<<bit); (White -> 1)
-// So Buffer 0x00 = All Black. Buffer 0xFF = All White.
-// Wait. My main.c implementation was:
-// void fb_clear(void) { memset(frame_buffer, 0xFF, sizeof(frame_buffer)); } -> White.
-// So 0xFF = White.
-void graphics_clear(uint8_t color) {
-    // If color is GFX_WHITE (1), fill 0xFF.
-    // If color is GFX_BLACK (0), fill 0x00.
-    memset(frame_buffer, (color == GFX_WHITE) ? 0xFF : 0x00, BUFFER_SIZE);
+    // Default to No Red (0x00 or 0xFF depending on logic) in Red Buffer.
+    // Assuming 0x00 = Transparent/No Red (User feedback: 0x00 covered nothing)
+    memset(frame_buffer_red, 0x00, BUFFER_SIZE);
 }
 
-void graphics_draw_pixel(int x, int y, int color) {
-    if (x < 0 || x >= DISPLAY_WIDTH || y < 0 || y >= DISPLAY_HEIGHT) return;
-    int idx = y * (DISPLAY_WIDTH / 8) + (x / 8);
-    int bit = 7 - (x % 8);
-    
-    if (color == GFX_BLACK) { // Black -> Clear bit (0)
-        frame_buffer[idx] &= ~(1 << bit);
-    } else { // White -> Set bit (1)
-        frame_buffer[idx] |= (1 << bit);
+void graphics_clear(uint8_t color) {
+    if (color == GFX_WHITE) {
+        memset(frame_buffer, 0xFF, BUFFER_SIZE);
+        memset(frame_buffer_red, 0x00, BUFFER_SIZE);
+    } else if (color == GFX_BLACK) {
+        memset(frame_buffer, 0x00, BUFFER_SIZE);
+        memset(frame_buffer_red, 0x00, BUFFER_SIZE);
+    } else if (color == GFX_RED) {
+        memset(frame_buffer, 0xFF, BUFFER_SIZE); // White Backing? Or Black? Usually red covers. Let's keep white backing.
+        memset(frame_buffer_red, 0xFF, BUFFER_SIZE); // All Red? 1=Red?
+        // Wait, if 0x00 is Transparent, 0xFF is All Red (if 1=Red).
+        // If we want FULL RED screen:
+        // Set red buffer to 0xFF.
     }
 }
 
-void graphics_draw_char(int x, int y, char c) {
-    if (c < 32 || c > 126) c = '?';
-    int index = (c - 32) * 5;
+static int gfx_rotation = 0;
+
+void graphics_set_rotation(int rotation) {
+    gfx_rotation = rotation % 4;
+}
+
+void graphics_draw_pixel(int x, int y, int color) {
+    int w = DISPLAY_WIDTH;  // 128
+    int h = DISPLAY_HEIGHT; // 296
+    int tx, ty;
+
+    // Transform Coordinates based on Rotation
+    switch (gfx_rotation) {
+        case 1: // 90 deg
+            tx = w - 1 - y; // New X comes from Y
+            ty = x;         // New Y comes from X
+            // Boundary checks on original (rotated) inputs?
+            // Input X is logical. Input Y is logical.
+            // If Rotation is 90, Logical Width = 296, Logical Height = 128.
+            // Caller thinks they are drawing to WxH.
+            // But we must check against Logical Bounds if we want safety.
+            // Physical Bounds check happens after transform? No, mapping can go OOB.
+            break;
+        case 2: // 180 deg
+            tx = w - 1 - x;
+            ty = h - 1 - y;
+            break;
+        case 3: // 270 deg
+            tx = y;
+            ty = h - 1 - x;
+            break;
+        default: // 0 deg
+            tx = x;
+            ty = y;
+            break;
+    }
+    
+    // Physical Boundary Check (128x296)
+    if (tx < 0 || tx >= DISPLAY_WIDTH || ty < 0 || ty >= DISPLAY_HEIGHT) return;
+
+    int idx = ty * (DISPLAY_WIDTH / 8) + (tx / 8);
+    int bit = 7 - (tx % 8);
+    
+    // BW Buffer Logic: 1=White, 0=Black.
+    // Red Buffer Logic: 1=Red, 0=Transparent. (Assumption based on User's 0x00 fix)
+    
+    if (color == GFX_BLACK) { 
+        frame_buffer[idx] &= ~(1 << bit);    // BW: 0 (Black)
+        frame_buffer_red[idx] &= ~(1 << bit); // Red: 0 (Transparent)
+    } else if (color == GFX_WHITE) {
+        frame_buffer[idx] |= (1 << bit);     // BW: 1 (White)
+        frame_buffer_red[idx] &= ~(1 << bit); // Red: 0 (Transparent)
+    } else if (color == GFX_RED) {
+        frame_buffer[idx] |= (1 << bit);     // BW: 1 (White)
+        frame_buffer_red[idx] |= (1 << bit);  // Red: 1 (Red)
+    } else if (color == GFX_GRAY) {
+        // Checkerboard: (x+y)%2 == 0 -> Black, else White
+        if ((x + y) % 2 == 0) {
+            frame_buffer[idx] &= ~(1 << bit);    // Black
+            frame_buffer_red[idx] &= ~(1 << bit); // Transp
+        } else {
+            frame_buffer[idx] |= (1 << bit);     // White
+            frame_buffer_red[idx] &= ~(1 << bit); // Transp
+        }
+    } else if (color == GFX_PINK) {
+        // Checkerboard: (x+y)%2 == 0 -> Red, else White
+        if ((x + y) % 2 == 0) {
+            frame_buffer[idx] |= (1 << bit);     // White
+            frame_buffer_red[idx] |= (1 << bit);  // Red
+        } else {
+            frame_buffer[idx] |= (1 << bit);     // White
+            frame_buffer_red[idx] &= ~(1 << bit); // Transp
+        }
+    }
+}
+
+void graphics_draw_char(int x, int y, uint16_t c) {
+    const uint8_t *glyph = font5x7; // Default ASCII
+    int index = 0;
+
+    if (c >= 32 && c <= 126) {
+        index = (c - 32) * 5;
+    } else if (c >= 0x0410 && c <= 0x044F) { // Basic Cyrillic
+        // Map 0x0410 (A) to 0
+        index = (c - 0x0410) * 5;
+        if (index < sizeof(font_cyr)) { // Check bounds
+             glyph = font_cyr;
+        } else {
+             c = '?'; index = ('?'-32)*5;
+        }
+    } else {
+        c = '?'; index = ('?'-32)*5;
+    }
+
     for (int col = 0; col < 5; col++) {
-        uint8_t line = font5x7[index + col];
+        uint8_t line = glyph[index + col];
         for (int row = 0; row < 7; row++) {
             graphics_draw_pixel(x + col, y + row, (line & (1 << row)) ? GFX_BLACK : GFX_WHITE);
         }
@@ -146,14 +306,37 @@ void graphics_draw_char(int x, int y, char c) {
 
 void graphics_draw_string(int x, int y, const char *str) {
     while (*str) {
-        graphics_draw_char(x, y, *str);
+        uint16_t c = (uint8_t)*str;
+        
+        // UTF-8 Decoding (Basic 2-byte)
+        if (c >= 0xC0) {
+            if ((c & 0xE0) == 0xC0) { // 2 bytes
+                uint8_t c2 = (uint8_t)*(str + 1);
+                if ((c2 & 0xC0) == 0x80) {
+                    c = ((c & 0x1F) << 6) | (c2 & 0x3F);
+                    str++;
+                }
+            }
+            // Add 3-byte support if needed, but Russian usually fits 2 bytes in UTF-8
+        }
+        
+        graphics_draw_char(x, y, c);
         x += 6; 
         str++;
-        if (x > DISPLAY_WIDTH - 6) { x = 0; y += 8; }
-        if (y > DISPLAY_HEIGHT - 8) break;
+        
+        // Auto-wrap based on rotation
+        int max_x = (gfx_rotation % 2 == 0) ? DISPLAY_WIDTH : DISPLAY_HEIGHT;
+        int max_y = (gfx_rotation % 2 == 0) ? DISPLAY_HEIGHT : DISPLAY_WIDTH;
+        
+        if (x > max_x - 6) { x = 0; y += 8; }
+        if (y > max_y - 8) break;
     }
 }
 
 const uint8_t* graphics_get_buffer(void) {
     return frame_buffer;
+}
+
+const uint8_t* graphics_get_red_buffer(void) {
+    return frame_buffer_red;
 }

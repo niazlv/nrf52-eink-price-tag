@@ -11,13 +11,19 @@
 // Colors
 #define GFX_BLACK 0
 #define GFX_WHITE 1
+#define GFX_RED   2
+#define GFX_GRAY  3 // Simulated (Checkerboard Black/White)
+#define GFX_PINK  4 // Simulated (Checkerboard Red/White)
 
 // Functions
 void graphics_init(void);
 void graphics_clear(uint8_t color); // 0=Black, 1=White (Standard logic)
 void graphics_draw_pixel(int x, int y, int color);
-void graphics_draw_char(int x, int y, char c);
+void graphics_draw_char(int x, int y, uint16_t c);
+void graphics_draw_string(int x, int y, const char *str);
 void graphics_draw_string(int x, int y, const char *str);
 const uint8_t* graphics_get_buffer(void);
+const uint8_t* graphics_get_red_buffer(void);
+void graphics_set_rotation(int rotation); // 0, 1, 2, 3 (90 degree steps)
 
 #endif // GRAPHICS_H

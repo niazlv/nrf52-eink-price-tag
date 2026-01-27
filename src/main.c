@@ -88,7 +88,6 @@ void ble_log(const char *fmt, ...) {
 
 // Red fill debug value
 static uint8_t red_fill_debug = 0x00;
-static uint8_t red_buffer_debug[BUFFER_SIZE];
 
 void perform_display_update(void) {
     if (!device_is_ready(gpio_dev)) return;
@@ -96,11 +95,12 @@ void perform_display_update(void) {
     // Power ON & Init
     ssd1675a_init(gpio_dev);
 
-    // Prepare Red Buffer (Debug)
-    memset(red_buffer_debug, red_fill_debug, BUFFER_SIZE);
-
     // Send Buffers
-    ssd1675a_display_buffer(graphics_get_buffer(), red_buffer_debug);
+    // Use the Graphics Library RED buffer (Mandelbrot support)
+    // IMPORTANT: If user wants manual debug overrides, we could OR them or switch.
+    // For now, let's prefer the Graphics Library output if it has content,
+    // but the library defaults RED buffer to 0 (Transparent) which is what we want.
+    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     
     // Update
     ssd1675a_update_display();
@@ -119,6 +119,91 @@ void show_text_on_display(const char *text) {
     
     // 2. Обновляем
     perform_display_update();
+}
+
+void run_cleaning_cycle(void) {
+    if (!device_is_ready(gpio_dev)) return;
+    
+    // Cycle 3 times
+    for (int i=0; i<3; i++) {
+        // Black
+        graphics_clear(GFX_BLACK);
+        perform_display_update();
+        k_msleep(500);
+        
+        // White
+        graphics_clear(GFX_WHITE);
+        perform_display_update();
+        k_msleep(500);
+        
+        // Red
+        graphics_clear(GFX_RED);
+        perform_display_update();
+        k_msleep(500);
+    }
+    // Finish with White
+    graphics_clear(GFX_WHITE);
+    perform_display_update();
+}
+
+void run_animation_demo(void) {
+    if (!device_is_ready(gpio_dev)) return;
+
+    ble_log("Starting Animation (100 frames)...\r\n");
+    
+    // Ball State
+    int bx = 10, by = 10;
+    int bvx = 4, bvy = 2; // Velocity (Pixels per frame)
+    int br = 8; // Radius
+    
+    // FPS Calc
+    int64_t start_time = k_uptime_get();
+    
+    for (int f = 0; f < 100; f++) {
+        int64_t frame_start = k_uptime_get();
+        
+        // Clear (Logic) - Don't use full clear as it might be slow? 
+        // Graphics lib memset is fast in RAM.
+        graphics_clear(GFX_WHITE);
+        
+        // Update Physics
+        bx += bvx;
+        by += bvy;
+        
+        // Bounce X
+        if (bx - br < 0) { bx = br; bvx = -bvx; }
+        if (bx + br >= DISPLAY_WIDTH) { bx = DISPLAY_WIDTH - 1 - br; bvx = -bvx; }
+        
+        // Bounce Y
+        if (by - br < 0) { by = br; bvy = -bvy; }
+        if (by + br >= DISPLAY_HEIGHT) { by = DISPLAY_HEIGHT - 1 - br; bvy = -bvy; }
+        
+        // Draw Ball (Circle approx)
+        for (int y = -br; y <= br; y++) {
+             for (int x = -br; x <= br; x++) {
+                 if (x*x + y*y <= br*br) {
+                     graphics_draw_pixel(bx + x, by + y, GFX_BLACK);
+                 }
+             }
+        }
+        
+        // Draw Frame Counter / FPS
+        char fps_str[16];
+        snprintf(fps_str, sizeof(fps_str), "F:%d", f);
+        graphics_draw_string(5, 5, fps_str);
+        
+        // Partial Update
+        ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+        ssd1675a_update_partial();
+        
+        // Wait? Partial update handles busy wait. 
+        // If it's too fast, we can sleep.
+    }
+    
+    int64_t total_time = k_uptime_get() - start_time;
+    ble_log("Animation Done. 100 Frames in %lld ms (~%lld ms/frame)\r\n", total_time, total_time/100);
+    
+    // Final clean manually if needed
 }
 
 void run_display_test(void) {
@@ -159,8 +244,6 @@ void draw_mandelbrot(void) {
     float start_Im = -1.2;
     float end_Im   = 1.2;
     
-    float zoom = 1.0;
-    
     for (int y = 0; y < DISPLAY_HEIGHT; y++) { // 296
         for (int x = 0; x < DISPLAY_WIDTH; x++) { // 128
             // Map pixel to complex plane (Rotated 90 deg visual to fit portrait?)
@@ -180,12 +263,13 @@ void draw_mandelbrot(void) {
             
             int is_inside = 1;
             int max_iter = 20; // Low iter for speed on MCU
+            int i;
             
             // Should start Z at 0 for standard set
             z_Re = 0;
             z_Im = 0;
             
-            for(int i=0; i<max_iter; i++) {
+            for(i=0; i<max_iter; i++) {
                 float z_Re2 = z_Re * z_Re;
                 float z_Im2 = z_Im * z_Im;
                 
@@ -200,6 +284,21 @@ void draw_mandelbrot(void) {
             
             if (is_inside) {
                 graphics_draw_pixel(x, y, GFX_BLACK);
+            } else {
+                 // Colorize based on iterations ("Escape Time")
+                 if (i < 4) {
+                    // Fast escape -> White (Far outside)
+                    graphics_draw_pixel(x, y, GFX_WHITE);
+                 } else if (i < 8) {
+                    // Medium escape -> Gray (Dithered)
+                    graphics_draw_pixel(x, y, GFX_GRAY); 
+                 } else if (i < 12) {
+                    // Slow escape -> Pink (Dithered Red)
+                    graphics_draw_pixel(x, y, GFX_PINK);
+                 } else {
+                    // Very slow escape (Border) -> Solid Red
+                    graphics_draw_pixel(x, y, GFX_RED);
+                 }
             }
         }
     }
@@ -210,7 +309,7 @@ void draw_mandelbrot(void) {
 // COMMAND HANDLER
 static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
-    char input[100]; 
+    char input[256]; 
     uint16_t in_len = MIN(len, sizeof(input) - 1);
     memcpy(input, data, in_len);
     input[in_len] = '\0';
@@ -224,6 +323,14 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data, uint1
     if (strncmp(input, "CLEAR", 5) == 0) {
         graphics_clear(GFX_WHITE);
         ble_log("Buffer Cleared (White)\r\n");
+    }
+    else if (strncmp(input, "CLEAN", 5) == 0) {
+        ble_log("Running Cleaner (Wait ~20s)...\r\n");
+        run_cleaning_cycle();
+        ble_log("Clean cycle done.\r\n");
+    }
+    else if (strncmp(input, "ANIMATION", 9) == 0) {
+        run_animation_demo();
     }
     else if (strncmp(input, "UPDATE", 6) == 0) {
          ble_log("Updating Display...\r\n");
@@ -248,10 +355,70 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data, uint1
         red_fill_debug = 0xFF;
         ble_log("Red Fill set to 0xFF (Try Update)\r\n");
     }
+    else if (strncmp(input, "DEBUG:VCOM=", 11) == 0) {
+        // Parse Hex
+        const char *val_str = input + 11;
+        uint32_t val = strtoul(val_str, NULL, 16);
+        ssd1675a_set_vcom_register((uint8_t)val);
+        ble_log("VCOM set to 0x%02X (Try Update)\r\n", (uint8_t)val);
+    }
+    else if (strncmp(input, "DEBUG:LUT=", 10) == 0) {
+        // Change the Voltage Byte controlling the last phase
+        // Index 57 is 0x08 in "0x04, 0x08, 0x3C"
+        // Valid values to try: 00, 04, 08(default), 0C, etc.
+        const char *val_str = input + 10;
+        uint32_t val = strtoul(val_str, NULL, 16);
+        ssd1675a_set_lut_byte(57, (uint8_t)val);
+        ble_log("LUT[57] set to 0x%02X (Try Update)\r\n", (uint8_t)val);
+    }
+    else if (strncmp(input, "DEBUG:LUT_LEN=", 14) == 0) {
+        // Change the Duration Byte
+        // Index 58 is 0x3C (60 frames)
+        const char *val_str = input + 14;
+        uint32_t val = strtoul(val_str, NULL, 16);
+        ssd1675a_set_lut_byte(58, (uint8_t)val);
+        ble_log("LUT[58] (Len) set to 0x%02X (Try Update)\r\n", (uint8_t)val);
+    }
+    else if (strncmp(input, "DEBUG:LUT_SET=", 14) == 0) {
+        // Generic Set: DEBUG:LUT_SET=59:00
+        const char *params = input + 14;
+        // Search for ':'
+        char *colon = strchr(params, ':');
+        if (colon) {
+            *colon = '\0'; // Split string temporarily
+            const char *val_str = colon + 1;
+            
+            int idx = atoi(params); // Index is decimal
+            uint32_t val = strtoul(val_str, NULL, 16); // Value is Hex
+            
+            ssd1675a_set_lut_byte(idx, (uint8_t)val);
+            ble_log("LUT[%d] set to 0x%02X (Try Update)\r\n", idx, (uint8_t)val);
+        } else {
+             ble_log("Err: Format is idx:hexval\r\n");
+        }
+    }
     else if (strncmp(input, "TEXT:", 5) == 0) {
         const char *msg = input + 5;
         graphics_draw_string(5, 5, msg); 
         ble_log("Text drawn to buffer.\r\n");
+    } 
+    else if (strncmp(input, "HELP", 4) == 0) {
+        ble_log("CMDS:\r\n"
+                "TEXT:msg - Draw text\r\n"
+                "TEXT-U:msg - Draw & Update\r\n"
+                "CLEAR - Clear Buffer\r\n"
+                "UPDATE - Refresh Display\r\n"
+                "CLEAN - Run Cleaner\r\n"
+                "MANDELBROT - Demo\r\n"
+                "ROT:0/1/2/3 - Rotation (0,90..)\r\n"
+                "DEBUG:VCOM=xx\r\n"
+                "DEBUG:LUT=xx\r\n"
+                "DEBUG:LUT_LEN=xx\r\n");
+    }
+    else if (strncmp(input, "ROT:", 4) == 0) {
+        int r = atoi(input + 4);
+        graphics_set_rotation(r);
+        ble_log("Rotation set to %d\r\n", r);
     } 
     else if (strncmp(input, "FILL:BLACK", 10) == 0) {
         graphics_clear(GFX_BLACK);
