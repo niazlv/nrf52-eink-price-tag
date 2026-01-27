@@ -11,6 +11,9 @@ project(peripheral_uart)
 # NORDIC SDK APP START
 target_sources(app PRIVATE
   src/main.c
+  src/drivers/soft_spi.c
+  src/drivers/ssd1675a.c
+  src/lib/graphics.c
 )
 
 # NORDIC SDK APP END
