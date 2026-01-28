@@ -202,7 +202,7 @@ void graphics_clear(uint8_t color) {
     }
 }
 
-static int gfx_rotation = 0;
+static int gfx_rotation = 1;
 
 void graphics_set_rotation(int rotation) {
     gfx_rotation = rotation % 4;
@@ -330,6 +330,80 @@ void graphics_draw_string(int x, int y, const char *str) {
         
         if (x > max_x - 6) { x = 0; y += 8; }
         if (y > max_y - 8) break;
+    }
+}
+
+// Helper for Scaled Char
+void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale) {
+    const uint8_t *glyph = font5x7;
+    int index = 0;
+
+    if (c >= 32 && c <= 126) index = (c - 32) * 5;
+    else if (c >= 0x0410 && c <= 0x044F) {
+        index = (c - 0x0410) * 5;
+        if (index < sizeof(font_cyr)) glyph = font_cyr;
+        else { c = '?'; index = ('?'-32)*5; }
+    } else { c = '?'; index = ('?'-32)*5; }
+
+    for (int col = 0; col < 5; col++) {
+        uint8_t line = glyph[index + col];
+        for (int row = 0; row < 7; row++) {
+            if (line & (1 << row)) {
+                // Draw a block of scale*scale pixels
+                for (int sx=0; sx<scale; sx++) {
+                    for (int sy=0; sy<scale; sy++) {
+                        graphics_draw_pixel(x + col*scale + sx, y + row*scale + sy, GFX_BLACK);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void graphics_draw_string_scaled(int x, int y, const char *str, int scale) {
+    while (*str) {
+        uint16_t c = (uint8_t)*str;
+        // Basic UTF-8 Decoding
+        if (c >= 0xC0) {
+            if ((c & 0xE0) == 0xC0) { 
+                uint8_t c2 = (uint8_t)*(str + 1);
+                if ((c2 & 0xC0) == 0x80) {
+                    c = ((c & 0x1F) << 6) | (c2 & 0x3F);
+                    str++;
+                }
+            }
+        }
+        
+        graphics_draw_char_scaled(x, y, c, scale);
+        x += (6 * scale); 
+        str++;
+        
+         // Wrapping ignored for Scaled for now, assume short text (Time)
+    }
+}
+
+void graphics_draw_battery(int x, int y, int percent) {
+    // Simple Battery Icon 20x10
+    // Outline
+    for (int i=0; i<20; i++) {
+        graphics_draw_pixel(x+i, y, GFX_BLACK);
+        graphics_draw_pixel(x+i, y+10, GFX_BLACK);
+    }
+    for (int i=0; i<=10; i++) {
+        graphics_draw_pixel(x, y+i, GFX_BLACK);
+        graphics_draw_pixel(x+20, y+i, GFX_BLACK);
+    }
+    // Nipple
+    for (int i=2; i<8; i++) graphics_draw_pixel(x+22, y+i, GFX_BLACK);
+    
+    // Fill based on percent
+    int fill_width = (percent * 18) / 100;
+    if (fill_width > 18) fill_width = 18;
+    
+    for (int i=0; i<fill_width; i++) {
+        for (int j=2; j<9; j++) {
+            graphics_draw_pixel(x+1+i, y+j, GFX_BLACK);
+        }
     }
 }
 

@@ -54,7 +54,7 @@ static struct bt_conn *current_conn;
 static struct bt_conn *auth_conn;
 static struct k_work adv_work;
 static const struct device *uart = DEVICE_DT_GET(DT_CHOSEN(nordic_nus_uart));
-static struct k_work_delayable uart_work;
+// static struct k_work_delayable uart_work; // Removed
 
 struct uart_data_t {
 	void *fifo_reserved;
@@ -146,69 +146,71 @@ void run_cleaning_cycle(void) {
     perform_display_update();
 }
 
-void run_animation_demo(void) {
-    if (!device_is_ready(gpio_dev)) return;
+#include <zephyr/drivers/adc.h>
+#include <zephyr/pm/pm.h>
 
-    ble_log("Starting Animation (100 frames)...\r\n");
-    
-    // Ball State
-    int bx = 10, by = 10;
-    int bvx = 4, bvy = 2; // Velocity (Pixels per frame)
-    int br = 8; // Radius
-    
-    // FPS Calc
-    int64_t start_time = k_uptime_get();
-    
-    for (int f = 0; f < 100; f++) {
-        int64_t frame_start = k_uptime_get();
-        
-        // Clear (Logic) - Don't use full clear as it might be slow? 
-        // Graphics lib memset is fast in RAM.
-        graphics_clear(GFX_WHITE);
-        
-        // Update Physics
-        bx += bvx;
-        by += bvy;
-        
-        // Bounce X
-        if (bx - br < 0) { bx = br; bvx = -bvx; }
-        if (bx + br >= DISPLAY_WIDTH) { bx = DISPLAY_WIDTH - 1 - br; bvx = -bvx; }
-        
-        // Bounce Y
-        if (by - br < 0) { by = br; bvy = -bvy; }
-        if (by + br >= DISPLAY_HEIGHT) { by = DISPLAY_HEIGHT - 1 - br; bvy = -bvy; }
-        
-        // Draw Ball (Circle approx)
-        for (int y = -br; y <= br; y++) {
-             for (int x = -br; x <= br; x++) {
-                 if (x*x + y*y <= br*br) {
-                     graphics_draw_pixel(bx + x, by + y, GFX_BLACK);
-                 }
-             }
-        }
-        
-        // Draw Frame Counter / FPS
-        char fps_str[16];
-        snprintf(fps_str, sizeof(fps_str), "F:%d", f);
-        graphics_draw_string(5, 5, fps_str);
-        
-        // Partial Update
-        ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
-        ssd1675a_update_partial();
-        
-        // Wait? Partial update handles busy wait. 
-        // If it's too fast, we can sleep.
+// ADC Config (Internal VDD)
+#define APP_ADC_DT_SPEC DT_PATH(zephyr_user)
+
+static const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc)); // nRF52 SAADC
+
+// ADC Channel Config
+// We want to measure VDD/3 (Internal scaling) against Internal Reference (0.6V)
+// Result = (VDD/3) / 0.6 * MaxCounts
+// VDD = Result * 0.6 * 3 / MaxCounts
+// Actually nRF52 SAADC is flexible. Let's use standard config.
+// Simple: Measure VDD directly if possible via Internal Input.
+// Enable CONFIG_ADC=y.
+
+// Just a simple Mock/Stub for Battery for this step if ADC complex setup needed.
+// But let's try real ADC.
+// On nRF52, Channel 0, Input VDD.
+struct adc_channel_cfg channel_cfg = {
+    .gain = ADC_GAIN_1_6,
+    .reference = ADC_REF_INTERNAL,
+    .acquisition_time = ADC_ACQ_TIME_DEFAULT,
+    .input_positive = SAADC_CH_PSELP_PSELP_VDD // Measure VDD
+};
+
+int16_t sample_buffer[1];
+struct adc_sequence sequence = {
+    .channels = BIT(0),
+    .buffer = sample_buffer,
+    .buffer_size = sizeof(sample_buffer),
+    .resolution = 10,
+};
+
+int init_adc(void) {
+    if (!device_is_ready(adc_dev)) {
+        ble_log("ADC not ready\r\n");
+        return -1;
     }
-    
-    int64_t total_time = k_uptime_get() - start_time;
-    ble_log("Animation Done. 100 Frames in %lld ms (~%lld ms/frame)\r\n", total_time, total_time/100);
-    
-    // Final clean manually if needed
+    adc_channel_setup(adc_dev, &channel_cfg);
+    return 0;
 }
 
-void run_display_test(void) {
-   show_text_on_display("TEST SUCCESS\nE-INK DRIVER READY\n\nSend 'TEXT:msg' to print.");
+int read_battery_mv(void) {
+    if (!adc_dev) return 0;
+    adc_read(adc_dev, &sequence);
+    // 10 bit resolution, Ref 0.6V, Gain 1/6.
+    // Input range: 0 to 3.6V.
+    // Val = (Input * (1/6)) / 0.6 * 1023
+    // Input = Val * 0.6 * 6 / 1023 = Val * 3.6 / 1023
+    // mV = Val * 3600 / 1023
+    int32_t val = sample_buffer[0];
+    return (val * 3600) / 1023;
 }
+
+// Global flag
+static bool ble_connected = false;
+
+// ... (Keep existing helpers or move them)
+
+// Old update_screensaver removed.
+// See new implementation below receive_cb.
+
+// Main logic moved to bottom
+// Helpers ready.
 
 // Demo: Mandelbrot Set
 void draw_mandelbrot(void) {
@@ -307,6 +309,193 @@ void draw_mandelbrot(void) {
 }
 
 // COMMAND HANDLER
+// --- Time & Date Logic ---
+#include <time.h>
+
+static int64_t time_offset_sec = 0; // Offset from Uptime in Seconds
+static int32_t last_render_duration_ms = 0;
+
+// Simple structure for time (tm is available in standard lib usually)
+// We use seconds since epoch for internal storage.
+
+void set_system_time(int h, int m, int s, int D, int M, int Y) {
+    struct tm t = {0};
+    t.tm_year = Y - 1900;
+    t.tm_mon = M - 1;
+    t.tm_mday = D;
+    t.tm_hour = h;
+    t.tm_min = m;
+    t.tm_sec = s;
+    t.tm_isdst = -1;
+    
+    time_t target_ts = mktime(&t);
+    int64_t uptime_sec = k_uptime_get() / 1000;
+    
+    time_offset_sec = (int64_t)target_ts - uptime_sec;
+    ble_log("Time Set: %02d:%02d:%02d %02d.%02d.%04d\r\n", h, m, s, D, M, Y);
+}
+
+void get_system_time(struct tm *t) {
+    int64_t uptime_sec = k_uptime_get() / 1000;
+    time_t now = (time_t)(uptime_sec + time_offset_sec);
+    // Use gmtime_r or similar if available, or simplified.
+    // Zephyr minimal libc might behave differently.
+    struct tm *tmp = gmtime(&now); 
+    if (tmp) *t = *tmp;
+    else memset(t, 0, sizeof(struct tm));
+}
+
+// --- Command System ---
+typedef void (*cmd_handler_t)(char *args);
+
+struct shell_cmd {
+    const char *name;
+    cmd_handler_t handler;
+    const char *help;
+};
+
+// Global State
+static bool screensaver_active = true;
+
+// Define helper prototypes if needed
+void run_cleaning_cycle(void);
+void update_screensaver(void);
+
+extern const struct shell_cmd commands[]; // Forward Decl
+
+// Handlers implementation
+
+void cmd_help(char *args) {
+    ble_log("cmds:\r\n");
+    for (int i=0; commands[i].name != NULL; i++) {
+        ble_log("  %s\r\n", commands[i].name);
+    }
+}
+
+void cmd_cls(char *args) {
+    screensaver_active = false;
+    graphics_clear(GFX_WHITE);
+    ble_log("cleared\r\n");
+}
+
+void cmd_clean(char *args) {
+    screensaver_active = false; // logic takes control
+    ble_log("cleaning...\r\n");
+    run_cleaning_cycle();
+    ble_log("done\r\n");
+}
+
+void cmd_saver(char *args) {
+    screensaver_active = true;
+    ble_log("saver enabled\r\n");
+    update_screensaver(); // Immediate update
+}
+
+void cmd_update(char *args) {
+    ble_log("updating...\r\n");
+    int64_t start = k_uptime_get();
+    perform_display_update();
+    last_render_duration_ms = (int32_t)(k_uptime_get() - start);
+    ble_log("done in %d ms\r\n", last_render_duration_ms);
+}
+
+void cmd_text(char *args) {
+    screensaver_active = false;
+    if (!args || !*args) return;
+    graphics_draw_string(5, 5, args);
+    ble_log("drawn\r\n");
+}
+
+void cmd_text_u(char *args) {
+    screensaver_active = false;
+    if (!args || !*args) return;
+    show_text_on_display(args);
+    ble_log("shown\r\n");
+}
+
+void cmd_rot(char *args) {
+    if (!args) return;
+    int r = atoi(args);
+    graphics_set_rotation(r);
+    ble_log("rotation: %d\r\n", r);
+    // If screensaver was active, it will be redrawn rotated on next tick.
+}
+
+void cmd_batt(char *args) {
+    int mv = read_battery_mv();
+    ble_log("bat: %d mv\r\n", mv);
+}
+
+void cmd_time(char *args) {
+     // Format: HH:MM:SS DD.MM.YYYY
+     // Or just split by separators
+     if (!args || strlen(args) < 10) {
+         ble_log("usage: TIME HH:MM:SS DD.MM.YYYY\r\n");
+         return;
+     }
+     
+     int h, m, s, D, M, Y;
+     int count = sscanf(args, "%d:%d:%d %d.%d.%d", &h, &m, &s, &D, &M, &Y);
+     if (count == 6) {
+         set_system_time(h, m, s, D, M, Y);
+     } else {
+         ble_log("parse error. count=%d\r\n", count);
+     }
+}
+
+void cmd_mandelbrot(char *args) {
+    screensaver_active = false;
+    draw_mandelbrot();
+}
+
+void cmd_debug_vcom(char *args) {
+    if (!args) return;
+    uint32_t val = strtoul(args, NULL, 16);
+    ssd1675a_set_vcom_register((uint8_t)val);
+    ble_log("VCOM=0x%02X\r\n", (uint8_t)val);
+}
+
+void cmd_debug_lut(char *args) {
+    // Expect "idx:hex"
+    if (!args) return;
+    char *colon = strchr(args, ':');
+    if (colon) {
+        *colon = '\0';
+        int idx = atoi(args);
+        uint32_t val = strtoul(colon+1, NULL, 16);
+        ssd1675a_set_lut_byte(idx, (uint8_t)val);
+        ble_log("LUT[%d]=0x%02X\r\n", idx, (uint8_t)val);
+    }
+}
+
+void cmd_debug_red(char *args) {
+    if (!args) return;
+    uint32_t val = strtoul(args, NULL, 16);
+    red_fill_debug = (uint8_t)val;
+    ble_log("RED_FILL=0x%02X\r\n", red_fill_debug);
+}
+
+// Registry
+const struct shell_cmd commands[] = {
+    {"HELP", cmd_help, "List commands"},
+    {"SAVER", cmd_saver, "Activate Screensaver mode"},
+    {"CLEAR", cmd_cls, "Clear buffer"},
+    {"CLEAN", cmd_clean, "Run clean cycle"},
+    {"UPDATE", cmd_update, "Refresh display"},
+    {"TEXT:", cmd_text, "Draw text (arg: msg)"},
+    {"TEXT-U:", cmd_text_u, "Draw&Update text"},
+    {"ROT:", cmd_rot, "Set Rotation 0-3"},
+    {"BATT", cmd_batt, "Get Battery mV"},
+    {"TIME", cmd_time, "Set Time (HH:MM:SS DD.MM.YYYY)"},
+    {"MANDEL", cmd_mandelbrot, "Mandelbrot Demo"}, 
+    {"MANDELBROT", cmd_mandelbrot, "Mandelbrot Demo"},
+    {"DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (hex)"},
+    {"DEBUG:LUT=", cmd_debug_lut, "Set LUT idx:hex"},
+    {"DEBUG:RED=", cmd_debug_red, "Set Red Fill hex"},
+    {NULL, NULL, NULL}
+};
+
+// New Callback
 static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
     char input[256]; 
@@ -314,126 +503,89 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data, uint1
     memcpy(input, data, in_len);
     input[in_len] = '\0';
     
-    // Trim
+    // Trim CRLF
     char *end = input + in_len - 1;
     while(end >= input && (*end == '\n' || *end == '\r')) *end-- = '\0';
 
+    if (strlen(input) == 0) return;
     LOG_INF("RX: %s", input);
 
-    if (strncmp(input, "CLEAR", 5) == 0) {
-        graphics_clear(GFX_WHITE);
-        ble_log("Buffer Cleared (White)\r\n");
-    }
-    else if (strncmp(input, "CLEAN", 5) == 0) {
-        ble_log("Running Cleaner (Wait ~20s)...\r\n");
-        run_cleaning_cycle();
-        ble_log("Clean cycle done.\r\n");
-    }
-    else if (strncmp(input, "ANIMATION", 9) == 0) {
-        run_animation_demo();
-    }
-    else if (strncmp(input, "UPDATE", 6) == 0) {
-         ble_log("Updating Display...\r\n");
-         perform_display_update();
-         ble_log("Done.\r\n");
-    }
-    else if (strncmp(input, "TEXT-U:", 7) == 0) {
-        const char *msg = input + 7;
-        show_text_on_display(msg);
-        ble_log("Text-U: %s\r\n", msg);
-    }
-    else if (strncmp(input, "MANDELBROT", 10) == 0) {
-        ble_log("Drawing Mandelbrot...\r\n");
-        draw_mandelbrot();
-        ble_log("Done.\r\n");
-    }
-    else if (strncmp(input, "DEBUG:RED=00", 12) == 0) {
-        red_fill_debug = 0x00;
-        ble_log("Red Fill set to 0x00 (Try Update)\r\n");
-    }
-    else if (strncmp(input, "DEBUG:RED=FF", 12) == 0) {
-        red_fill_debug = 0xFF;
-        ble_log("Red Fill set to 0xFF (Try Update)\r\n");
-    }
-    else if (strncmp(input, "DEBUG:VCOM=", 11) == 0) {
-        // Parse Hex
-        const char *val_str = input + 11;
-        uint32_t val = strtoul(val_str, NULL, 16);
-        ssd1675a_set_vcom_register((uint8_t)val);
-        ble_log("VCOM set to 0x%02X (Try Update)\r\n", (uint8_t)val);
-    }
-    else if (strncmp(input, "DEBUG:LUT=", 10) == 0) {
-        // Change the Voltage Byte controlling the last phase
-        // Index 57 is 0x08 in "0x04, 0x08, 0x3C"
-        // Valid values to try: 00, 04, 08(default), 0C, etc.
-        const char *val_str = input + 10;
-        uint32_t val = strtoul(val_str, NULL, 16);
-        ssd1675a_set_lut_byte(57, (uint8_t)val);
-        ble_log("LUT[57] set to 0x%02X (Try Update)\r\n", (uint8_t)val);
-    }
-    else if (strncmp(input, "DEBUG:LUT_LEN=", 14) == 0) {
-        // Change the Duration Byte
-        // Index 58 is 0x3C (60 frames)
-        const char *val_str = input + 14;
-        uint32_t val = strtoul(val_str, NULL, 16);
-        ssd1675a_set_lut_byte(58, (uint8_t)val);
-        ble_log("LUT[58] (Len) set to 0x%02X (Try Update)\r\n", (uint8_t)val);
-    }
-    else if (strncmp(input, "DEBUG:LUT_SET=", 14) == 0) {
-        // Generic Set: DEBUG:LUT_SET=59:00
-        const char *params = input + 14;
-        // Search for ':'
-        char *colon = strchr(params, ':');
-        if (colon) {
-            *colon = '\0'; // Split string temporarily
-            const char *val_str = colon + 1;
+    // Find Command
+    bool found = false;
+    for (int i=0; commands[i].name != NULL; i++) {
+        const char *cmd = commands[i].name;
+        int cmd_len = strlen(cmd);
+        
+        // Check if input starts with cmd
+        if (strncmp(input, cmd, cmd_len) == 0) {
+            // Check boundary: cmd terminator (space or \0) usually,
+            // but some cmds have ':' at end like "TEXT:" which handles args differently.
+            // If cmd ends with ':', we treat rest as args.
+            // If cmd is word like "HELP", we expect space or end.
             
-            int idx = atoi(params); // Index is decimal
-            uint32_t val = strtoul(val_str, NULL, 16); // Value is Hex
+            char *args = input + cmd_len;
             
-            ssd1675a_set_lut_byte(idx, (uint8_t)val);
-            ble_log("LUT[%d] set to 0x%02X (Try Update)\r\n", idx, (uint8_t)val);
-        } else {
-             ble_log("Err: Format is idx:hexval\r\n");
+            // If simple command (no ':'), check if next char is space or nul
+            if (cmd[cmd_len-1] != ':' && *args != '\0' && *args != ' ') {
+                continue; // Partial match, e.g. "TIMES" vs "TIME"
+            }
+            
+            // Skip leading space in args
+            while (*args == ' ') args++;
+            
+            commands[i].handler(args);
+            found = true;
+            break;
         }
     }
-    else if (strncmp(input, "TEXT:", 5) == 0) {
-        const char *msg = input + 5;
-        graphics_draw_string(5, 5, msg); 
-        ble_log("Text drawn to buffer.\r\n");
-    } 
-    else if (strncmp(input, "HELP", 4) == 0) {
-        ble_log("CMDS:\r\n"
-                "TEXT:msg - Draw text\r\n"
-                "TEXT-U:msg - Draw & Update\r\n"
-                "CLEAR - Clear Buffer\r\n"
-                "UPDATE - Refresh Display\r\n"
-                "CLEAN - Run Cleaner\r\n"
-                "MANDELBROT - Demo\r\n"
-                "ROT:0/1/2/3 - Rotation (0,90..)\r\n"
-                "DEBUG:VCOM=xx\r\n"
-                "DEBUG:LUT=xx\r\n"
-                "DEBUG:LUT_LEN=xx\r\n");
+    
+    if (!found) {
+        ble_log("unknown cmd. try HELP\r\n");
     }
-    else if (strncmp(input, "ROT:", 4) == 0) {
-        int r = atoi(input + 4);
-        graphics_set_rotation(r);
-        ble_log("Rotation set to %d\r\n", r);
-    } 
-    else if (strncmp(input, "FILL:BLACK", 10) == 0) {
-        graphics_clear(GFX_BLACK);
-        ble_log("Buffer filled with Black.\r\n");
-    }
-    else if (strncmp(input, "FILL:WHITE", 10) == 0) {
-        graphics_clear(GFX_WHITE); 
-        ble_log("Buffer filled with White.\r\n");
-    }
-    else {
-        // Echo
-        char response[128];
-        snprintf(response, sizeof(response), "Echo: %s\r\n", input);
-        bt_nus_send(conn, response, strlen(response));
-    }
+}
+
+// --- Display Logic Updates ---
+
+void update_screensaver(void) {
+    if (!device_is_ready(gpio_dev)) return;
+    
+    int64_t start_render = k_uptime_get();
+    
+    graphics_clear(GFX_WHITE);
+    
+    // 1. Time
+    struct tm t;
+    get_system_time(&t);
+    
+    char time_str[8];
+    snprintf(time_str, sizeof(time_str), "%02d:%02d", t.tm_hour, t.tm_min);
+    graphics_draw_string_scaled(70, 30, time_str, 5); // Raised slightly
+    
+    // 2. Date (Centered below time)
+    char date_str[16];
+    snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d", t.tm_mday, t.tm_mon+1, t.tm_year+1900);
+    // Font 5x7 -> Width 6*10 = 60 centered? No, scale 2?
+    // Scale 2: Width 10 chars * 6 * 2 = 120. Screen 296. Center ~88.
+    // Y = 30 + (7*5=35) + 10 padding = 75.
+    graphics_draw_string_scaled(58, 80, date_str, 3);
+    
+    // 3. Battery
+    int mv = read_battery_mv();
+    int pct = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv-2000)/10);
+    graphics_draw_battery(260, 5, pct);
+    char bat_str[16];
+    snprintf(bat_str, sizeof(bat_str), "%dmV", mv);
+    graphics_draw_string(260, 18, bat_str);
+    
+    // 4. Render Stats (Bottom Left)
+    char stat_str[32];
+    snprintf(stat_str, sizeof(stat_str), "Render: %dms", last_render_duration_ms);
+    graphics_draw_string(5, DISPLAY_HEIGHT - 10, stat_str);
+    
+    // Update
+    perform_display_update();
+    
+    last_render_duration_ms = (int32_t)(k_uptime_get() - start_render);
 }
 
 
@@ -473,7 +625,7 @@ static int uart_init(void)
 	return 0;
 }
 
-static void uart_work_handler(struct k_work *item) { }
+// static void uart_work_handler(struct k_work *item) { } // Removed
 
 // --- ФУНКЦИИ BLE CONNECTION ---
 static void advertising_start(void)
@@ -492,12 +644,13 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	char addr[BT_ADDR_LE_STR_LEN];
 	if (err) {
 		LOG_ERR("Connection failed (err 0x%02x)", err);
-		return;
+	} else {
+		bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+		LOG_INF("Connected %s", addr);
+		current_conn = bt_conn_ref(conn);
+		dk_set_led_on(CON_STATUS_LED);
+        ble_connected = true;
 	}
-	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	LOG_INF("Connected %s", addr);
-	current_conn = bt_conn_ref(conn);
-	dk_set_led_on(CON_STATUS_LED);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -514,6 +667,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		current_conn = NULL;
 		dk_set_led_off(CON_STATUS_LED);
 	}
+    screensaver_active = true;
 }
 
 static void recycled_cb(void)
@@ -614,12 +768,13 @@ int main(void)
 	int blink_status = 0;
 	int err = 0;
 
+    // Init Peripherals
 	configure_gpio();
+    init_adc();
 	graphics_init();
-	uart_init(); // Вернул инициализацию
+	uart_init(); 
 
 #ifdef CONFIG_BT_NUS_SECURITY_ENABLED
-    // ВЕРНУЛ РЕГИСТРАЦИЮ CALLBACK-ов БЕЗОПАСНОСТИ
 	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
 	if (err) LOG_ERR("Auth cb err: %d", err);
 
@@ -635,7 +790,7 @@ int main(void)
 	k_sem_give(&ble_init_ok);
 
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
-		settings_load(); // ВЕРНУЛ ЗАГРУЗКУ НАСТРОЕК
+		settings_load(); 
 	}
 
 	err = bt_nus_init(&nus_cb);
@@ -644,8 +799,25 @@ int main(void)
 	k_work_init(&adv_work, adv_work_handler);
 	advertising_start();
 
+    // Screensaver State
+    int64_t next_update = 0;
+
 	for (;;) {
+        // Blink LED
 		dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
-		k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
+        
+        // Screensaver Logic
+        if (screensaver_active) {
+            if (k_uptime_get() > next_update) {
+                // LOG_INF("Screensaver Update"); // Optional log
+                update_screensaver();
+                next_update = k_uptime_get() + 60000; // 1 min
+            }
+            // Sleep
+            k_sleep(K_MSEC(1000));
+        } else {
+            // Connected/Manual Mode - Sleep faster or normal blink
+            k_sleep(K_MSEC(1000));
+        }
 	}
 }
