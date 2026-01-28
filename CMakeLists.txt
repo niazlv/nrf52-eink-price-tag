@@ -14,6 +14,14 @@ target_sources(app PRIVATE
   src/drivers/soft_spi.c
   src/drivers/ssd1675a.c
   src/lib/graphics.c
+  src/app/battery.c
+  src/app/display_manager.c
+  src/app/commands.c
+  src/app/system_time.c
+  src/ble/ble_service.c
 )
+
+zephyr_include_directories(src)
+
 
 # NORDIC SDK APP END

@@ -208,6 +208,14 @@ void graphics_set_rotation(int rotation) {
     gfx_rotation = rotation % 4;
 }
 
+int graphics_get_width(void) {
+    return (gfx_rotation % 2 == 0) ? DISPLAY_WIDTH : DISPLAY_HEIGHT;
+}
+
+int graphics_get_height(void) {
+    return (gfx_rotation % 2 == 0) ? DISPLAY_HEIGHT : DISPLAY_WIDTH;
+}
+
 void graphics_draw_pixel(int x, int y, int color) {
     int w = DISPLAY_WIDTH;  // 128
     int h = DISPLAY_HEIGHT; // 296

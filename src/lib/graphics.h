@@ -26,5 +26,7 @@ void graphics_draw_battery(int x, int y, int percent);
 const uint8_t* graphics_get_buffer(void);
 const uint8_t* graphics_get_red_buffer(void);
 void graphics_set_rotation(int rotation); // 0, 1, 2, 3 (90 degree steps)
+int graphics_get_width(void);
+int graphics_get_height(void);
 
 #endif // GRAPHICS_H
