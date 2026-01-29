@@ -38,7 +38,7 @@ void ssd1675a_wait_busy(void) {
     int timeout = 4000; 
     // Wait while BUSY is High
     while (gpio_pin_get(eink_gpio_dev, PIN_BUSY) == 1 && timeout > 0) {
-        k_msleep(10);
+        k_msleep(2); // Polling faster (was 10ms) to catch completion earlier
         timeout--;
     }
 }
@@ -58,32 +58,7 @@ static void set_ram_pointer(int x, int y) {
     send_data((y >> 8) & 0xFF);
 }
 
-void ssd1675a_init(const struct device *gpio_dev) {
-    eink_gpio_dev = gpio_dev;
-    if (!device_is_ready(eink_gpio_dev)) return;
-
-    // Configure Control Pins
-    gpio_pin_configure(eink_gpio_dev, PIN_VCC, GPIO_OUTPUT_ACTIVE);
-    gpio_pin_configure(eink_gpio_dev, PIN_RST, GPIO_OUTPUT_ACTIVE);
-    gpio_pin_configure(eink_gpio_dev, PIN_BUSY, GPIO_INPUT);
-    
-    // SPI Init (Pins)
-    soft_spi_init(gpio_dev);
-
-    // Initial Power On Sequence
-    ssd1675a_power_on();
-    
-    // Hardware Reset
-    gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
-    k_msleep(10); // Reduced to 10ms for speed (PLL boost removed, so safe now)
-    gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
-    k_msleep(10); // Reduced to 10ms for speed
-
-    // Software Reset
-    send_cmd(0x12);
-    ssd1675a_wait_busy();
-
-    // Initialization Sequence
+static void configure_registers(void) {
     send_cmd(0x74); // Analog Block
     send_data(0x54);
 
@@ -128,6 +103,55 @@ void ssd1675a_init(const struct device *gpio_dev) {
 #if USE_CUSTOM_LUT
     write_lut();
 #endif
+}
+
+void ssd1675a_init(const struct device *gpio_dev) {
+    eink_gpio_dev = gpio_dev;
+    if (!device_is_ready(eink_gpio_dev)) return;
+
+    // Configure Control Pins
+    gpio_pin_configure(eink_gpio_dev, PIN_VCC, GPIO_OUTPUT_ACTIVE);
+    gpio_pin_configure(eink_gpio_dev, PIN_RST, GPIO_OUTPUT_ACTIVE);
+    gpio_pin_configure(eink_gpio_dev, PIN_BUSY, GPIO_INPUT);
+    
+    // SPI Init (Pins)
+    soft_spi_init(gpio_dev);
+
+    // Initial Power On Sequence
+    ssd1675a_power_on();
+    
+    // Hardware Reset
+    gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
+    k_msleep(10); // Reduced to 10ms for speed (PLL boost removed, so safe now)
+    gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
+    k_msleep(10); // Reduced to 10ms for speed
+
+    // Software Reset - REMOVED for speed (HW reset is sufficient)
+    // send_cmd(0x12);
+    // ssd1675a_wait_busy();
+
+    // Initialization Sequence
+    configure_registers();
+}
+
+void ssd1675a_init_partial(const struct device *gpio_dev) {
+    eink_gpio_dev = gpio_dev;
+    if (!device_is_ready(eink_gpio_dev)) return;
+
+    // Configure Control Pins
+    gpio_pin_configure(eink_gpio_dev, PIN_VCC, GPIO_OUTPUT_ACTIVE);
+    gpio_pin_configure(eink_gpio_dev, PIN_RST, GPIO_OUTPUT_ACTIVE);
+    gpio_pin_configure(eink_gpio_dev, PIN_BUSY, GPIO_INPUT);
+    
+    // SPI Init (Pins)
+    soft_spi_init(gpio_dev);
+
+    // Power On Sequence (Safe to call if already on)
+    ssd1675a_power_on();
+    
+    // SKIP Hardware Reset to preserve RAM
+    // Just re-configure registers which might be lost in Sleep
+    configure_registers();
 }
 
 void ssd1675a_set_vcom_register(uint8_t val) {

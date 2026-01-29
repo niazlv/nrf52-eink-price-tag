@@ -16,6 +16,7 @@
 
 // Functions
 void ssd1675a_init(const struct device *gpio_dev);
+void ssd1675a_init_partial(const struct device *gpio_dev);
 void ssd1675a_power_on(void);
 void ssd1675a_power_off(void);
 void ssd1675a_display_buffer(const uint8_t *bw_buffer, const uint8_t *red_buffer);

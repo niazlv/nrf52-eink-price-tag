@@ -44,12 +44,12 @@ int main(void)
     }
 
     // 4. Thread will handle initial screen
-    // display_manager_update_status();
+    display_manager_update_status();
     
     LOG_INF("System Initialized & Ready - Auto Starting TEST");
     
     // Auto-start TEST
-    cmd_test(NULL);
+    // cmd_test(NULL);
 
     // 5. Main Loop (Unreachable if cmd_test loops forever)
     while (1) {

@@ -16,9 +16,11 @@ static const struct device *gpio_dev_dm;
 #define DISPLAY_WIDTH 128
 #define DISPLAY_HEIGHT 296
 
-static char date_str[24]; // Increased from 20 to avoid truncation warning
-static char stat_str[48]; // Original size was 48, snippet had 36. Keeping original.
+static char date_str[24]; 
+static char stat_str[48]; 
 static int rotation = 1;
+static bool screensaver_enabled = true;
+static int update_counter = 59; // Start at 59 so first increment hits 60 -> Full Update
 
 K_MUTEX_DEFINE(display_lock);
 
@@ -38,8 +40,13 @@ static void perform_display_update(void) {
     ssd1675a_init(gpio_dev_dm);
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
-    ssd1675a_sleep();
-    ssd1675a_power_off();
+    
+    // Only power off/sleep if Screensaver is disabled. 
+    // If active, we keep VCC On and avoid Deep Sleep to allow Partial Init (No Reset).
+    if (!screensaver_enabled) {
+        ssd1675a_sleep();
+        ssd1675a_power_off();
+    }
 
     // k_mutex_unlock(&display_lock);
 }
@@ -49,14 +56,21 @@ void display_manager_update_partial(void) {
 
     // k_mutex_lock(&display_lock, K_FOREVER);
 
-    ssd1675a_init(gpio_dev_dm);
+    // Use Partial Init (Skips HW Reset to preserve RAM)
+    ssd1675a_init_partial(gpio_dev_dm);
+    
     // Note: display_buffer writes to the controller's RAM. 
     // Partial update relies on the new data being there.
     // Optimization: Skip Red Buffer write
     ssd1675a_display_buffer_fast(graphics_get_buffer());
+    // Optimization: Skip Red Buffer write
+    ssd1675a_display_buffer_fast(graphics_get_buffer());
     ssd1675a_update_partial(); // Uses the custom LUT
-    ssd1675a_sleep();
-    ssd1675a_power_off();
+    
+    if (!screensaver_enabled) {
+        ssd1675a_sleep();
+        ssd1675a_power_off();
+    }
 
     // k_mutex_unlock(&display_lock);
 }
@@ -129,7 +143,17 @@ void display_manager_update_status(void) {
     snprintf(stat_str, sizeof(stat_str), "Up: %s | R: %dms", time_part, last_dur);
     graphics_draw_string(5, 0, stat_str);
     
-    perform_display_update();
+    // Logic: Full Update once every 60 minutes (or on first run)
+    // Partial Update otherwise.
+    // static int update_counter = 59; // Moved to file scope
+    update_counter++;
+
+    if (update_counter >= 60) {
+        update_counter = 0;
+        perform_display_update(); // Full Update
+    } else {
+        display_manager_update_partial(); // Partial Update
+    }
     
     // k_mutex_unlock(&display_lock);
     
@@ -174,7 +198,7 @@ void display_manager_clear(void) {
 
 // Semaphore to control screensaver loop (1 = run/wake, 0 = wait/timeout)
 static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
-static bool screensaver_enabled = true;
+// static bool screensaver_enabled = true; // Moved to top
 
 #define SCREENSAVER_INTERVAL_SEC 60
 
@@ -183,6 +207,7 @@ void display_manager_enable_screensaver(bool enable) {
     screensaver_enabled = enable;
     if (enable && !prev) {
         // Just switched on, force update
+        update_counter = 59; // Force Full Update next time
         k_sem_give(&sem_screensaver_wake);
     }
 }
