@@ -182,6 +182,71 @@ void cmd_debug_lut(char *args) {
     }
 }
 
+void cmd_dsaver(char *args) {
+    if (!args || !*args) {
+        ble_printf("Usage: DSAVER 1 (On) or 0 (Off)\r\n");
+        return;
+    }
+    int mode = atoi(args);
+    display_manager_enable_screensaver(true); // Ensure saver is On
+    display_manager_set_screensaver_mode(mode ? SCREENSAVER_MODE_DYNAMIC : SCREENSAVER_MODE_STATIC);
+    ble_printf("Dynamic Saver: %s\r\n", mode ? "ON" : "OFF");
+}
+
+void cmd_anim(char *args) {
+    ble_printf("Starting Animation (Reset to stop)...\r\n");
+    display_manager_enable_screensaver(false);
+    // Uses current partial mode (Default: Balanced)
+    display_manager_set_keep_on(true); // Keep VCC On
+
+    int x = 10, y = 10;
+    int vx = 4, vy = 4;
+    int size = 20;
+    int frame = 0;
+
+    // Initial Clear
+    graphics_clear(GFX_WHITE);
+    display_manager_force_update();
+
+    int width = graphics_get_width();
+    int height = graphics_get_height();
+
+    while (1) {
+        graphics_clear(GFX_WHITE);
+
+        // Update Physics
+        x += vx;
+        y += vy;
+
+        // Bounce
+        if (x <= 0 || x + size >= width) vx = -vx;
+        if (y <= 0 || y + size >= height) vy = -vy;
+
+        // Clamp
+        if (x < 0) x = 0;
+        if (x + size > width) x = width - size;
+        if (y < 0) y = 0;
+        if (y + size > height) y = height - size;
+
+        // Draw Box
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                graphics_draw_pixel(x + i, y + j, GFX_BLACK);
+            }
+        }
+        
+        char buf[32];
+        snprintf(buf, 32, "TURBO FRAME %d", frame++);
+        // Draw at bottom
+        graphics_draw_string(10, height - 16, buf);
+
+        display_manager_update_partial();
+        k_msleep(1);
+        
+        if (frame % 100 == 0) ble_printf("Anim frame %d\r\n", frame);
+    }
+}
+
 const struct shell_cmd commands[] = {
     {"HELP", cmd_help, "List commands"},
     {"SAVER", cmd_saver, "Show Status/Saver"},
@@ -198,6 +263,8 @@ const struct shell_cmd commands[] = {
     {"TIME", cmd_time, "Set Time (HH:MM:SS DD.MM.YYYY)"},
     {"DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (hex)"},
     {"DEBUG:LUT=", cmd_debug_lut, "Set LUT idx:hex"},
+    {"DSAVER", cmd_dsaver, "Toggle Dynamic Saver (1=On)"},
+    {"ANIM", cmd_anim, "Run Animation"},
     {NULL, NULL, NULL}
 };
 

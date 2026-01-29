@@ -18,9 +18,25 @@ static const struct device *gpio_dev_dm;
 
 static char date_str[24]; 
 static char stat_str[48]; 
-static int rotation = 1;
+// static int rotation = 1; // Unused
 static bool screensaver_enabled = true;
+static bool keep_display_on = false; // New flag for animations
 static int update_counter = 59; // Start at 59 so first increment hits 60 -> Full Update
+
+// Screensaver Modes
+#define SCREENSAVER_MODE_STATIC  0
+#define SCREENSAVER_MODE_DYNAMIC 1
+static int screensaver_mode = SCREENSAVER_MODE_STATIC;
+
+// Animation State
+static int anim_x = 10;
+static int anim_y = 10;
+static int anim_vx = 4;
+static int anim_vy = 4;
+static int anim_size = 20;
+
+// Semaphore to control screensaver loop (1 = run/wake, 0 = wait/timeout)
+static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
 
 K_MUTEX_DEFINE(display_lock);
 
@@ -43,7 +59,7 @@ static void perform_display_update(void) {
     
     // Only power off/sleep if Screensaver is disabled. 
     // If active, we keep VCC On and avoid Deep Sleep to allow Partial Init (No Reset).
-    if (!screensaver_enabled) {
+    if (!screensaver_enabled && !keep_display_on) {
         ssd1675a_sleep();
         ssd1675a_power_off();
     }
@@ -63,11 +79,9 @@ void display_manager_update_partial(void) {
     // Partial update relies on the new data being there.
     // Optimization: Skip Red Buffer write
     ssd1675a_display_buffer_fast(graphics_get_buffer());
-    // Optimization: Skip Red Buffer write
-    ssd1675a_display_buffer_fast(graphics_get_buffer());
     ssd1675a_update_partial(); // Uses the custom LUT
     
-    if (!screensaver_enabled) {
+    if (!screensaver_enabled && !keep_display_on) {
         ssd1675a_sleep();
         ssd1675a_power_off();
     }
@@ -84,80 +98,182 @@ void display_manager_set_partial_mode(int mode) {
     else if (mode == 2) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
 }
 
+void display_manager_set_screensaver_mode(int mode) {
+    screensaver_mode = mode;
+    // If Dynamic, we MUST keep display on to avoid flicker
+    if (mode == SCREENSAVER_MODE_DYNAMIC) {
+        display_manager_set_keep_on(true);
+        // Force Turbo Mode for speed
+        display_manager_set_partial_mode(1);
+        // Force wake of thread
+        k_sem_give(&sem_screensaver_wake);
+    } else {
+        // Restore defaults
+        display_manager_set_keep_on(false);
+        display_manager_set_partial_mode(1); // Balanced
+    }
+}
+
 void display_manager_update_status(void) {
     if (!gpio_dev_dm) return;
     
     int64_t start_render = k_uptime_get();
     
-    graphics_clear(GFX_WHITE);
-    
     // 1. Time
     struct tm t;
     get_system_time(&t);
-    
-    char time_str[8];
-    snprintf(time_str, sizeof(time_str), "%02d:%02d", t.tm_hour, t.tm_min);
-    graphics_draw_string_scaled(70, 30, time_str, 5); 
-    
-    // 2. Date
-    // char date_str[20]; // Use global static
-    snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d", t.tm_mday, t.tm_mon+1, t.tm_year+1900);
-    graphics_draw_string_scaled(58, 80, date_str, 3);
-    
-    // 2.1 Day of Week (Red)
-    const char *wday_str[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-    // Calculate Day of Week manually since mktime might not populate it reliably if we just set time?
-    // Actually mktime DOES normalize struct tm. 
-    // Let's rely on standard logic: get_system_time calls gmtime() which should set tm_wday.
-    if (t.tm_wday >= 0 && t.tm_wday <= 6) {
-        // Draw below Date, Centered (Scale 2)
-        // Width ~ 3 chars * 6 * 2 = 36. Center = (296-36)/2 = 130
-        graphics_draw_string_scaled(130, 110, wday_str[t.tm_wday], 2);
-    }
-    
-    // 3. Battery
-    int mv = battery_read_mv();
-    int pct = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv-2000)/10);
-    graphics_draw_battery(260, 5, pct);
-    char bat_str[16];
-    snprintf(bat_str, sizeof(bat_str), "%dmV", mv);
-    graphics_draw_string(260, 18, bat_str);
-    
-    // 4. Stats
-    static int32_t last_dur = 0;
-    int64_t uptime_s = k_uptime_get() / 1000;
-    
-    // char stat_str[48]; // Use global static
-    char time_part[20] = {0};
-    
-    int d = uptime_s / 86400; uptime_s %= 86400;
-    int h = uptime_s / 3600;  uptime_s %= 3600;
-    int m = uptime_s / 60;    uptime_s %= 60;
-    int s = uptime_s;
-    
-    if (d > 0) snprintf(time_part, sizeof(time_part), "%dd%dh%dm%ds", d, h, m, s);
-    else if (h > 0) snprintf(time_part, sizeof(time_part), "%dh%dm%ds", h, m, s);
-    else if (m > 0) snprintf(time_part, sizeof(time_part), "%dm%ds", m, s);
-    else snprintf(time_part, sizeof(time_part), "%ds", s);
 
-    snprintf(stat_str, sizeof(stat_str), "Up: %s | R: %dms", time_part, last_dur);
-    graphics_draw_string(5, 0, stat_str);
-    
-    // Logic: Full Update once every 60 minutes (or on first run)
-    // Partial Update otherwise.
-    // static int update_counter = 59; // Moved to file scope
-    update_counter++;
+    if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
+        // --- DYNAMIC MODE ---
+        graphics_clear(GFX_WHITE);
 
-    if (update_counter >= 60) {
-        update_counter = 0;
-        perform_display_update(); // Full Update
+        int width = graphics_get_width();
+        int height = graphics_get_height();
+
+        // Update Animation
+        anim_x += anim_vx;
+        anim_y += anim_vy;
+
+        // Bounce
+        if (anim_x <= 0 || anim_x + anim_size >= width) anim_vx = -anim_vx;
+        if (anim_y <= 0 || anim_y + anim_size >= height) anim_vy = -anim_vy;
+
+        // Clamp
+        if (anim_x < 0) anim_x = 0;
+        if (anim_x + anim_size > width) anim_x = width - anim_size;
+        if (anim_y < 0) anim_y = 0;
+        if (anim_y + anim_size > height) anim_y = height - anim_size;
+
+        // Draw Box
+        for (int i = 0; i < anim_size; i++) {
+            for (int k_idx = 0; k_idx < anim_size; k_idx++) { // renamed iterator to avoid conflict
+                graphics_draw_pixel(anim_x + i, anim_y + k_idx, GFX_BLACK);
+            }
+        }
+
+        // Draw Time with Seconds (Large)
+        char time_str[16];
+        snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+        
+        // Center text (approx) - Scale 3
+        // Char width = 6*3 = 18. Len = 8. Total width = 144. Too big for 128 width if portrait.
+        // If width < 144, use smaller scale or wrap? 
+        // 128 / 8 = 16 pixels per char. Scale 2 = 12px. 8*12 = 96. Fits.
+        int scale = (width >= 150) ? 3 : 2; 
+        int str_w = 8 * (6 * scale);
+        int tx = (width - str_w) / 2;
+        int ty = height / 2 - (4 * scale); // Centered Y
+
+        graphics_draw_string_scaled(tx, ty, time_str, scale);
+
+        // Draw Date below
+        snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d", t.tm_mday, t.tm_mon+1, t.tm_year+1900);
+        int date_scale = 1;
+        int date_w = 10 * (6 * date_scale);
+        graphics_draw_string_scaled((width - date_w)/2, ty + (10*scale), date_str, date_scale);
+
+        // Day of Week
+        const char *wday_str[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+        if (t.tm_wday >= 0 && t.tm_wday <= 6) {
+           int wday_scale = 1;
+           int wday_w = 3 * (6 * wday_scale);
+           graphics_draw_string_scaled((width - wday_w)/2, ty + (10*scale) + 15, wday_str[t.tm_wday], wday_scale);
+        }
+
+        // Battery (Top Right)
+        int mv = battery_read_mv();
+        int pct = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv-2000)/10);
+        // Assuming width is dynamic. If 128 (portrait), 260 is off screen.
+        // Static mode: 260, 5. This implies Static mode was assuming Landscape (296 width)?
+        // Wait, if rotation=1 (default), Width=296, Height=128.
+        // So 260 fits.
+        graphics_draw_battery(width - 40, 5, pct);
+        char bat_str[16];
+        snprintf(bat_str, sizeof(bat_str), "%dmV", mv);
+        graphics_draw_string(width - 40, 18, bat_str);
+
+        // Stats (Top Left)
+        static int32_t last_dur = 0;
+        int64_t uptime_s = k_uptime_get() / 1000;
+        char time_part[20] = {0};
+        int d = uptime_s / 86400; uptime_s %= 86400;
+        int h = uptime_s / 3600;  uptime_s %= 3600;
+        int m = uptime_s / 60;    uptime_s %= 60;
+        int s = uptime_s;
+        
+        if (d > 0) snprintf(time_part, sizeof(time_part), "%dd%dh%dm%ds", d, h, m, s);
+        else if (h > 0) snprintf(time_part, sizeof(time_part), "%dh%dm%ds", h, m, s);
+        else if (m > 0) snprintf(time_part, sizeof(time_part), "%dm%ds", m, s);
+        else snprintf(time_part, sizeof(time_part), "%ds", s);
+
+        snprintf(stat_str, sizeof(stat_str), "Up: %s | R: %dms", time_part, last_dur);
+        graphics_draw_string(5, 5, stat_str);
+
+        // Always Partial Update in Dynamic Mode
+        display_manager_update_partial();
+        
+        last_dur = (int32_t)(k_uptime_get() - start_render);
+
     } else {
-        display_manager_update_partial(); // Partial Update
+        // --- STATIC MODE (Original) ---
+        graphics_clear(GFX_WHITE);
+        
+        char time_str[8];
+        snprintf(time_str, sizeof(time_str), "%02d:%02d", t.tm_hour, t.tm_min);
+        graphics_draw_string_scaled(70, 30, time_str, 5); 
+        
+        // 2. Date
+        snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d", t.tm_mday, t.tm_mon+1, t.tm_year+1900);
+        graphics_draw_string_scaled(58, 80, date_str, 3);
+        
+        // 2.1 Day of Week (Red)
+        const char *wday_str[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+        if (t.tm_wday >= 0 && t.tm_wday <= 6) {
+            graphics_draw_string_scaled(130, 110, wday_str[t.tm_wday], 2);
+        }
+        
+        // 3. Battery
+        int mv = battery_read_mv();
+        int pct = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv-2000)/10);
+        graphics_draw_battery(260, 5, pct);
+        char bat_str[16];
+        snprintf(bat_str, sizeof(bat_str), "%dmV", mv);
+        graphics_draw_string(260, 18, bat_str);
+        
+        // 4. Stats
+        static int32_t last_dur = 0;
+        int64_t uptime_s = k_uptime_get() / 1000;
+        
+        // char stat_str[48]; // Use global static
+        char time_part[20] = {0};
+        
+        int d = uptime_s / 86400; uptime_s %= 86400;
+        int h = uptime_s / 3600;  uptime_s %= 3600;
+        int m = uptime_s / 60;    uptime_s %= 60;
+        int s = uptime_s;
+        
+        if (d > 0) snprintf(time_part, sizeof(time_part), "%dd%dh%dm%ds", d, h, m, s);
+        else if (h > 0) snprintf(time_part, sizeof(time_part), "%dh%dm%ds", h, m, s);
+        else if (m > 0) snprintf(time_part, sizeof(time_part), "%dm%ds", m, s);
+        else snprintf(time_part, sizeof(time_part), "%ds", s);
+
+        snprintf(stat_str, sizeof(stat_str), "Up: %s | R: %dms", time_part, last_dur);
+        graphics_draw_string(5, 0, stat_str);
+        
+        // Logic: Full Update once every 60 minutes (or on first run)
+        // Partial Update otherwise.
+        update_counter++;
+
+        if (update_counter >= 60) {
+            update_counter = 0;
+            perform_display_update(); // Full Update
+        } else {
+            // Note: display_manager_update_partial controls power off based on flags
+            display_manager_update_partial(); 
+        }
+        
+        last_dur = (int32_t)(k_uptime_get() - start_render);
     }
-    
-    // k_mutex_unlock(&display_lock);
-    
-    last_dur = (int32_t)(k_uptime_get() - start_render);
 }
 
 void display_manager_show_text(const char *text) {
@@ -196,8 +312,10 @@ void display_manager_clear(void) {
     graphics_clear(GFX_WHITE);
 }
 
-// Semaphore to control screensaver loop (1 = run/wake, 0 = wait/timeout)
-static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
+
+
+// Semaphore to control screensaver loop (moved to top)
+// static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
 // static bool screensaver_enabled = true; // Moved to top
 
 #define SCREENSAVER_INTERVAL_SEC 60
@@ -230,18 +348,18 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
             display_manager_update_status();
         }
 
-        struct tm t;
-        get_system_time(&t);
-        
-        // Calculate seconds to next minute (60 - current_seconds)
-        // Add a small buffer (100ms) to ensure we land inside the new minute? 
-        // Or just target strict boundary. k_sleep is minimum delay.
-        int seconds_to_wait = 60 - t.tm_sec;
-        if (seconds_to_wait < 1) seconds_to_wait = 1;
-        
-        // Wait for next interval OR manual wake event
-        // returns 0 if semaphore taken (manual wake), -EAGAIN on timeout (interval)
-        k_sem_take(&sem_screensaver_wake, K_SECONDS(seconds_to_wait));
+        if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
+            // High refresh rate for animation
+            // Wait e.g. 50ms (20fps target, though bus limits it)
+            k_sem_take(&sem_screensaver_wake, K_MSEC(50));
+        } else {
+            // Static Mode - wait for next minute
+            struct tm t;
+            get_system_time(&t);
+            int seconds_to_wait = 60 - t.tm_sec;
+            if (seconds_to_wait < 1) seconds_to_wait = 1;
+            k_sem_take(&sem_screensaver_wake, K_SECONDS(seconds_to_wait));
+        }
     }
 }
 
@@ -259,5 +377,14 @@ void display_manager_set_rotation(int rot) {
     graphics_set_rotation(rot);
     if (screensaver_enabled) {
          k_sem_give(&sem_screensaver_wake);
+    }
+}
+
+void display_manager_set_keep_on(bool enable) {
+    keep_display_on = enable;
+    if (!enable && !screensaver_enabled) {
+         // If disabling keep-on and screensaver is also off, power down now
+         ssd1675a_sleep();
+         ssd1675a_power_off();
     }
 }

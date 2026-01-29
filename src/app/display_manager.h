@@ -62,10 +62,22 @@ void display_manager_set_rotation(int rot);
  * @param enable true to enable, false to disable
  */
 void display_manager_enable_screensaver(bool enable);
+    
+/**
+ * @brief Keep display powered strictly ON (for animations)
+ */
+void display_manager_set_keep_on(bool enable);
 
 /**
  * @brief Check if screensaver is currently active
  */
 bool display_manager_is_screensaver_active(void);
+
+#define SCREENSAVER_MODE_STATIC  0
+#define SCREENSAVER_MODE_DYNAMIC 1
+/**
+ * @brief Set screensaver style (Static/Minute or Dynamic/Animation)
+ */
+void display_manager_set_screensaver_mode(int mode);
 
 #endif // APP_DISPLAY_MANAGER_H
