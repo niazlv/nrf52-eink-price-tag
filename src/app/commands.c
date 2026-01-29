@@ -3,6 +3,8 @@
 #include "display_manager.h"
 #include "battery.h"
 #include "system_time.h"
+#include "lib/graphics.h"
+#include <zephyr/bluetooth/bluetooth.h>
 #include <drivers/ssd1675a.h> // For debug commands if kept
 #include <string.h>
 #include <stdio.h>
@@ -50,6 +52,80 @@ void cmd_update(char *args) {
     // If not, it will just update display.
     display_manager_force_update();
     ble_printf("done\r\n");
+    ble_printf("done\r\n");
+}
+
+void cmd_fast(char *args) {
+    ble_printf("fast update...\r\n");
+    display_manager_update_partial();
+    ble_printf("done\r\n");
+}
+
+
+
+void cmd_test(char *args) {
+    ble_printf("Starting Partial Stress Test (Infinite)... Reset to stop.\r\n");
+    display_manager_enable_screensaver(false);
+    
+    int32_t count = 0;
+    char buf[64];
+    
+    // Get MAC Address
+    bt_addr_le_t addr = {0};
+    size_t count_id = 1;
+    char addr_str[BT_ADDR_LE_STR_LEN] = "Unknown";
+    
+    bt_id_get(&addr, &count_id);
+    bt_addr_le_to_str(&addr, addr_str, sizeof(addr_str));
+
+    bt_id_get(&addr, &count_id);
+    bt_addr_le_to_str(&addr, addr_str, sizeof(addr_str));
+
+    // Initial Full Clean to remove artifacts
+    graphics_clear(GFX_WHITE);
+    graphics_draw_string(10, 10, "INITIAL CLEAN...");
+    graphics_draw_string(10, 30, "Please Wait");
+    
+    // Use Manager's Force Update which properly calls init/display_buffer/update/sleep
+    display_manager_force_update();
+
+    int64_t last_time = k_uptime_get();
+
+    while (1) {
+        int64_t start = k_uptime_get();
+        int32_t delta = (int32_t)(start - last_time);
+        last_time = start;
+
+        graphics_clear(GFX_WHITE);
+        graphics_draw_string(10, 10, "PARTIAL TEST");
+        
+        snprintf(buf, sizeof(buf), "Frame: %d", count++);
+        graphics_draw_string(10, 35, buf);
+        
+        snprintf(buf, sizeof(buf), "Up: %lld ms", start);
+        graphics_draw_string(10, 55, buf);
+
+        // Display MAC
+        graphics_draw_string(10, 75, "MAC:");
+        graphics_draw_string(10, 90, addr_str);
+        
+        // Delta
+        snprintf(buf, sizeof(buf), "Delta: %d ms", delta);
+        graphics_draw_string(10, 110, buf);
+
+        // Use the partial update path
+        display_manager_update_partial();
+        
+        // Small delay to allow log/uart processing if needed, though loop is blocking
+        k_msleep(1); 
+    }
+}
+
+void cmd_mode(char *args) {
+    if (!args) return;
+    int m = atoi(args);
+    display_manager_set_partial_mode(m);
+    ble_printf("Mode Set: %d (0=Turbo, 1=Bal, 2=Stab)\r\n", m);
 }
 
 void cmd_text(char *args) {
@@ -111,7 +187,11 @@ const struct shell_cmd commands[] = {
     {"SAVER", cmd_saver, "Show Status/Saver"},
     {"CLEAR", cmd_cls, "Clear buffer"},
     {"CLEAN", cmd_clean, "Run clean cycle"},
+    {"CLEAN", cmd_clean, "Run clean cycle"},
     {"UPDATE", cmd_update, "Refresh display"},
+    {"FAST", cmd_fast, "Fast/Partial update"},
+    {"TEST", cmd_test, "Infinite Stress Test"},
+    {"MODE", cmd_mode, "Set Mode 0-2"},
     {"TEXT:", cmd_text, "Draw text (arg: msg)"}, 
     {"ROT:", cmd_rot, "Set Rotation 0-3"},
     {"BATT", cmd_batt, "Get Battery mV"},

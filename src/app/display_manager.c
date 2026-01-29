@@ -6,34 +6,68 @@
 #include <drivers/ssd1675a.h> 
 #include <lib/graphics.h>
 #include <stdio.h>
+#include <string.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(display_manager, LOG_LEVEL_INF);
 
-static const struct device *gpio_dev_dm = NULL;
+static const struct device *gpio_dev_dm;
 
 #define DISPLAY_WIDTH 128
 #define DISPLAY_HEIGHT 296
 
+static char date_str[24]; // Increased from 20 to avoid truncation warning
+static char stat_str[48]; // Original size was 48, snippet had 36. Keeping original.
+static int rotation = 1;
+
+K_MUTEX_DEFINE(display_lock);
+
 void display_manager_init(void) {
     gpio_dev_dm = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     if (!device_is_ready(gpio_dev_dm)) {
-        LOG_ERR("GPIO device not ready");
+        LOG_ERR("GPIO_0 not found!");
         return;
     }
-    // ssd1675a and graphics init might be needed here or lazy
-    // In main.c it was called explicitly
-    // graphics_init(); from main
 }
 
 static void perform_display_update(void) {
     if (!gpio_dev_dm) return;
+
+    // k_mutex_lock(&display_lock, K_FOREVER);
 
     ssd1675a_init(gpio_dev_dm);
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
     ssd1675a_sleep();
     ssd1675a_power_off();
+
+    // k_mutex_unlock(&display_lock);
+}
+
+void display_manager_update_partial(void) {
+    if (!gpio_dev_dm) return;
+
+    // k_mutex_lock(&display_lock, K_FOREVER);
+
+    ssd1675a_init(gpio_dev_dm);
+    // Note: display_buffer writes to the controller's RAM. 
+    // Partial update relies on the new data being there.
+    // Optimization: Skip Red Buffer write
+    ssd1675a_display_buffer_fast(graphics_get_buffer());
+    ssd1675a_update_partial(); // Uses the custom LUT
+    ssd1675a_sleep();
+    ssd1675a_power_off();
+
+    // k_mutex_unlock(&display_lock);
+}
+
+
+
+void display_manager_set_partial_mode(int mode) {
+    // No lock needed for simple variable set, but safe to add if complex
+    if (mode == 0) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
+    else if (mode == 1) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_BALANCED);
+    else if (mode == 2) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
 }
 
 void display_manager_update_status(void) {
@@ -52,9 +86,20 @@ void display_manager_update_status(void) {
     graphics_draw_string_scaled(70, 30, time_str, 5); 
     
     // 2. Date
-    char date_str[16];
+    // char date_str[20]; // Use global static
     snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d", t.tm_mday, t.tm_mon+1, t.tm_year+1900);
     graphics_draw_string_scaled(58, 80, date_str, 3);
+    
+    // 2.1 Day of Week (Red)
+    const char *wday_str[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    // Calculate Day of Week manually since mktime might not populate it reliably if we just set time?
+    // Actually mktime DOES normalize struct tm. 
+    // Let's rely on standard logic: get_system_time calls gmtime() which should set tm_wday.
+    if (t.tm_wday >= 0 && t.tm_wday <= 6) {
+        // Draw below Date, Centered (Scale 2)
+        // Width ~ 3 chars * 6 * 2 = 36. Center = (296-36)/2 = 130
+        graphics_draw_string_scaled(130, 110, wday_str[t.tm_wday], 2);
+    }
     
     // 3. Battery
     int mv = battery_read_mv();
@@ -64,15 +109,29 @@ void display_manager_update_status(void) {
     snprintf(bat_str, sizeof(bat_str), "%dmV", mv);
     graphics_draw_string(260, 18, bat_str);
     
-    // 4. Stats (Bottom)
+    // 4. Stats
     static int32_t last_dur = 0;
-    int64_t uptime_ms = k_uptime_get();
+    int64_t uptime_s = k_uptime_get() / 1000;
     
-    char stat_str[32];
-    snprintf(stat_str, sizeof(stat_str), "Up: %llds | R: %dms", uptime_ms/1000, last_dur);
-    graphics_draw_string(5, graphics_get_height() - 20, stat_str);
+    // char stat_str[48]; // Use global static
+    char time_part[20] = {0};
+    
+    int d = uptime_s / 86400; uptime_s %= 86400;
+    int h = uptime_s / 3600;  uptime_s %= 3600;
+    int m = uptime_s / 60;    uptime_s %= 60;
+    int s = uptime_s;
+    
+    if (d > 0) snprintf(time_part, sizeof(time_part), "%dd%dh%dm%ds", d, h, m, s);
+    else if (h > 0) snprintf(time_part, sizeof(time_part), "%dh%dm%ds", h, m, s);
+    else if (m > 0) snprintf(time_part, sizeof(time_part), "%dm%ds", m, s);
+    else snprintf(time_part, sizeof(time_part), "%ds", s);
+
+    snprintf(stat_str, sizeof(stat_str), "Up: %s | R: %dms", time_part, last_dur);
+    graphics_draw_string(5, 0, stat_str);
     
     perform_display_update();
+    
+    // k_mutex_unlock(&display_lock);
     
     last_dur = (int32_t)(k_uptime_get() - start_render);
 }

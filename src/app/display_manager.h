@@ -34,7 +34,20 @@ void display_manager_clear(void);
 /**
  * @brief Force a display update loop (async or blocking depending on impl)
  */
+/**
+ * @brief Force a display update loop (async or blocking depending on impl)
+ */
 void display_manager_force_update(void);
+
+/**
+ * @brief Force a partial (fast) display update
+ */
+void display_manager_update_partial(void);
+
+/**
+ * @brief Set the partial update mode (0=Turbo, 1=Balanced, 2=Stable)
+ */
+void display_manager_set_partial_mode(int mode);
 
 /**
  * @brief Set display rotation

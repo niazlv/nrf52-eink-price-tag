@@ -8,8 +8,10 @@
 #include "app/display_manager.h"
 #include "app/battery.h"
 #include "app/commands.h"
+#include "app/system_time.h"
 #include "ble/ble_service.h"
 #include "lib/graphics.h"
+#include <dk_buttons_and_leds.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -44,9 +46,12 @@ int main(void)
     // 4. Thread will handle initial screen
     // display_manager_update_status();
     
-    LOG_INF("System Initialized & Ready");
+    LOG_INF("System Initialized & Ready - Auto Starting TEST");
+    
+    // Auto-start TEST
+    cmd_test(NULL);
 
-    // 5. Main Loop
+    // 5. Main Loop (Unreachable if cmd_test loops forever)
     while (1) {
         k_sleep(K_FOREVER);
     }

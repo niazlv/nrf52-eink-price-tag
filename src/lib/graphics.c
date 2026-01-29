@@ -286,16 +286,15 @@ void graphics_draw_pixel(int x, int y, int color) {
     }
 }
 
-void graphics_draw_char(int x, int y, uint16_t c) {
+void graphics_draw_char_color(int x, int y, uint16_t c, int color) {
     const uint8_t *glyph = font5x7; // Default ASCII
     int index = 0;
 
     if (c >= 32 && c <= 126) {
         index = (c - 32) * 5;
     } else if (c >= 0x0410 && c <= 0x044F) { // Basic Cyrillic
-        // Map 0x0410 (A) to 0
         index = (c - 0x0410) * 5;
-        if (index < sizeof(font_cyr)) { // Check bounds
+        if (index < sizeof(font_cyr)) {
              glyph = font_cyr;
         } else {
              c = '?'; index = ('?'-32)*5;
@@ -307,32 +306,38 @@ void graphics_draw_char(int x, int y, uint16_t c) {
     for (int col = 0; col < 5; col++) {
         uint8_t line = glyph[index + col];
         for (int row = 0; row < 7; row++) {
-            graphics_draw_pixel(x + col, y + row, (line & (1 << row)) ? GFX_BLACK : GFX_WHITE);
+            // If pixel key is set, draw in 'color', else 'WHITE' (background) or 'TRANSPARENT'? 
+            // Existing logic was BLACK FG, WHITE BG.
+            // Let's assume transparent BG for flexible text, or WHITE BG?
+            // Existing: (line & (1 << row)) ? GFX_BLACK : GFX_WHITE
+            // New: If bit set -> color. If bit clear -> GFX_WHITE (keep existing BG behavior)
+            graphics_draw_pixel(x + col, y + row, (line & (1 << row)) ? color : GFX_WHITE);
         }
     }
 }
 
-void graphics_draw_string(int x, int y, const char *str) {
+void graphics_draw_char(int x, int y, uint16_t c) {
+    graphics_draw_char_color(x, y, c, GFX_BLACK);
+}
+
+void graphics_draw_string_color(int x, int y, const char *str, int color) {
     while (*str) {
         uint16_t c = (uint8_t)*str;
         
-        // UTF-8 Decoding (Basic 2-byte)
         if (c >= 0xC0) {
-            if ((c & 0xE0) == 0xC0) { // 2 bytes
+            if ((c & 0xE0) == 0xC0) { 
                 uint8_t c2 = (uint8_t)*(str + 1);
                 if ((c2 & 0xC0) == 0x80) {
                     c = ((c & 0x1F) << 6) | (c2 & 0x3F);
                     str++;
                 }
             }
-            // Add 3-byte support if needed, but Russian usually fits 2 bytes in UTF-8
         }
         
-        graphics_draw_char(x, y, c);
+        graphics_draw_char_color(x, y, c, color);
         x += 6; 
         str++;
         
-        // Auto-wrap based on rotation
         int max_x = (gfx_rotation % 2 == 0) ? DISPLAY_WIDTH : DISPLAY_HEIGHT;
         int max_y = (gfx_rotation % 2 == 0) ? DISPLAY_HEIGHT : DISPLAY_WIDTH;
         
@@ -341,8 +346,12 @@ void graphics_draw_string(int x, int y, const char *str) {
     }
 }
 
+void graphics_draw_string(int x, int y, const char *str) {
+    graphics_draw_string_color(x, y, str, GFX_BLACK);
+}
+
 // Helper for Scaled Char
-void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale) {
+void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale, int color) {
     const uint8_t *glyph = font5x7;
     int index = 0;
 
@@ -360,7 +369,7 @@ void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale) {
                 // Draw a block of scale*scale pixels
                 for (int sx=0; sx<scale; sx++) {
                     for (int sy=0; sy<scale; sy++) {
-                        graphics_draw_pixel(x + col*scale + sx, y + row*scale + sy, GFX_BLACK);
+                        graphics_draw_pixel(x + col*scale + sx, y + row*scale + sy, color);
                     }
                 }
             }
@@ -368,10 +377,9 @@ void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale) {
     }
 }
 
-void graphics_draw_string_scaled(int x, int y, const char *str, int scale) {
+void graphics_draw_string_color_scaled(int x, int y, const char *str, int color, int scale) {
     while (*str) {
         uint16_t c = (uint8_t)*str;
-        // Basic UTF-8 Decoding
         if (c >= 0xC0) {
             if ((c & 0xE0) == 0xC0) { 
                 uint8_t c2 = (uint8_t)*(str + 1);
@@ -382,12 +390,14 @@ void graphics_draw_string_scaled(int x, int y, const char *str, int scale) {
             }
         }
         
-        graphics_draw_char_scaled(x, y, c, scale);
+        graphics_draw_char_scaled(x, y, c, scale, color);
         x += (6 * scale); 
         str++;
-        
-         // Wrapping ignored for Scaled for now, assume short text (Time)
     }
+}
+
+void graphics_draw_string_scaled(int x, int y, const char *str, int scale) {
+    graphics_draw_string_color_scaled(x, y, str, GFX_BLACK, scale);
 }
 
 void graphics_draw_battery(int x, int y, int percent) {
