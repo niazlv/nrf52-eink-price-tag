@@ -34,9 +34,6 @@ void display_manager_clear(void);
 /**
  * @brief Force a display update loop (async or blocking depending on impl)
  */
-/**
- * @brief Force a display update loop (async or blocking depending on impl)
- */
 void display_manager_force_update(void);
 
 /**

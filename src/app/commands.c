@@ -1,6 +1,7 @@
 #include "commands.h"
 #include "ble/ble_service.h"
 #include "display_manager.h"
+#include "display_screens.h"
 #include "battery.h"
 #include "system_time.h"
 #include "lib/graphics.h"
@@ -52,7 +53,6 @@ void cmd_update(char *args) {
     // If not, it will just update display.
     display_manager_force_update();
     ble_printf("done\r\n");
-    ble_printf("done\r\n");
 }
 
 void cmd_fast(char *args) {
@@ -68,8 +68,6 @@ void cmd_test(char *args) {
     display_manager_enable_screensaver(false);
     
     int32_t count = 0;
-    char buf[64];
-    
     // Get MAC Address
     bt_addr_le_t addr = {0};
     size_t count_id = 1;
@@ -82,9 +80,7 @@ void cmd_test(char *args) {
     bt_addr_le_to_str(&addr, addr_str, sizeof(addr_str));
 
     // Initial Full Clean to remove artifacts
-    graphics_clear(GFX_WHITE);
-    graphics_draw_string(10, 10, "INITIAL CLEAN...");
-    graphics_draw_string(10, 30, "Please Wait");
+    display_screens_render_text("INITIAL CLEAN...\nPlease Wait");
     
     // Use Manager's Force Update which properly calls init/display_buffer/update/sleep
     display_manager_force_update();
@@ -96,22 +92,7 @@ void cmd_test(char *args) {
         int32_t delta = (int32_t)(start - last_time);
         last_time = start;
 
-        graphics_clear(GFX_WHITE);
-        graphics_draw_string(10, 10, "PARTIAL TEST");
-        
-        snprintf(buf, sizeof(buf), "Frame: %d", count++);
-        graphics_draw_string(10, 35, buf);
-        
-        snprintf(buf, sizeof(buf), "Up: %lld ms", start);
-        graphics_draw_string(10, 55, buf);
-
-        // Display MAC
-        graphics_draw_string(10, 75, "MAC:");
-        graphics_draw_string(10, 90, addr_str);
-        
-        // Delta
-        snprintf(buf, sizeof(buf), "Delta: %d ms", delta);
-        graphics_draw_string(10, 110, buf);
+        display_screens_render_partial_test(count++, start, delta, addr_str);
 
         // Use the partial update path
         display_manager_update_partial();
@@ -212,8 +193,6 @@ void cmd_anim(char *args) {
     int height = graphics_get_height();
 
     while (1) {
-        graphics_clear(GFX_WHITE);
-
         // Update Physics
         x += vx;
         y += vy;
@@ -228,17 +207,7 @@ void cmd_anim(char *args) {
         if (y < 0) y = 0;
         if (y + size > height) y = height - size;
 
-        // Draw Box
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                graphics_draw_pixel(x + i, y + j, GFX_BLACK);
-            }
-        }
-        
-        char buf[32];
-        snprintf(buf, 32, "TURBO FRAME %d", frame++);
-        // Draw at bottom
-        graphics_draw_string(10, height - 16, buf);
+        display_screens_render_animation_frame(x, y, size, frame++);
 
         display_manager_update_partial();
         k_msleep(1);
@@ -251,7 +220,6 @@ const struct shell_cmd commands[] = {
     {"HELP", cmd_help, "List commands"},
     {"SAVER", cmd_saver, "Show Status/Saver"},
     {"CLEAR", cmd_cls, "Clear buffer"},
-    {"CLEAN", cmd_clean, "Run clean cycle"},
     {"CLEAN", cmd_clean, "Run clean cycle"},
     {"UPDATE", cmd_update, "Refresh display"},
     {"FAST", cmd_fast, "Fast/Partial update"},

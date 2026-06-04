@@ -1,7 +1,50 @@
 #include "graphics.h"
 
-static uint8_t frame_buffer[BUFFER_SIZE];
-static uint8_t frame_buffer_red[BUFFER_SIZE];
+static uint8_t default_frame_buffer[BUFFER_SIZE];
+static uint8_t default_frame_buffer_red[BUFFER_SIZE];
+static graphics_canvas_t default_canvas;
+static graphics_canvas_t *active_canvas = &default_canvas;
+
+static int canvas_logical_width(const graphics_canvas_t *canvas)
+{
+    return (canvas->rotation % 2 == 0) ? canvas->width : canvas->height;
+}
+
+static int canvas_logical_height(const graphics_canvas_t *canvas)
+{
+    return (canvas->rotation % 2 == 0) ? canvas->height : canvas->width;
+}
+
+void graphics_canvas_init(graphics_canvas_t *canvas,
+                          int width,
+                          int height,
+                          uint8_t *bw_buffer,
+                          uint8_t *red_buffer,
+                          size_t buffer_size)
+{
+    if (!canvas) {
+        return;
+    }
+
+    canvas->width = width;
+    canvas->height = height;
+    canvas->rotation = 1;
+    canvas->bw_buffer = bw_buffer;
+    canvas->red_buffer = red_buffer;
+    canvas->buffer_size = buffer_size;
+}
+
+void graphics_set_canvas(graphics_canvas_t *canvas)
+{
+    if (canvas) {
+        active_canvas = canvas;
+    }
+}
+
+graphics_canvas_t *graphics_get_canvas(void)
+{
+    return active_canvas;
+}
 
 // Font 5x7 Data (moved from main.c)
 static const uint8_t font5x7[] = {
@@ -179,50 +222,81 @@ static const uint8_t font_cyr[] = {
 };
 
 void graphics_init(void) {
+    graphics_canvas_init(&default_canvas,
+                         GRAPHICS_DEFAULT_WIDTH,
+                         GRAPHICS_DEFAULT_HEIGHT,
+                         default_frame_buffer,
+                         default_frame_buffer_red,
+                         BUFFER_SIZE);
+    active_canvas = &default_canvas;
+
     // Default to White (0xFF) in BW buffer
-    memset(frame_buffer, 0xFF, BUFFER_SIZE);
+    memset(active_canvas->bw_buffer, 0xFF, active_canvas->buffer_size);
     // Default to No Red (0x00 or 0xFF depending on logic) in Red Buffer.
     // Assuming 0x00 = Transparent/No Red (User feedback: 0x00 covered nothing)
-    memset(frame_buffer_red, 0x00, BUFFER_SIZE);
+    memset(active_canvas->red_buffer, 0x00, active_canvas->buffer_size);
 }
 
 void graphics_clear(uint8_t color) {
+    if (!active_canvas || !active_canvas->bw_buffer) {
+        return;
+    }
+
     if (color == GFX_WHITE) {
-        memset(frame_buffer, 0xFF, BUFFER_SIZE);
-        memset(frame_buffer_red, 0x00, BUFFER_SIZE);
+        memset(active_canvas->bw_buffer, 0xFF, active_canvas->buffer_size);
+        if (active_canvas->red_buffer) {
+            memset(active_canvas->red_buffer, 0x00, active_canvas->buffer_size);
+        }
     } else if (color == GFX_BLACK) {
-        memset(frame_buffer, 0x00, BUFFER_SIZE);
-        memset(frame_buffer_red, 0x00, BUFFER_SIZE);
+        memset(active_canvas->bw_buffer, 0x00, active_canvas->buffer_size);
+        if (active_canvas->red_buffer) {
+            memset(active_canvas->red_buffer, 0x00, active_canvas->buffer_size);
+        }
     } else if (color == GFX_RED) {
-        memset(frame_buffer, 0xFF, BUFFER_SIZE); // White Backing? Or Black? Usually red covers. Let's keep white backing.
-        memset(frame_buffer_red, 0xFF, BUFFER_SIZE); // All Red? 1=Red?
+        memset(active_canvas->bw_buffer, 0xFF, active_canvas->buffer_size); // White Backing? Or Black? Usually red covers. Let's keep white backing.
+        if (active_canvas->red_buffer) {
+            memset(active_canvas->red_buffer, 0xFF, active_canvas->buffer_size); // All Red? 1=Red?
+        }
         // Wait, if 0x00 is Transparent, 0xFF is All Red (if 1=Red).
         // If we want FULL RED screen:
         // Set red buffer to 0xFF.
     }
 }
 
-static int gfx_rotation = 1;
-
 void graphics_set_rotation(int rotation) {
-    gfx_rotation = rotation % 4;
+    if (!active_canvas) {
+        return;
+    }
+    active_canvas->rotation = rotation % 4;
+    if (active_canvas->rotation < 0) {
+        active_canvas->rotation += 4;
+    }
 }
 
 int graphics_get_width(void) {
-    return (gfx_rotation % 2 == 0) ? DISPLAY_WIDTH : DISPLAY_HEIGHT;
+    return active_canvas ? canvas_logical_width(active_canvas) : 0;
 }
 
 int graphics_get_height(void) {
-    return (gfx_rotation % 2 == 0) ? DISPLAY_HEIGHT : DISPLAY_WIDTH;
+    return active_canvas ? canvas_logical_height(active_canvas) : 0;
 }
 
 void graphics_draw_pixel(int x, int y, int color) {
-    int w = DISPLAY_WIDTH;  // 128
-    int h = DISPLAY_HEIGHT; // 296
+    if (!active_canvas || !active_canvas->bw_buffer) {
+        return;
+    }
+
+    int w = active_canvas->width;
+    int h = active_canvas->height;
     int tx, ty;
 
+    if (x < 0 || x >= canvas_logical_width(active_canvas) ||
+        y < 0 || y >= canvas_logical_height(active_canvas)) {
+        return;
+    }
+
     // Transform Coordinates based on Rotation
-    switch (gfx_rotation) {
+    switch (active_canvas->rotation) {
         case 1: // 90 deg
             tx = w - 1 - y; // New X comes from Y
             ty = x;         // New Y comes from X
@@ -248,41 +322,83 @@ void graphics_draw_pixel(int x, int y, int color) {
     }
     
     // Physical Boundary Check (128x296)
-    if (tx < 0 || tx >= DISPLAY_WIDTH || ty < 0 || ty >= DISPLAY_HEIGHT) return;
+    if (tx < 0 || tx >= active_canvas->width || ty < 0 || ty >= active_canvas->height) return;
 
-    int idx = ty * (DISPLAY_WIDTH / 8) + (tx / 8);
+    int idx = ty * (active_canvas->width / 8) + (tx / 8);
+    if (idx < 0 || (size_t)idx >= active_canvas->buffer_size) {
+        return;
+    }
     int bit = 7 - (tx % 8);
     
     // BW Buffer Logic: 1=White, 0=Black.
     // Red Buffer Logic: 1=Red, 0=Transparent. (Assumption based on User's 0x00 fix)
     
     if (color == GFX_BLACK) { 
-        frame_buffer[idx] &= ~(1 << bit);    // BW: 0 (Black)
-        frame_buffer_red[idx] &= ~(1 << bit); // Red: 0 (Transparent)
+        active_canvas->bw_buffer[idx] &= ~(1 << bit);    // BW: 0 (Black)
+        if (active_canvas->red_buffer) {
+            active_canvas->red_buffer[idx] &= ~(1 << bit); // Red: 0 (Transparent)
+        }
     } else if (color == GFX_WHITE) {
-        frame_buffer[idx] |= (1 << bit);     // BW: 1 (White)
-        frame_buffer_red[idx] &= ~(1 << bit); // Red: 0 (Transparent)
+        active_canvas->bw_buffer[idx] |= (1 << bit);     // BW: 1 (White)
+        if (active_canvas->red_buffer) {
+            active_canvas->red_buffer[idx] &= ~(1 << bit); // Red: 0 (Transparent)
+        }
     } else if (color == GFX_RED) {
-        frame_buffer[idx] |= (1 << bit);     // BW: 1 (White)
-        frame_buffer_red[idx] |= (1 << bit);  // Red: 1 (Red)
+        active_canvas->bw_buffer[idx] |= (1 << bit);     // BW: 1 (White)
+        if (active_canvas->red_buffer) {
+            active_canvas->red_buffer[idx] |= (1 << bit);  // Red: 1 (Red)
+        }
     } else if (color == GFX_GRAY) {
         // Checkerboard: (x+y)%2 == 0 -> Black, else White
         if ((x + y) % 2 == 0) {
-            frame_buffer[idx] &= ~(1 << bit);    // Black
-            frame_buffer_red[idx] &= ~(1 << bit); // Transp
+            active_canvas->bw_buffer[idx] &= ~(1 << bit);    // Black
+            if (active_canvas->red_buffer) {
+                active_canvas->red_buffer[idx] &= ~(1 << bit); // Transp
+            }
         } else {
-            frame_buffer[idx] |= (1 << bit);     // White
-            frame_buffer_red[idx] &= ~(1 << bit); // Transp
+            active_canvas->bw_buffer[idx] |= (1 << bit);     // White
+            if (active_canvas->red_buffer) {
+                active_canvas->red_buffer[idx] &= ~(1 << bit); // Transp
+            }
         }
     } else if (color == GFX_PINK) {
         // Checkerboard: (x+y)%2 == 0 -> Red, else White
         if ((x + y) % 2 == 0) {
-            frame_buffer[idx] |= (1 << bit);     // White
-            frame_buffer_red[idx] |= (1 << bit);  // Red
+            active_canvas->bw_buffer[idx] |= (1 << bit);     // White
+            if (active_canvas->red_buffer) {
+                active_canvas->red_buffer[idx] |= (1 << bit);  // Red
+            }
         } else {
-            frame_buffer[idx] |= (1 << bit);     // White
-            frame_buffer_red[idx] &= ~(1 << bit); // Transp
+            active_canvas->bw_buffer[idx] |= (1 << bit);     // White
+            if (active_canvas->red_buffer) {
+                active_canvas->red_buffer[idx] &= ~(1 << bit); // Transp
+            }
         }
+    }
+}
+
+void graphics_fill_rect(int x, int y, int width, int height, int color)
+{
+    for (int yy = y; yy < y + height; yy++) {
+        for (int xx = x; xx < x + width; xx++) {
+            graphics_draw_pixel(xx, yy, color);
+        }
+    }
+}
+
+void graphics_draw_rect(int x, int y, int width, int height, int color)
+{
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    for (int xx = x; xx < x + width; xx++) {
+        graphics_draw_pixel(xx, y, color);
+        graphics_draw_pixel(xx, y + height - 1, color);
+    }
+    for (int yy = y; yy < y + height; yy++) {
+        graphics_draw_pixel(x, yy, color);
+        graphics_draw_pixel(x + width - 1, yy, color);
     }
 }
 
@@ -294,7 +410,7 @@ void graphics_draw_char_color(int x, int y, uint16_t c, int color) {
         index = (c - 32) * 5;
     } else if (c >= 0x0410 && c <= 0x044F) { // Basic Cyrillic
         index = (c - 0x0410) * 5;
-        if (index < sizeof(font_cyr)) {
+        if ((size_t)index < sizeof(font_cyr)) {
              glyph = font_cyr;
         } else {
              c = '?'; index = ('?'-32)*5;
@@ -338,8 +454,8 @@ void graphics_draw_string_color(int x, int y, const char *str, int color) {
         x += 6; 
         str++;
         
-        int max_x = (gfx_rotation % 2 == 0) ? DISPLAY_WIDTH : DISPLAY_HEIGHT;
-        int max_y = (gfx_rotation % 2 == 0) ? DISPLAY_HEIGHT : DISPLAY_WIDTH;
+        int max_x = graphics_get_width();
+        int max_y = graphics_get_height();
         
         if (x > max_x - 6) { x = 0; y += 8; }
         if (y > max_y - 8) break;
@@ -358,7 +474,7 @@ void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale, int color) {
     if (c >= 32 && c <= 126) index = (c - 32) * 5;
     else if (c >= 0x0410 && c <= 0x044F) {
         index = (c - 0x0410) * 5;
-        if (index < sizeof(font_cyr)) glyph = font_cyr;
+        if ((size_t)index < sizeof(font_cyr)) glyph = font_cyr;
         else { c = '?'; index = ('?'-32)*5; }
     } else { c = '?'; index = ('?'-32)*5; }
 
@@ -426,9 +542,9 @@ void graphics_draw_battery(int x, int y, int percent) {
 }
 
 const uint8_t* graphics_get_buffer(void) {
-    return frame_buffer;
+    return active_canvas ? active_canvas->bw_buffer : NULL;
 }
 
 const uint8_t* graphics_get_red_buffer(void) {
-    return frame_buffer_red;
+    return active_canvas ? active_canvas->red_buffer : NULL;
 }
