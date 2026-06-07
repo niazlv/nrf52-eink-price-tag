@@ -1,0 +1,5 @@
+/ {
+	chosen {
+		nordic,nus-uart = &uart0;
+	};
+};

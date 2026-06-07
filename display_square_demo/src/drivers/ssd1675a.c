@@ -1,4 +1,5 @@
 #include "ssd1675a.h"
+#include <string.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ssd1675a, LOG_LEVEL_INF);
 
@@ -17,6 +18,22 @@ static uint8_t lut_data[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x18, 0x04, 0x16, 0x01, 0x0A, 0x0A,
     0x0A, 0x0A, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
     0x04, 0x08 /* ЯРКОСТЬ */, 0x3C /* Длительность */, 0x07 /* Повтор */, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+// Red phase knobs for the cover photo. Defaults were 0x08, 0x3C, 0x07.
+#define COVER_RED_LEVEL   0x0F
+#define COVER_RED_TIME    0xB0
+#define COVER_RED_REPEAT  0x14
+#define COVER_RED_CUTOFF_MS 6400
+
+// Cover LUT: keep the known-good waveform shape, tune only the red phase.
+static uint8_t lut_vivid_cover[] = {
+    0x22, 0x11, 0x10, 0x00, 0x10, 0x00, 0x00, 0x11, 0x88, 0x80, 0x80, 0x80, 0x00, 0x00,
+    0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00, 0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x18, 0x04, 0x16, 0x01, 0x0A, 0x0A,
+    0x0A, 0x0A, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+    0x04, COVER_RED_LEVEL, COVER_RED_TIME, COVER_RED_REPEAT, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00
 };
 
 void ssd1675a_set_lut_byte(int index, uint8_t val) {
@@ -50,6 +67,13 @@ static void write_lut(void) {
     }
 }
 
+static void write_lut_table(const uint8_t *lut, int size) {
+    send_cmd(0x32);
+    for (int i = 0; i < size; i++) {
+        send_data(lut[i]);
+    }
+}
+
 static void set_ram_pointer(int x, int y) {
     send_cmd(0x4E); 
     send_data(x & 0xFF);
@@ -59,49 +83,49 @@ static void set_ram_pointer(int x, int y) {
 }
 
 static void configure_registers(void) {
-    send_cmd(0x74); // Set analog block control
+    send_cmd(0x74); // Analog Block
     send_data(0x54);
 
-    send_cmd(0x7E); // Set digital block control
+    send_cmd(0x7E); // Digital Block
     send_data(0x3B);
 
-    send_cmd(0x01); // Driver output: 296 gate lines (0x0127 + 1)
+    send_cmd(0x01); // Driver Output
     send_data(0x27);
     send_data(0x01);
     send_data(0x00);
 
-    send_cmd(0x3A); // Dummy line period, part of panel scan timing
+    send_cmd(0x3A); // 130Hz
     send_data(0x35);
 
-    send_cmd(0x3B); // Gate line width, part of panel scan timing
+    send_cmd(0x3B); // 130Hz
     send_data(0x04);
 
-    send_cmd(0x3C); // Border waveform control
+    send_cmd(0x3C); // Border
     send_data(0x33);
 
-    send_cmd(0x11); // Data entry mode
-    send_data(0x03); // Auto-increment X and Y after RAM writes
+    send_cmd(0x11); // Data Entry
+    send_data(0x03); // X+, Y+
 
-    send_cmd(0x44); // RAM X range in bytes: 0..15 = 128 pixels
-    send_data(0x00); // X start
-    send_data(0x0F); // X end: 128 / 8 - 1
+    send_cmd(0x44); // RAM X Address
+    send_data(0x00);
+    send_data(0x0F); // 128/8 - 1 = 15
 
-    send_cmd(0x45); // RAM Y range: 0..295
-    send_data(0x00); // Y start low byte
-    send_data(0x00); // Y start high byte
-    send_data(0x27); // Y end low byte: 0x0127 = 295
-    send_data(0x01); // Y end high byte
+    send_cmd(0x45); // RAM Y Address
+    send_data(0x00);
+    send_data(0x00);
+    send_data(0x27);
+    send_data(0x01);
 
-    send_cmd(0x04); // Source driving voltage settings
+    send_cmd(0x04); // Voltages
     send_data(0x41);
     send_data(0xA8);
     send_data(0x32);
 
-    send_cmd(0x2C); // VCOM voltage, affects contrast and ghosting
+    send_cmd(0x2C); // VCOM
     send_data(vcom_register_value);
 
 #if USE_CUSTOM_LUT
-    write_lut(); // Waveform table for pixel transitions
+    write_lut();
 #endif
 }
 
@@ -178,6 +202,28 @@ void ssd1675a_update_display(void) {
     send_data(0xC7); // Update Control (from Python)
     send_cmd(0x20); 
     ssd1675a_wait_busy();
+}
+
+void ssd1675a_update_display_vivid(void) {
+    write_lut_table(lut_vivid_cover, sizeof(lut_vivid_cover));
+    send_cmd(0x22);
+    send_data(0xC7);
+    send_cmd(0x20);
+    ssd1675a_wait_busy();
+}
+
+void ssd1675a_update_display_red_cutoff(void) {
+    write_lut_table(lut_vivid_cover, sizeof(lut_vivid_cover));
+    send_cmd(0x22);
+    send_data(0xC7);
+    send_cmd(0x20);
+
+    k_msleep(COVER_RED_CUTOFF_MS);
+
+    // Cover-photo hack: stop before the last red waves wash burgundy into pale red.
+    gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
+    k_msleep(20);
+    ssd1675a_power_off();
 }
 
 

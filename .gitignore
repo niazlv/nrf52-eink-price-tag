@@ -4,3 +4,8 @@
 
 # build
 /build*/
+build_*/
+.home
+.venv
+.DS_Store
+__pycache__/

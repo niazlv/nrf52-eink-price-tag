@@ -1,0 +1,6 @@
+{
+    "nrf-connect.applications": [
+        "${workspaceFolder}/display_square_demo",
+        "${workspaceFolder}/lut_tester"
+    ]
+}
