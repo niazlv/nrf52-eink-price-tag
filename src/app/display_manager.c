@@ -19,6 +19,12 @@ static bool keep_display_on = false;
 static bool streaming_active = false;
 static int update_counter = 59; // Start at 59 so first increment hits 60 -> Full Update
 
+// DC-balance maintenance: after this many streaming partial frames, force one
+// full 0xC7 cycle to prevent particle polarization / ghost burn-in.
+// At ~270ms/frame: 500 frames ≈ 2.25min between maintenance passes (~1-2s pause each).
+#define STREAM_REFRESH_INTERVAL 500
+static int stream_partial_count = 0;
+
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
 /* When true, the device sends TELE: lines after every display update so the
@@ -77,6 +83,18 @@ void display_manager_update_partial(void) {
     if (!gpio_dev_dm) return;
 
     if (keep_display_on) {
+        stream_partial_count++;
+
+        // Periodic DC-balance refresh: break out of streaming for one 0xC7 cycle
+        // to prevent particle polarization ghost burn-in.
+        if (streaming_active && (stream_partial_count % STREAM_REFRESH_INTERVAL == 0)) {
+            stop_streaming_if_active();
+            ssd1675a_init_partial(gpio_dev_dm);
+            ssd1675a_display_buffer_fast(graphics_get_buffer());
+            ssd1675a_update_partial();  // 0xC7: full HV cycle with current LUT
+            return;                     // streaming restarts on next call
+        }
+
         if (!streaming_active) {
             ssd1675a_init_partial(gpio_dev_dm);
             ssd1675a_display_buffer_fast(graphics_get_buffer());
@@ -248,21 +266,32 @@ void display_manager_show_text(const char *text) {
 }
 
 void display_manager_clean(void) {
-     if (!gpio_dev_dm) return;
-    
-    // Cycle 3 times
-    for (int i=0; i<3; i++) {
+    if (!gpio_dev_dm) return;
+    stop_streaming_if_active();
+    stream_partial_count = 0;
+    for (int i = 0; i < 7; i++) {
         graphics_clear(GFX_BLACK);
         perform_display_update();
-        k_msleep(500);
-        
         graphics_clear(GFX_WHITE);
         perform_display_update();
-        k_msleep(500);
-        
         graphics_clear(GFX_RED);
         perform_display_update();
-        k_msleep(500);
+    }
+    graphics_clear(GFX_WHITE);
+    perform_display_update();
+}
+
+void display_manager_deep_clean(int cycles) {
+    if (!gpio_dev_dm) return;
+    stop_streaming_if_active();
+    stream_partial_count = 0;
+    for (int i = 0; i < cycles; i++) {
+        graphics_clear(GFX_BLACK);
+        perform_display_update();
+        graphics_clear(GFX_WHITE);
+        perform_display_update();
+        graphics_clear(GFX_RED);
+        perform_display_update();
     }
     graphics_clear(GFX_WHITE);
     perform_display_update();

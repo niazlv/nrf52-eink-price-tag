@@ -22,9 +22,15 @@ void display_manager_update_status(void);
 void display_manager_show_text(const char *text);
 
 /**
- * @brief Run a cleaning cycle (Black/White/Red)
+ * @brief Run a cleaning cycle (7× B/W/R full updates)
  */
 void display_manager_clean(void);
+
+/**
+ * @brief Deep clean: N× B/W/R full updates. Use after extended animation.
+ *        cycles=20 takes ~20 × 3 × ~15s ≈ 15 minutes for full DC reset.
+ */
+void display_manager_deep_clean(int cycles);
 
 /**
  * @brief Clear display to white

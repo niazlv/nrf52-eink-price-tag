@@ -80,9 +80,22 @@ void cmd_cls(char *args)
 void cmd_clean(char *args)
 {
     display_manager_enable_screensaver(false);
-    ble_printf("cleaning...\r\n");
+    ble_printf("cleaning (7 cycles)...\r\n");
     display_manager_clean();
     ble_printf("done\r\n");
+}
+
+void cmd_nuke(char *args)
+{
+    int n = (args && *args) ? atoi(args) : 20;
+    if (n < 5)  n = 5;
+    if (n > 50) n = 50;
+    display_manager_enable_screensaver(false);
+    // Each cycle: 3 full updates (B/W/R) × ~15s each = ~45s/cycle
+    ble_printf("NUKE: %d cycles (~%d min) — clearing ghost...\r\n",
+               n, (n * 3 * 15 + 30) / 60);
+    display_manager_deep_clean(n);
+    ble_printf("NUKE: done\r\n");
 }
 
 void cmd_saver(char *args)
@@ -529,7 +542,8 @@ const struct shell_cmd commands[] = {
     {"SS:",         cmd_ss,         "Screensaver: SS:0/1"},
     {"DSAVER",      cmd_dsaver,     "Dynamic saver: DSAVER 0/1"},
     {"CLEAR",       cmd_cls,        "Clear display buffer"},
-    {"CLEAN",       cmd_clean,      "Run clean cycle"},
+    {"CLEAN",       cmd_clean,      "Run clean cycle (7×B/W/R)"},
+    {"NUKE:",       cmd_nuke,       "Deep ghost clear: NUKE:20 (default 20 cycles, ~15min)"},
     {"UPDATE",      cmd_update,     "Full display refresh"},
     {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
     {"FAST",        cmd_fast,       "Fast/partial update"},
