@@ -25,7 +25,11 @@ void ssd1675a_update_display(void);
 void ssd1675a_sleep(void);
 void ssd1675a_set_vcom_register(uint8_t val);
 void ssd1675a_set_lut_byte(int index, uint8_t val);
+uint8_t ssd1675a_get_lut_byte(int index);
+void ssd1675a_reset_lut(void);
 void ssd1675a_wait_busy(void);
+
+#define SSD1675A_LUT_SIZE 70
 
 // Partial Update
 typedef enum {

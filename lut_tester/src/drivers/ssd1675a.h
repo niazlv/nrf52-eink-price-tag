@@ -24,10 +24,9 @@ void ssd1675a_sleep(void);
 void ssd1675a_set_vcom_register(uint8_t val);
 void ssd1675a_set_lut_byte(int index, uint8_t val);
 uint8_t ssd1675a_get_lut_byte(int index);
+void ssd1675a_reset_lut(void);
 void ssd1675a_wait_busy(void);
 void ssd1675a_load_default_lut(void);
-void ssd1675a_reset_lut(void);
-void ssd1675a_clear_with_factory_lut(const struct device *gpio_dev);
 
 typedef enum {
     SSD1675A_PARTIAL_MODE_TURBO,

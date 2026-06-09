@@ -3,11 +3,30 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(lut_tester)
 
+# Inject build timestamp as C preprocessor defines when passed from Makefile.
+# Avoids stale __DATE__/__TIME__ from incremental builds.
+if(DEFINED APP_BUILD_YEAR)
+  zephyr_compile_definitions(
+    APP_BUILD_YEAR=${APP_BUILD_YEAR}
+    APP_BUILD_MONTH=${APP_BUILD_MONTH}
+    APP_BUILD_DAY=${APP_BUILD_DAY}
+    APP_BUILD_HOUR=${APP_BUILD_HOUR}
+    APP_BUILD_MIN=${APP_BUILD_MIN}
+    APP_BUILD_SEC=${APP_BUILD_SEC}
+  )
+  message(STATUS "Build time: ${APP_BUILD_YEAR}-${APP_BUILD_MONTH}-${APP_BUILD_DAY} ${APP_BUILD_HOUR}:${APP_BUILD_MIN}:${APP_BUILD_SEC}")
+endif()
+
 target_sources(app PRIVATE
   src/main.c
   src/drivers/soft_spi.c
   src/drivers/ssd1675a.c
   src/lib/graphics.c
+  src/lib/life.c
+  src/app/battery.c
+  src/app/display_manager.c
+  src/app/display_screens.c
+  src/app/system_time.c
   src/ble/ble_service.c
 )
 
