@@ -288,7 +288,45 @@ static uint8_t lut_turbo[] = {
     0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-static uint8_t lut_fast[70]; 
+// ANIM partial LUT — direct B&W drive, 8 frames = 64ms wave.
+// LUT0 (black pixels): all VSH1 — drives black to surface.
+// LUT1 (white pixels): all VSL  — pulls black away, reveals white.
+// LUT2-4: zero — red/VCOM unchanged during animation frames.
+// Mode 3. Combine with begin/end streaming to eliminate HV cycling overhead.
+static uint8_t lut_anim[] = {
+    0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0: all VSH1 → black
+    0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1: all VSL  → white
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT2: no drive
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT3: no drive
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT4: VCOM always 0!
+    0x04, 0x04, 0x00, 0x00, 0x00,              // Ph0: TA=4, TB=4, RP=0 → 8f=64ms
+    0x00, 0x00, 0x00, 0x00, 0x00,              // Ph1-Ph6: idle
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+// CLEAN partial LUT — same B&W direct drive but TA=TB=9 → 18 frames = 144ms wave.
+// Cleaner result than ANIM: deeper black, cleaner white erase. ~6fps with streaming.
+// Mode 4. DC-balanced by design (equal drive frames for each polarity).
+static uint8_t lut_clean[] = {
+    0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0: all VSH1 → black
+    0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1: all VSL  → white
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT2: no drive
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT3: no drive
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT4: VCOM always 0!
+    0x09, 0x09, 0x00, 0x00, 0x00,              // Ph0: TA=9, TB=9, RP=0 → 18f=144ms
+    0x00, 0x00, 0x00, 0x00, 0x00,              // Ph1-Ph6: idle
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+static uint8_t lut_fast[70];
 
 void ssd1675a_init_fast_lut(void) {
     memcpy(lut_fast, lut_data, sizeof(lut_fast));
@@ -303,36 +341,60 @@ void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode) {
     current_partial_mode = mode;
 }
 
+static uint8_t *select_partial_lut(void) {
+    if (use_custom_lut) return lut_data;
+    switch (current_partial_mode) {
+        case SSD1675A_PARTIAL_MODE_TURBO:    return lut_turbo;
+        case SSD1675A_PARTIAL_MODE_BALANCED: return lut_balanced;
+        case SSD1675A_PARTIAL_MODE_STABLE:   return lut_stable;
+        case SSD1675A_PARTIAL_MODE_ANIM:     return lut_anim;
+        case SSD1675A_PARTIAL_MODE_CLEAN:    return lut_clean;
+        default:                             return lut_balanced;
+    }
+}
+
 void ssd1675a_update_partial(void) {
-    uint8_t *lut_ptr;
-
-    if (use_custom_lut) {
-        lut_ptr = lut_data;
-    } else {
-        lut_ptr = lut_balanced;
-        switch (current_partial_mode) {
-            case SSD1675A_PARTIAL_MODE_TURBO:   lut_ptr = lut_turbo;   break;
-            case SSD1675A_PARTIAL_MODE_BALANCED: lut_ptr = lut_balanced; break;
-            case SSD1675A_PARTIAL_MODE_STABLE:  lut_ptr = lut_stable;  break;
-        }
-    }
-
-    // Ensure PLL is maxed out for speed (0x3C = 50Hz/Higher)
-    // REMOVED: Causing Instability/Hangs
-    // send_cmd(0x30);
-    // send_data(0x3C);
-
+    uint8_t *lut_ptr = select_partial_lut();
     send_cmd(0x32);
-    for (int i = 0; i < 70; i++) { // All LUTs are 70 bytes
-        send_data(lut_ptr[i]);
-    }
-
-    send_cmd(0x22); 
-    send_data(0xC7); // Update Control
-    send_cmd(0x20); 
+    for (int i = 0; i < 70; i++) { send_data(lut_ptr[i]); }
+    // 0xC7: Enable CLK + Analog → Display Mode 1 → Disable Analog + CLK
+    // The analog enable/disable charges ±15V rails — ~700ms overhead per call.
+    send_cmd(0x22);
+    send_data(0xC7);
+    send_cmd(0x20);
     ssd1675a_wait_busy();
-    
-    // Restore Default LUT is REDUNDANT (update_display does it). Removed for speed.
+}
+
+// ── Streaming mode: enable HV once, update many frames, disable HV once ───
+// Usage: begin_streaming() → [update_frame_stream() × N] → end_streaming()
+// Reduces per-frame time from ~700ms to ~LUT wave time (~64ms for lut_anim).
+
+void ssd1675a_begin_streaming(void) {
+    uint8_t *lut_ptr = select_partial_lut();
+    send_cmd(0x32);
+    for (int i = 0; i < 70; i++) { send_data(lut_ptr[i]); }
+    // 0xC0: Enable CLK + Enable Analog only (no display yet).
+    // Charges ±15V rails — one-time cost ~600ms.
+    send_cmd(0x22);
+    send_data(0xC0);
+    send_cmd(0x20);
+    ssd1675a_wait_busy();
+}
+
+void ssd1675a_update_frame_stream(void) {
+    // 0x04: Display Mode 1 only — HV rails already on, no power cycling.
+    // BUSY duration = LUT wave time only (~64ms for lut_anim 8-frame LUT).
+    send_cmd(0x22);
+    send_data(0x04);
+    send_cmd(0x20);
+    ssd1675a_wait_busy();
+}
+
+void ssd1675a_end_streaming(void) {
+    // 0x03: Disable Analog + CLK — powers down ±15V rails.
+    send_cmd(0x22);
+    send_data(0x03);
+    send_cmd(0x20);
 }
 
 // Helper to reload standard LUT (if needed by main app)

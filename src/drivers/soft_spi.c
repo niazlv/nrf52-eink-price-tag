@@ -25,14 +25,14 @@ void soft_spi_write_9bit(uint8_t data, uint8_t is_data) {
     // 1. Command/Data Bit (0=Cmd, 1=Data)
     gpio_pin_set(spi_gpio_dev, PIN_MOSI, is_data ? 1 : 0);
     gpio_pin_set(spi_gpio_dev, PIN_CLK, 1);
-    k_busy_wait(1); 
     gpio_pin_set(spi_gpio_dev, PIN_CLK, 0);
 
     // 2. 8 Data Bits (MSB first)
+    // No k_busy_wait: nRF52 GPIO at 64MHz gives ~150ns per toggle → ~6MHz effective
+    // clock, well within SSD1675A's 20MHz SPI max. Saves ~42ms per full frame.
     for (int i = 0; i < 8; i++) {
         gpio_pin_set(spi_gpio_dev, PIN_MOSI, (data & 0x80) ? 1 : 0);
         gpio_pin_set(spi_gpio_dev, PIN_CLK, 1);
-        k_busy_wait(1); 
         gpio_pin_set(spi_gpio_dev, PIN_CLK, 0);
         data <<= 1;
     }

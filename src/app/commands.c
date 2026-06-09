@@ -150,10 +150,10 @@ void cmd_test(char *args)
 
 void cmd_mode(char *args)
 {
-    if (!args || !*args) { ble_printf("usage: MODE: 0-2\r\n"); return; }
+    if (!args || !*args) { ble_printf("usage: MODE: 0-4\r\n"); return; }
     int m = atoi(args);
     display_manager_set_partial_mode(m);
-    ble_printf("Mode Set: %d (0=Turbo, 1=Bal, 2=Stab)\r\n", m);
+    ble_printf("Mode Set: %d (0=Turbo,1=Bal,2=Stab,3=Anim,4=Clean)\r\n", m);
 }
 
 void cmd_text(char *args)
@@ -233,6 +233,10 @@ void cmd_anim(char *args)
     graphics_clear(GFX_WHITE);
     display_manager_force_update();
 
+    // Charge ±15V rails once — one-time ~600ms cost.
+    // Subsequent frames use update_frame_stream() which skips HV cycling.
+    display_manager_begin_streaming();
+
     int64_t last_ms = k_uptime_get();
 
     while (1) {
@@ -247,11 +251,11 @@ void cmd_anim(char *args)
         last_ms = now;
 
         display_screens_render_animation_frame(x, y, size, frame++, delta);
-        display_manager_update_partial();
-        k_msleep(1);
+        display_manager_update_frame_stream();  // ~64ms: LUT wave only, no HV cycle
 
-        if (frame % 100 == 0) ble_printf("Anim #%d  %dms/frame\r\n", frame, (int)delta);
+        if (frame % 50 == 0) ble_printf("Anim #%d  %dms/frame\r\n", frame, (int)delta);
     }
+    // Note: end_streaming() unreachable in infinite loop; HV discharges on reset.
 }
 
 void cmd_debug_vcom(char *args)
@@ -530,7 +534,7 @@ const struct shell_cmd commands[] = {
     {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
     {"FAST",        cmd_fast,       "Fast/partial update"},
     {"FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display"},
-    {"MODE:",       cmd_mode,       "Partial mode: MODE: 0=Turbo 1=Bal 2=Stab"},
+    {"MODE:",       cmd_mode,       "Partial mode: 0=Turbo 1=Bal 2=Stab 3=Anim 4=Clean"},
     {"TEXT:",       cmd_text,       "Draw text on display"},
     {"ROT:",        cmd_rot,        "Set rotation 0-3"},
     {"ANIM",        cmd_anim,       "Run bouncing-ball animation"},

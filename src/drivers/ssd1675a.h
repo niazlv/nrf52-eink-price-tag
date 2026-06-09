@@ -41,11 +41,16 @@ void ssd1675a_wait_busy(void);
 typedef enum {
     SSD1675A_PARTIAL_MODE_TURBO,
     SSD1675A_PARTIAL_MODE_BALANCED,
-    SSD1675A_PARTIAL_MODE_STABLE
+    SSD1675A_PARTIAL_MODE_STABLE,
+    SSD1675A_PARTIAL_MODE_ANIM,   // 8f=64ms — fast, ghosty
+    SSD1675A_PARTIAL_MODE_CLEAN   // 18f=144ms — cleaner black/white, ~6fps w/ streaming
 } ssd1675a_partial_mode_t;
 
 void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode);
 void ssd1675a_update_partial(void);
+void ssd1675a_begin_streaming(void);
+void ssd1675a_update_frame_stream(void);
+void ssd1675a_end_streaming(void);
 void ssd1675a_load_default_lut(void);
 
 #endif // SSD1675A_H

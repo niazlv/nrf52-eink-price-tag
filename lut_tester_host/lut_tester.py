@@ -203,6 +203,26 @@ FACTORY_LUT = bytes([
 ])
 
 
+# ANIM partial LUT — transition-based, B&W only, 4 frames = ~32ms wave.
+# Unchanged pixels: zero drive. Changed: 1f shake + 3f main drive.
+# Use MODE:3 on device. Pair with periodic full refresh every N frames.
+# Paste: 0000000000000060000000000000900000000000000000000000000000000000000000000000010300000000000000000000000000000000000000000000000000000000
+ANIM_PARTIAL_LUT = bytes([
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # LUT0: static (no drive)
+    0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # LUT1: →white  A:VSH1+B:VSL
+    0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # LUT2: →black  A:VSL+B:VSH1
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # LUT3: static (no drive)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  # LUT4: VCOM (always 0!)
+    0x01, 0x03, 0x00, 0x00, 0x00,              # Ph0: TA=1, TB=3, RP=0 → 4f
+    0x00, 0x00, 0x00, 0x00, 0x00,              # Ph1-Ph6: idle
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+])
+
+
 # ── BWR frame helpers ──────────────────────────────────────────────────────
 
 def _make_phys_buffers(logical_img):
@@ -678,6 +698,10 @@ class App:
         tk.Button(parent, text="Factory", bg=C['bg3'], fg=C['fg2'],
             relief='flat', padx=10, pady=4, font=('Menlo', 11),
             command=self._on_factory).pack(side='left', padx=4)
+
+        tk.Button(parent, text="Anim LUT", bg='#2d2d3f', fg='#9d7fd4',
+            relief='flat', padx=10, pady=4, font=('Menlo', 11),
+            command=self._on_anim_lut).pack(side='left', padx=4)
 
         tk.Button(parent, text="↓ GET LUT", bg='#2d3848', fg=C['accent'],
             relief='flat', padx=10, pady=4, font=('Menlo', 11, 'bold'),
@@ -1773,6 +1797,12 @@ class App:
         self._lut_to_vars()
         self._refresh_waveform()
         self._log_info("Loaded factory LUT")
+
+    def _on_anim_lut(self):
+        self.lut[:] = ANIM_PARTIAL_LUT
+        self._lut_to_vars()
+        self._refresh_waveform()
+        self._log_info("Loaded ANIM partial LUT (4 frames, ~32ms wave) — use MODE:3 on device")
 
     def _on_import(self):
         path = filedialog.askopenfilename(

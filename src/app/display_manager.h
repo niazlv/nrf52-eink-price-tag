@@ -37,9 +37,17 @@ void display_manager_clear(void);
 void display_manager_force_update(void);
 
 /**
- * @brief Force a partial (fast) display update
+ * @brief Force a partial (fast) display update (full HV cycle, ~700ms overhead)
  */
 void display_manager_update_partial(void);
+
+/**
+ * @brief Streaming animation mode: charge HV rails once, then call
+ *        update_frame_stream() per frame (~LUT wave time only), then end_streaming().
+ */
+void display_manager_begin_streaming(void);
+void display_manager_update_frame_stream(void);
+void display_manager_end_streaming(void);
 
 /**
  * @brief Set the partial update mode (0=Turbo, 1=Balanced, 2=Stable)

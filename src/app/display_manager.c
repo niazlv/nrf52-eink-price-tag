@@ -15,7 +15,8 @@ LOG_MODULE_REGISTER(display_manager, LOG_LEVEL_INF);
 static const struct device *gpio_dev_dm;
 
 static bool screensaver_enabled = true;
-static bool keep_display_on = false; // New flag for animations
+static bool keep_display_on = false;
+static bool streaming_active = false;
 static int update_counter = 59; // Start at 59 so first increment hits 60 -> Full Update
 
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
@@ -37,6 +38,13 @@ static int32_t lut_test_max_ms   = 0;
 static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
 
 K_MUTEX_DEFINE(display_lock);
+
+static void stop_streaming_if_active(void) {
+    if (streaming_active) {
+        ssd1675a_end_streaming();
+        streaming_active = false;
+    }
+}
 
 void display_manager_init(void) {
     gpio_dev_dm = DEVICE_DT_GET(DT_NODELABEL(gpio0));
@@ -68,32 +76,49 @@ static void perform_display_update(void) {
 void display_manager_update_partial(void) {
     if (!gpio_dev_dm) return;
 
-    // k_mutex_lock(&display_lock, K_FOREVER);
-
-    // Use Partial Init (Skips HW Reset to preserve RAM)
-    ssd1675a_init_partial(gpio_dev_dm);
-    
-    // Note: display_buffer writes to the controller's RAM. 
-    // Partial update relies on the new data being there.
-    // Optimization: Skip Red Buffer write
-    ssd1675a_display_buffer_fast(graphics_get_buffer());
-    ssd1675a_update_partial(); // Uses the custom LUT
-    
-    if (!screensaver_enabled && !keep_display_on) {
-        ssd1675a_sleep();
-        ssd1675a_power_off();
+    if (keep_display_on) {
+        if (!streaming_active) {
+            ssd1675a_init_partial(gpio_dev_dm);
+            ssd1675a_display_buffer_fast(graphics_get_buffer());
+            ssd1675a_begin_streaming();
+            streaming_active = true;
+        } else {
+            ssd1675a_display_buffer_fast(graphics_get_buffer());
+        }
+        ssd1675a_update_frame_stream();
+    } else {
+        stop_streaming_if_active();
+        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        ssd1675a_update_partial();
+        if (!screensaver_enabled) {
+            ssd1675a_sleep();
+            ssd1675a_power_off();
+        }
     }
-
-    // k_mutex_unlock(&display_lock);
 }
 
 
 
 void display_manager_set_partial_mode(int mode) {
-    // No lock needed for simple variable set, but safe to add if complex
+    stop_streaming_if_active();  // new LUT must be loaded in next begin_streaming()
     if (mode == 0) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
     else if (mode == 1) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_BALANCED);
     else if (mode == 2) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
+    else if (mode == 3) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_ANIM);
+    else if (mode == 4) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_CLEAN);
+}
+
+void display_manager_begin_streaming(void) {
+    ssd1675a_begin_streaming();
+}
+
+void display_manager_update_frame_stream(void) {
+    ssd1675a_update_frame_stream();
+}
+
+void display_manager_end_streaming(void) {
+    ssd1675a_end_streaming();
 }
 
 void display_manager_reset_lut_test(void) {
@@ -102,6 +127,7 @@ void display_manager_reset_lut_test(void) {
     lut_test_cur_ms  = 0;
     lut_test_min_ms  = 0;
     lut_test_max_ms  = 0;
+    stop_streaming_if_active();  // reload LUT on next begin_streaming()
 }
 
 void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
@@ -136,13 +162,15 @@ void display_manager_update_lut_test(void) {
 
     /* Write BOTH BW and Red buffers so the red track in the ghosting test
      * is visible. ssd1675a_display_buffer_fast() skips the red buffer. */
-    ssd1675a_init_partial(gpio_dev_dm);
-    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
-    ssd1675a_update_partial();
-    if (!screensaver_enabled && !keep_display_on) {
-        ssd1675a_sleep();
-        ssd1675a_power_off();
+    if (!streaming_active) {
+        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+        ssd1675a_begin_streaming();
+        streaming_active = true;
+    } else {
+        ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     }
+    ssd1675a_update_frame_stream();
 
     /* Send telemetry every frame once we have a valid measurement (frame >= 2). */
     if (tele_enabled && delta_ms > 0) {
@@ -154,6 +182,9 @@ void display_manager_update_lut_test(void) {
 }
 
 void display_manager_set_screensaver_mode(int mode) {
+    if (mode != screensaver_mode) {
+        stop_streaming_if_active();
+    }
     screensaver_mode = mode;
     if (mode == SCREENSAVER_MODE_DYNAMIC) {
         display_manager_set_keep_on(true);
@@ -311,10 +342,12 @@ void display_manager_set_rotation(int rot) {
 }
 
 void display_manager_set_keep_on(bool enable) {
+    if (!enable) {
+        stop_streaming_if_active();
+    }
     keep_display_on = enable;
     if (!enable && !screensaver_enabled) {
-         // If disabling keep-on and screensaver is also off, power down now
-         ssd1675a_sleep();
-         ssd1675a_power_off();
+        ssd1675a_sleep();
+        ssd1675a_power_off();
     }
 }
