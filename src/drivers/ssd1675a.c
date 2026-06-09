@@ -41,8 +41,21 @@ uint8_t ssd1675a_get_lut_byte(int index) {
     return 0;
 }
 
+static bool use_custom_lut = false;
+
+void ssd1675a_set_use_custom_lut(bool use)
+{
+    use_custom_lut = use;
+}
+
+bool ssd1675a_get_use_custom_lut(void)
+{
+    return use_custom_lut;
+}
+
 void ssd1675a_reset_lut(void) {
     memcpy(lut_data, lut_data_default, sizeof(lut_data));
+    use_custom_lut = false;
 }
 
 static void send_cmd(uint8_t cmd) {
@@ -270,21 +283,17 @@ void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode) {
 }
 
 void ssd1675a_update_partial(void) {
-    uint8_t *lut_ptr = lut_balanced; // Default
+    uint8_t *lut_ptr;
 
-    switch (current_partial_mode) {
-        case SSD1675A_PARTIAL_MODE_TURBO: 
-            lut_ptr = lut_turbo; 
-            // LOG_INF("Partial: Turbo");
-            break;
-        case SSD1675A_PARTIAL_MODE_BALANCED: 
-            lut_ptr = lut_balanced; 
-            // LOG_INF("Partial: Balanced");
-            break;
-        case SSD1675A_PARTIAL_MODE_STABLE: 
-            lut_ptr = lut_stable; 
-            // LOG_INF("Partial: Stable");
-            break;
+    if (use_custom_lut) {
+        lut_ptr = lut_data;
+    } else {
+        lut_ptr = lut_balanced;
+        switch (current_partial_mode) {
+            case SSD1675A_PARTIAL_MODE_TURBO:   lut_ptr = lut_turbo;   break;
+            case SSD1675A_PARTIAL_MODE_BALANCED: lut_ptr = lut_balanced; break;
+            case SSD1675A_PARTIAL_MODE_STABLE:  lut_ptr = lut_stable;  break;
+        }
     }
 
     // Ensure PLL is maxed out for speed (0x3C = 50Hz/Higher)

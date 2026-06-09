@@ -27,6 +27,12 @@ void ssd1675a_set_vcom_register(uint8_t val);
 void ssd1675a_set_lut_byte(int index, uint8_t val);
 uint8_t ssd1675a_get_lut_byte(int index);
 void ssd1675a_reset_lut(void);
+
+/* Force all updates (full and partial) to use lut_data[] loaded via LUTW/LW.
+ * When false, partial updates use the built-in turbo/balanced/stable tables. */
+void ssd1675a_set_use_custom_lut(bool use);
+bool ssd1675a_get_use_custom_lut(void);
+
 void ssd1675a_wait_busy(void);
 
 #define SSD1675A_LUT_SIZE 70

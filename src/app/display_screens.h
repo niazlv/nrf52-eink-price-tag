@@ -2,6 +2,7 @@
 #define APP_DISPLAY_SCREENS_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 
 typedef struct {
@@ -20,6 +21,20 @@ void display_screens_render_partial_test(int32_t frame,
                                          int64_t uptime_ms,
                                          int32_t delta_ms,
                                          const char *addr);
-void display_screens_render_animation_frame(int x, int y, int size, int frame);
+void display_screens_render_animation_frame(int x, int y, int size, int frame,
+                                             int32_t delta_ms);
+
+/**
+ * @brief Render LUT test scene: moving bands + frame counter + timing stats.
+ *
+ * @param frame          Frame index (0-based)
+ * @param delta_ms       Time since last frame (0 on first frame)
+ * @param min_ms         Minimum observed frame time
+ * @param max_ms         Maximum observed frame time
+ * @param custom_lut     true if lut_data[] is a user-loaded LUT
+ */
+void display_screens_render_lut_test(int32_t frame, int32_t delta_ms,
+                                     int32_t min_ms, int32_t max_ms,
+                                     bool custom_lut);
 
 #endif // APP_DISPLAY_SCREENS_H

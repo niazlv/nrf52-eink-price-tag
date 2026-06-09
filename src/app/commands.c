@@ -38,6 +38,10 @@ static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
 static int fw_written;
 static int rw_written;
 
+/* When host_mode=true the device sends machine-readable TELE: lines after
+ * every display update so the host app can track actual frame timing. */
+static bool host_mode = false;
+
 /* ── Hex helpers ─────────────────────────────────────────────────────────── */
 
 static int hex_nibble(char c)
@@ -89,16 +93,30 @@ void cmd_saver(char *args)
 
 void cmd_update(char *args)
 {
-    ble_printf("updating...\r\n");
+    if (!host_mode) ble_printf("updating...\r\n");
+    int64_t t0 = k_uptime_get();
     display_manager_force_update();
-    ble_printf("done\r\n");
+    int32_t elapsed = (int32_t)(k_uptime_get() - t0);
+    if (host_mode) {
+        ble_printf("TELE:full time=%dms lut=%s\r\n",
+                   (int)elapsed, ssd1675a_get_use_custom_lut() ? "custom" : "builtin");
+    } else {
+        ble_printf("done %dms\r\n", (int)elapsed);
+    }
 }
 
 void cmd_fast(char *args)
 {
-    ble_printf("fast update...\r\n");
+    if (!host_mode) ble_printf("fast update...\r\n");
+    int64_t t0 = k_uptime_get();
     display_manager_update_partial();
-    ble_printf("done\r\n");
+    int32_t elapsed = (int32_t)(k_uptime_get() - t0);
+    if (host_mode) {
+        ble_printf("TELE:fast time=%dms lut=%s\r\n",
+                   (int)elapsed, ssd1675a_get_use_custom_lut() ? "custom" : "builtin");
+    } else {
+        ble_printf("done %dms\r\n", (int)elapsed);
+    }
 }
 
 void cmd_test(char *args)
@@ -215,6 +233,8 @@ void cmd_anim(char *args)
     graphics_clear(GFX_WHITE);
     display_manager_force_update();
 
+    int64_t last_ms = k_uptime_get();
+
     while (1) {
         x += vx;  y += vy;
         if (x <= 0 || x + size >= width)  vx = -vx;
@@ -222,11 +242,15 @@ void cmd_anim(char *args)
         x = (x < 0) ? 0 : (x + size > width  ? width  - size : x);
         y = (y < 0) ? 0 : (y + size > height ? height - size : y);
 
-        display_screens_render_animation_frame(x, y, size, frame++);
+        int64_t now = k_uptime_get();
+        int32_t delta = (int32_t)(now - last_ms);
+        last_ms = now;
+
+        display_screens_render_animation_frame(x, y, size, frame++, delta);
         display_manager_update_partial();
         k_msleep(1);
 
-        if (frame % 100 == 0) ble_printf("Anim frame %d\r\n", frame);
+        if (frame % 100 == 0) ble_printf("Anim #%d  %dms/frame\r\n", frame, (int)delta);
     }
 }
 
@@ -267,7 +291,8 @@ void cmd_lutw(char *args)
         if (b < 0) { ble_printf("LUTW: bad hex at %d\r\n", i * 2); return; }
         ssd1675a_set_lut_byte(i, (uint8_t)b);
     }
-    ble_printf("LUT written (%d bytes)\r\n", SSD1675A_LUT_SIZE);
+    ssd1675a_set_use_custom_lut(true);
+    ble_printf("LUT written (%d bytes) — custom LUT active\r\n", SSD1675A_LUT_SIZE);
 }
 
 /* LW:idx:HH..  — write N bytes starting at idx */
@@ -286,7 +311,8 @@ void cmd_lw(char *args)
         if (b < 0) { ble_printf("LW: bad hex at %d\r\n", i); return; }
         ssd1675a_set_lut_byte(idx + i, (uint8_t)b);
     }
-    ble_printf("LW: wrote %d bytes from [%d]\r\n", nbytes, idx);
+    ssd1675a_set_use_custom_lut(true);
+    ble_printf("LW: wrote %d bytes from [%d] — custom LUT active\r\n", nbytes, idx);
 }
 
 /* L:n=HH | L:DUMP | L:RESET */
@@ -314,7 +340,8 @@ void cmd_l_byte(char *args)
     int idx = atoi(tmp);
     uint8_t val = (uint8_t)strtoul(eq + 1, NULL, 16);
     ssd1675a_set_lut_byte(idx, val);
-    ble_printf("L[%d]=0x%02X\r\n", idx, val);
+    ssd1675a_set_use_custom_lut(true);
+    ble_printf("L[%d]=0x%02X — custom LUT active\r\n", idx, val);
 }
 
 /* FW:offset:HH..  — write BW frame bytes */
@@ -376,11 +403,20 @@ void cmd_fapply(char *args)
 {
     display_manager_enable_screensaver(false);
     k_msleep(150);  /* wait for screensaver thread to finish current cycle */
-    ble_printf("FAPPLY bw=%d rw=%d...\r\n", fw_written, rw_written);
+    int bw = fw_written, rw = rw_written;
     fw_written = 0;
     rw_written = 0;
+    if (!host_mode) ble_printf("FAPPLY bw=%d rw=%d...\r\n", bw, rw);
+    int64_t t0 = k_uptime_get();
     display_manager_force_update();
-    ble_printf("FAPPLY done\r\n");
+    int32_t elapsed = (int32_t)(k_uptime_get() - t0);
+    if (host_mode) {
+        ble_printf("TELE:fapply time=%dms bw=%d rw=%d lut=%s\r\n",
+                   (int)elapsed, bw, rw,
+                   ssd1675a_get_use_custom_lut() ? "custom" : "builtin");
+    } else {
+        ble_printf("FAPPLY done %dms\r\n", (int)elapsed);
+    }
 }
 
 /* SS:0/1 — screensaver on/off (lut_tester_host compatible) */
@@ -399,6 +435,81 @@ void cmd_vcom(char *args)
     uint8_t v = (uint8_t)strtoul(args, NULL, 16);
     ssd1675a_set_vcom_register(v);
     ble_printf("VCOM=0x%02X\r\n", v);
+}
+
+/* HOST:0/1 — switch device into machine-readable telemetry mode */
+void cmd_host(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("HOST:%s\r\n", host_mode ? "1" : "0");
+        return;
+    }
+    host_mode = (atoi(args) != 0);
+    display_manager_set_tele_enabled(host_mode);
+    /* Always respond in human-readable format to confirm the switch */
+    ble_printf("HOST:%s\r\n", host_mode ? "1" : "0");
+}
+
+/* STAT — snapshot of current LUT test timing stats + device state */
+void cmd_stat(char *args)
+{
+    int32_t frame, cur_ms, min_ms, max_ms;
+    display_manager_get_lut_test_stats(&frame, &cur_ms, &min_ms, &max_ms);
+    ble_printf("STAT:lut=%s host=%s frame=%d last=%d min=%d max=%d\r\n",
+               ssd1675a_get_use_custom_lut() ? "custom" : "builtin",
+               host_mode ? "1" : "0",
+               (int)frame, (int)cur_ms, (int)min_ms, (int)max_ms);
+}
+
+/* LUTUSE:0/1 — force-toggle whether lut_data[] is used for partial updates */
+void cmd_lutuse(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("LUTUSE:%s\r\n",
+                   ssd1675a_get_use_custom_lut() ? "1 (custom)" : "0 (builtin)");
+        return;
+    }
+    int en = atoi(args);
+    ssd1675a_set_use_custom_lut(en != 0);
+    ble_printf("LUTUSE:%s\r\n", en ? "1 (custom LUT active)" : "0 (builtin LUTs)");
+}
+
+/* LGET — dump current lut_data[] back to host as 7 lines of 10 bytes each.
+ * Format: "LUT:N:XXXXXXXXXXXXXXXXXXXX\r\n"  (28 chars per line).
+ * 28 chars fits within even the smallest BLE ATT MTU (23 bytes would fail,
+ * but MTU is negotiated higher in practice; and with CONFIG_BT_L2CAP_TX_MTU=247
+ * it is guaranteed). We bypass ble_printf() to avoid its 128-byte snprintf cap. */
+void cmd_lget(char *args)
+{
+    static const char hx[] = "0123456789ABCDEF";
+    char ln[32];
+
+    for (int chunk = 0; chunk < 7; chunk++) {
+        ln[0] = 'L'; ln[1] = 'U'; ln[2] = 'T'; ln[3] = ':';
+        ln[4] = '0' + chunk;
+        ln[5] = ':';
+        for (int j = 0; j < 10; j++) {
+            uint8_t b = ssd1675a_get_lut_byte(chunk * 10 + j);
+            ln[6 + j * 2]     = hx[b >> 4];
+            ln[6 + j * 2 + 1] = hx[b & 0xF];
+        }
+        ln[26] = '\r'; ln[27] = '\n';
+        ble_service_send(ln, 28);
+    }
+}
+
+/* LTEST / LTEST 0 — start/stop LUT test animation mode */
+void cmd_ltest(char *args)
+{
+    if (args && *args == '0') {
+        display_manager_set_screensaver_mode(SCREENSAVER_MODE_STATIC);
+        display_manager_enable_screensaver(true);
+        ble_printf("LUT test stopped\r\n");
+    } else {
+        display_manager_enable_screensaver(true);
+        display_manager_set_screensaver_mode(SCREENSAVER_MODE_LUT_TEST);
+        ble_printf("LUT test started (LTEST 0 to stop)\r\n");
+    }
 }
 
 /* ── Command table ───────────────────────────────────────────────────────── */
@@ -428,6 +539,11 @@ const struct shell_cmd commands[] = {
     {"LUTW:",       cmd_lutw,       "Write full LUT: LUTW:HH..HH (140 hex)"},
     {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
     {"L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
+    {"LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1"},
+    {"LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
+    {"LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
+    {"HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},
+    {"STAT",        cmd_stat,       "Telemetry snapshot: frame/last/min/max ms"},
     /* Frame buffers */
     {"FW:",         cmd_fw,         "Write BW frame: FW:offset:HH.."},
     {"RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.."},

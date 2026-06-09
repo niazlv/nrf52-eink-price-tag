@@ -70,11 +70,35 @@ void display_manager_set_keep_on(bool enable);
  */
 bool display_manager_is_screensaver_active(void);
 
-#define SCREENSAVER_MODE_STATIC  0
-#define SCREENSAVER_MODE_DYNAMIC 1
+#define SCREENSAVER_MODE_STATIC   0
+#define SCREENSAVER_MODE_DYNAMIC  1
+#define SCREENSAVER_MODE_LUT_TEST 2
 /**
- * @brief Set screensaver style (Static/Minute or Dynamic/Animation)
+ * @brief Set screensaver style (Static/Minute, Dynamic/Animation, or LUT test)
  */
 void display_manager_set_screensaver_mode(int mode);
+
+/**
+ * @brief Run one LUT test frame (render + partial update + timing measurement)
+ */
+void display_manager_update_lut_test(void);
+
+/**
+ * @brief Reset LUT test frame counter and timing stats
+ */
+void display_manager_reset_lut_test(void);
+
+/**
+ * @brief Query current LUT test timing stats (pass NULL for unused outputs)
+ */
+void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
+                                        int32_t *min_ms_out, int32_t *max_ms_out);
+
+/**
+ * @brief Enable/disable automatic TELE: BLE telemetry after every display update.
+ *        Called by commands.c when HOST:1 / HOST:0 is received.
+ */
+void display_manager_set_tele_enabled(bool en);
+bool display_manager_get_tele_enabled(void);
 
 #endif // APP_DISPLAY_MANAGER_H

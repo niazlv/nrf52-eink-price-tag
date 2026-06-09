@@ -1,7 +1,9 @@
 #include "display_screens.h"
 #include <lib/graphics.h>
 #include <lib/life.h>
+#include <drivers/ssd1675a.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 static char date_str[24];
 static char stat_str[48];
@@ -193,14 +195,145 @@ void display_screens_render_partial_test(int32_t frame,
     graphics_draw_string(10, 110, buf);
 }
 
-void display_screens_render_animation_frame(int x, int y, int size, int frame)
+void display_screens_render_animation_frame(int x, int y, int size, int frame,
+                                             int32_t delta_ms)
 {
-    char buf[32];
+    static int32_t min_ms = 0;
+    static int32_t max_ms = 0;
+
+    if (frame == 0) {
+        min_ms = 0;
+        max_ms = 0;
+    } else if (delta_ms > 0) {
+        if (min_ms == 0 || delta_ms < min_ms) min_ms = delta_ms;
+        if (delta_ms > max_ms)                max_ms = delta_ms;
+    }
+
+    char buf[48];
+    int w      = graphics_get_width();
     int height = graphics_get_height();
 
     graphics_clear(GFX_WHITE);
+
+    /* Status bar at top */
+    graphics_fill_rect(0, 0, w, 10, GFX_BLACK);
+    snprintf(buf, sizeof(buf), "ANIM #%d  %dms  mn=%d mx=%d",
+             frame, (int)delta_ms, (int)min_ms, (int)max_ms);
+    graphics_draw_string_color(2, 1, buf, GFX_WHITE);
+
+    /* Bouncing square */
     graphics_fill_rect(x, y, size, size, GFX_BLACK);
 
-    snprintf(buf, sizeof(buf), "TURBO FRAME %d", frame);
-    graphics_draw_string(10, height - 16, buf);
+    /* Bottom hint */
+    snprintf(buf, sizeof(buf), "partial update  %dms/frame", (int)delta_ms);
+    graphics_draw_string(2, height - 10, buf);
+}
+
+/*
+ * Ghosting / artifact test — 3 horizontal tracks:
+ *   Track 0: black ball on white background  (tests WB / BW transitions)
+ *   Track 1: white ball on black background  (tests BB / WW artifacts)
+ *   Track 2: red   ball on white background  (tests red channel ghosting)
+ *
+ * Each track has a thin center reference line so ghosting is easy to spot:
+ * any faint impression left by the ball is visible against the reference line.
+ */
+void display_screens_render_lut_test(int32_t frame, int32_t delta_ms,
+                                     int32_t min_ms, int32_t max_ms,
+                                     bool custom_lut)
+{
+#define BALL_W      22   /* pixels wide */
+#define BALL_SPEED   3   /* pixels per frame */
+#define TRACK_H     28   /* height of each colour track */
+#define BALL_MARGIN  2   /* top/bottom gap inside track */
+
+    char buf[48];
+    int w = graphics_get_width();    /* 296 */
+    int h = graphics_get_height();   /* 128 */
+
+    /* Layout — total: 10+10+1+28+28+28+1+12+10 = 128 */
+    const int Y_TITLE  = 0;
+    const int Y_TIMING = 10;
+    const int Y_SEP1   = 20;
+    const int Y_T0     = 21;                     /* black-on-white track */
+    const int Y_T1     = Y_T0 + TRACK_H;         /* white-on-black track */
+    const int Y_T2     = Y_T1 + TRACK_H;         /* red-on-white track   */
+    const int Y_SEP2   = Y_T2 + TRACK_H;         /* = 105 */
+    const int Y_INFO   = Y_SEP2 + 1;
+    const int Y_STATUS = Y_INFO  + 12;
+
+    /* Ball X: wraps from -BALL_W to w, so it fully exits on both sides */
+    int period = w + BALL_W;
+    int bx = (int)((frame * (int64_t)BALL_SPEED) % period) - BALL_W;
+    int bx0 = bx < 0 ? 0 : bx;
+    int bx1 = bx + BALL_W > w ? w : bx + BALL_W;
+    int bw  = bx1 > bx0 ? bx1 - bx0 : 0;
+
+    /* ── Title bar ───────────────────────────────────────────────────── */
+    graphics_fill_rect(0, Y_TITLE, w, 10, GFX_BLACK);
+    snprintf(buf, sizeof(buf), "GHOST TEST  #%d  %dms", (int)frame, (int)delta_ms);
+    graphics_draw_string_color(2, Y_TITLE + 1, buf, GFX_WHITE);
+
+    /* ── Timing row ──────────────────────────────────────────────────── */
+    graphics_fill_rect(0, Y_TIMING, w, 10, GFX_WHITE);
+    if (delta_ms > 0) {
+        snprintf(buf, sizeof(buf), "last:%dms  min=%d  max=%d",
+                 (int)delta_ms, (int)min_ms, (int)max_ms);
+    } else {
+        snprintf(buf, sizeof(buf), "warming up...");
+    }
+    graphics_draw_string(2, Y_TIMING + 1, buf);
+
+    graphics_fill_rect(0, Y_SEP1, w, 1, GFX_BLACK);
+
+    /* ── Track 0: black ball on white ────────────────────────────────── */
+    graphics_fill_rect(0, Y_T0, w, TRACK_H, GFX_WHITE);
+    /* Center reference line */
+    graphics_fill_rect(0, Y_T0 + TRACK_H / 2, w, 1, GFX_BLACK);
+    /* Track label */
+    graphics_draw_string(2, Y_T0 + 1, "B");
+    /* Ball */
+    if (bw > 0) {
+        graphics_fill_rect(bx0, Y_T0 + BALL_MARGIN,
+                           bw,  TRACK_H - BALL_MARGIN * 2, GFX_BLACK);
+    }
+
+    /* ── Track 1: white ball on black ────────────────────────────────── */
+    graphics_fill_rect(0, Y_T1, w, TRACK_H, GFX_BLACK);
+    graphics_fill_rect(0, Y_T1 + TRACK_H / 2, w, 1, GFX_WHITE);
+    graphics_draw_string_color(2, Y_T1 + 1, "W", GFX_WHITE);
+    if (bw > 0) {
+        graphics_fill_rect(bx0, Y_T1 + BALL_MARGIN,
+                           bw,  TRACK_H - BALL_MARGIN * 2, GFX_WHITE);
+    }
+
+    /* ── Track 2: red ball on white ──────────────────────────────────── */
+    graphics_fill_rect(0, Y_T2, w, TRACK_H, GFX_WHITE);
+    graphics_fill_rect(0, Y_T2 + TRACK_H / 2, w, 1, GFX_RED);
+    graphics_draw_string(2, Y_T2 + 1, "R");
+    if (bw > 0) {
+        graphics_fill_rect(bx0, Y_T2 + BALL_MARGIN,
+                           bw,  TRACK_H - BALL_MARGIN * 2, GFX_RED);
+    }
+
+    /* ── Bottom info ──────────────────────────────────────────────────── */
+    graphics_fill_rect(0, Y_SEP2, w, 1, GFX_BLACK);
+
+    graphics_fill_rect(0, Y_INFO, w, 12, GFX_WHITE);
+    snprintf(buf, sizeof(buf), "[0]=%02X [35]=%02X [57]=%02X [59]=%02X",
+             (int)ssd1675a_get_lut_byte(0),
+             (int)ssd1675a_get_lut_byte(35),
+             (int)ssd1675a_get_lut_byte(57),
+             (int)ssd1675a_get_lut_byte(59));
+    graphics_draw_string(2, Y_INFO, buf);
+
+    graphics_fill_rect(0, Y_STATUS, w, h - Y_STATUS, GFX_WHITE);
+    snprintf(buf, sizeof(buf), "spd=%dpx/f  %s",
+             BALL_SPEED, custom_lut ? "CUSTOM_LUT" : "BUILTIN_LUT");
+    graphics_draw_string(2, Y_STATUS, buf);
+
+#undef BALL_W
+#undef BALL_SPEED
+#undef TRACK_H
+#undef BALL_MARGIN
 }

@@ -2,11 +2,13 @@
 #include "battery.h"
 #include "display_screens.h"
 #include "system_time.h"
+#include "ble/ble_service.h"
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
-#include <drivers/ssd1675a.h> 
+#include <drivers/ssd1675a.h>
 #include <lib/graphics.h>
 #include <zephyr/logging/log.h>
+#include <limits.h>
 
 LOG_MODULE_REGISTER(display_manager, LOG_LEVEL_INF);
 
@@ -17,6 +19,19 @@ static bool keep_display_on = false; // New flag for animations
 static int update_counter = 59; // Start at 59 so first increment hits 60 -> Full Update
 
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
+
+/* When true, the device sends TELE: lines after every display update so the
+ * host app can track actual frame timing without polling. */
+static bool tele_enabled = false;
+
+void display_manager_set_tele_enabled(bool en) { tele_enabled = en; }
+bool display_manager_get_tele_enabled(void)     { return tele_enabled; }
+
+static int32_t lut_test_frame    = 0;
+static int64_t lut_test_last_ms  = 0;
+static int32_t lut_test_cur_ms   = 0;
+static int32_t lut_test_min_ms   = 0;
+static int32_t lut_test_max_ms   = 0;
 
 // Semaphore to control screensaver loop (1 = run/wake, 0 = wait/timeout)
 static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
@@ -81,22 +96,77 @@ void display_manager_set_partial_mode(int mode) {
     else if (mode == 2) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
 }
 
+void display_manager_reset_lut_test(void) {
+    lut_test_frame   = 0;
+    lut_test_last_ms = 0;
+    lut_test_cur_ms  = 0;
+    lut_test_min_ms  = 0;
+    lut_test_max_ms  = 0;
+}
+
+void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
+                                        int32_t *min_ms_out, int32_t *max_ms_out)
+{
+    if (frame_out)   *frame_out   = lut_test_frame;
+    if (cur_ms_out)  *cur_ms_out  = lut_test_cur_ms;
+    if (min_ms_out)  *min_ms_out  = lut_test_min_ms;
+    if (max_ms_out)  *max_ms_out  = lut_test_max_ms;
+}
+
+void display_manager_update_lut_test(void) {
+    if (!gpio_dev_dm) return;
+
+    int64_t now = k_uptime_get();
+    int32_t delta_ms = 0;
+
+    if (lut_test_last_ms != 0) {
+        delta_ms = (int32_t)(now - lut_test_last_ms);
+        if (lut_test_frame > 0) {
+            if (lut_test_min_ms == 0 || delta_ms < lut_test_min_ms) lut_test_min_ms = delta_ms;
+            if (delta_ms > lut_test_max_ms) lut_test_max_ms = delta_ms;
+        }
+    }
+    lut_test_last_ms = now;
+    lut_test_cur_ms  = delta_ms;
+
+    display_screens_render_lut_test(lut_test_frame, delta_ms,
+                                    lut_test_min_ms, lut_test_max_ms,
+                                    ssd1675a_get_use_custom_lut());
+    lut_test_frame++;
+
+    /* Write BOTH BW and Red buffers so the red track in the ghosting test
+     * is visible. ssd1675a_display_buffer_fast() skips the red buffer. */
+    ssd1675a_init_partial(gpio_dev_dm);
+    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+    ssd1675a_update_partial();
+    if (!screensaver_enabled && !keep_display_on) {
+        ssd1675a_sleep();
+        ssd1675a_power_off();
+    }
+
+    /* Send telemetry every frame once we have a valid measurement (frame >= 2). */
+    if (tele_enabled && delta_ms > 0) {
+        ble_printf("TELE:ltest frame=%d last=%d min=%d max=%d lut=%s\r\n",
+                   (int)(lut_test_frame - 1), (int)delta_ms,
+                   (int)lut_test_min_ms, (int)lut_test_max_ms,
+                   ssd1675a_get_use_custom_lut() ? "custom" : "builtin");
+    }
+}
+
 void display_manager_set_screensaver_mode(int mode) {
     screensaver_mode = mode;
-    // If Dynamic, we MUST keep display on to avoid flicker
     if (mode == SCREENSAVER_MODE_DYNAMIC) {
         display_manager_set_keep_on(true);
-        // Force Turbo Mode for speed
         display_manager_set_partial_mode(1);
-        // Force wake of thread
         k_sem_give(&sem_screensaver_wake);
-        
         display_screens_reset_dynamic();
-        
+    } else if (mode == SCREENSAVER_MODE_LUT_TEST) {
+        display_manager_set_keep_on(true);
+        display_manager_reset_lut_test();
+        k_sem_give(&sem_screensaver_wake);
     } else {
-        // Restore defaults
         display_manager_set_keep_on(false);
-        display_manager_set_partial_mode(1); // Balanced
+        display_manager_set_partial_mode(1);
     }
 }
 
@@ -118,6 +188,14 @@ void display_manager_update_status(void) {
         display_screens_render_status_dynamic(&model);
         display_manager_update_partial();
         last_dur = (int32_t)(k_uptime_get() - start_render);
+        if (tele_enabled) {
+            static int32_t dyn_frame_ctr = 0;
+            dyn_frame_ctr++;
+            if (dyn_frame_ctr % 10 == 0) {
+                ble_printf("TELE:dynamic frame=%d last=%dms\r\n",
+                           (int)dyn_frame_ctr, (int)last_dur);
+            }
+        }
     } else {
         display_screens_render_status_static(&model);
         update_counter++;
@@ -195,15 +273,17 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
 
     while (1) {
         if (screensaver_enabled) {
-            display_manager_update_status();
+            if (screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
+                display_manager_update_lut_test();
+            } else {
+                display_manager_update_status();
+            }
         }
 
-        if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
-            // High refresh rate for animation
-            // Wait e.g. 50ms (20fps target, though bus limits it)
-            k_sem_take(&sem_screensaver_wake, K_MSEC(50));
+        if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC ||
+            screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
+            k_sem_take(&sem_screensaver_wake, K_MSEC(10));
         } else {
-            // Static Mode - wait for next minute
             struct tm t;
             get_system_time(&t);
             int seconds_to_wait = 60 - t.tm_sec;
