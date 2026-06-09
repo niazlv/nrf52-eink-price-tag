@@ -39,11 +39,10 @@ void ssd1675a_wait_busy(void);
 
 // Partial Update
 typedef enum {
-    SSD1675A_PARTIAL_MODE_TURBO,
-    SSD1675A_PARTIAL_MODE_BALANCED,
-    SSD1675A_PARTIAL_MODE_STABLE,
-    SSD1675A_PARTIAL_MODE_ANIM,   // 8f=64ms — fast, ghosty
-    SSD1675A_PARTIAL_MODE_CLEAN   // 18f=144ms — cleaner black/white, ~6fps w/ streaming
+    SSD1675A_PARTIAL_MODE_TURBO,    // MODE:0 — 14f=112ms, direct B&W, use with streaming
+    SSD1675A_PARTIAL_MODE_BALANCED, // MODE:1 — ~896ms, pre-erase + main, red support
+    SSD1675A_PARTIAL_MODE_STABLE,   // MODE:2 — ~1.1s, legacy (preserved)
+    SSD1675A_PARTIAL_MODE_CLEAN     // MODE:3 — v5-balanced full LUT (deep clean)
 } ssd1675a_partial_mode_t;
 
 void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode);

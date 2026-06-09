@@ -150,10 +150,10 @@ void cmd_test(char *args)
 
 void cmd_mode(char *args)
 {
-    if (!args || !*args) { ble_printf("usage: MODE: 0-4\r\n"); return; }
+    if (!args || !*args) { ble_printf("usage: MODE: 0-3\r\n"); return; }
     int m = atoi(args);
     display_manager_set_partial_mode(m);
-    ble_printf("Mode Set: %d (0=Turbo,1=Bal,2=Stab,3=Anim,4=Clean)\r\n", m);
+    ble_printf("Mode Set: %d (0=Turbo,1=Balanced,2=Stable,3=Clean)\r\n", m);
 }
 
 void cmd_text(char *args)
@@ -534,7 +534,7 @@ const struct shell_cmd commands[] = {
     {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
     {"FAST",        cmd_fast,       "Fast/partial update"},
     {"FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display"},
-    {"MODE:",       cmd_mode,       "Partial mode: 0=Turbo 1=Bal 2=Stab 3=Anim 4=Clean"},
+    {"MODE:",       cmd_mode,       "Partial mode: 0=Turbo 1=Balanced 2=Stable 3=Clean"},
     {"TEXT:",       cmd_text,       "Draw text on display"},
     {"ROT:",        cmd_rot,        "Set rotation 0-3"},
     {"ANIM",        cmd_anim,       "Run bouncing-ball animation"},

@@ -105,8 +105,7 @@ void display_manager_set_partial_mode(int mode) {
     if (mode == 0) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
     else if (mode == 1) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_BALANCED);
     else if (mode == 2) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
-    else if (mode == 3) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_ANIM);
-    else if (mode == 4) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_CLEAN);
+    else if (mode == 3) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_CLEAN);
 }
 
 void display_manager_begin_streaming(void) {
