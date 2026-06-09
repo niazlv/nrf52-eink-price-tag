@@ -529,6 +529,27 @@ void cmd_ltest(char *args)
     }
 }
 
+/* LUTSET:<name|n> — select built-in preset by name/index and disable custom LUT.
+ * Accepted: TURBO/0, BALANCED/1, STABLE/2, CLEAN/3 (case-insensitive). */
+void cmd_lutset(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("LUTSET: usage: LUTSET:TURBO|BALANCED|STABLE|CLEAN (or 0-3)\r\n");
+        return;
+    }
+    int mode = -1;
+    if      (args[0] == '0' || strncasecmp(args, "TURBO",    5) == 0) mode = 0;
+    else if (args[0] == '1' || strncasecmp(args, "BALANCED", 8) == 0) mode = 1;
+    else if (args[0] == '2' || strncasecmp(args, "STABLE",   6) == 0) mode = 2;
+    else if (args[0] == '3' || strncasecmp(args, "CLEAN",    5) == 0) mode = 3;
+    else { ble_printf("LUTSET: unknown preset '%s'\r\n", args); return; }
+
+    ssd1675a_set_use_custom_lut(false);
+    display_manager_set_partial_mode(mode);
+    static const char *names[] = {"TURBO", "BALANCED", "STABLE", "CLEAN"};
+    ble_printf("LUTSET:%s (mode=%d, custom=off)\r\n", names[mode], mode);
+}
+
 /* ── Command table ───────────────────────────────────────────────────────── */
 
 const struct shell_cmd commands[] = {
@@ -558,6 +579,7 @@ const struct shell_cmd commands[] = {
     {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
     {"L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
     {"LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1"},
+    {"LUTSET:",     cmd_lutset,     "Select built-in preset: LUTSET:TURBO|BALANCED|STABLE|CLEAN"},
     {"LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
     {"LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
     {"HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},

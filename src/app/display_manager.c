@@ -205,7 +205,9 @@ void display_manager_set_screensaver_mode(int mode) {
     screensaver_mode = mode;
     if (mode == SCREENSAVER_MODE_DYNAMIC) {
         display_manager_set_keep_on(true);
-        display_manager_set_partial_mode(1);
+        if (!ssd1675a_get_use_custom_lut()) {
+            display_manager_set_partial_mode(0); // TURBO default for DSAVER (overrideable via MODE:)
+        }
         k_sem_give(&sem_screensaver_wake);
         display_screens_reset_dynamic();
     } else if (mode == SCREENSAVER_MODE_LUT_TEST) {

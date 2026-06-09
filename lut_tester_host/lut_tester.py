@@ -17,7 +17,7 @@ Layout:
 import asyncio
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import datetime, struct, time
 
 try:
@@ -414,7 +414,7 @@ class App:
         self.status_var    = tk.StringVar(value="Disconnected")
         self.target_name_var = tk.StringVar(value=DEVICE_NAMES[0])
         self.text_cmd_var  = tk.StringVar()
-        self.mode_var      = tk.StringVar(value="1-Bal")
+        self.mode_var      = tk.StringVar(value="0-Turbo")
         self.rot_var       = tk.StringVar(value="1")
 
         # Telemetry state updated whenever the device sends TELE: / STAT: lines
@@ -776,13 +776,14 @@ class App:
         btn(r1, "UPDATE", self._on_dev_update, fg=C['accent'], bold=True)
         btn(r1, "FAST",   self._on_dev_fast)
         btn(r1, "CLEAN",  self._on_dev_clean)
+        btn(r1, "NUKE",   self._on_dev_nuke,   fg=C['red'], bold=True)
         btn(r1, "FAPPLY", self._on_dev_fapply, fg=C['green'], bold=True)
 
         sep(r1)
 
         lbl(r1, "Mode:")
         mode_menu = tk.OptionMenu(r1, self.mode_var,
-                                  "0-Turbo", "1-Bal", "2-Stab",
+                                  "0-Turbo", "1-Balanced", "2-Stable", "3-Clean",
                                   command=self._on_dev_mode)
         mode_menu.config(bg=C['bg'], fg=C['fg2'], activebackground=C['bg3'],
                          activeforeground=C['fg'], relief='flat',
@@ -806,6 +807,14 @@ class App:
         btn(r2, "DSAVER:ON",  lambda: self._on_dev_dsaver(1), fg=C['green'])
         btn(r2, "DSAVER:OFF", lambda: self._on_dev_dsaver(0))
         btn(r2, "ANIM",       self._on_dev_anim, fg=C['orange'])
+
+        sep(r2)
+
+        lbl(r2, "Preset LUT:", C['yellow'])
+        btn(r2, "TURBO",    lambda: self._on_dev_lutset("TURBO"),    fg=C['accent'], bold=True)
+        btn(r2, "BALANCED", lambda: self._on_dev_lutset("BALANCED"), fg=C['green'])
+        btn(r2, "STABLE",   lambda: self._on_dev_lutset("STABLE"),   fg=C['fg2'])
+        btn(r2, "CLEAN",    lambda: self._on_dev_lutset("CLEAN"),    fg=C['orange'])
 
         sep(r2)
 
@@ -1951,6 +1960,16 @@ class App:
     def _on_dev_clean(self):
         self._send_cmd("CLEAN\n", "CLEAN")
 
+    def _on_dev_nuke(self):
+        n = simpledialog.askinteger(
+            "NUKE — Deep Ghost Clear",
+            "Number of B/W/R cycles (5–50).\n"
+            "20 cycles ≈ 15 min  |  5 cycles ≈ 4 min",
+            initialvalue=20, minvalue=5, maxvalue=50,
+            parent=self.root)
+        if n is not None:
+            self._send_cmd(f"NUKE:{n}\n", f"NUKE:{n}")
+
     def _on_dev_fapply(self):
         self._send_cmd("FAPPLY\n", "FAPPLY")
 
@@ -1963,6 +1982,9 @@ class App:
 
     def _on_dev_dsaver(self, en: int):
         self._send_cmd(f"DSAVER {en}\n", f"DSAVER {en}")
+
+    def _on_dev_lutset(self, preset: str):
+        self._send_cmd(f"LUTSET:{preset}\n", f"LUTSET:{preset}")
 
     def _on_dev_text(self):
         msg = self.text_cmd_var.get().strip()
