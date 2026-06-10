@@ -48,6 +48,14 @@ void display_manager_force_update(void);
 void display_manager_update_partial(void);
 
 /**
+ * @brief Pipelined partial update: SPI transfer + trigger, but does NOT wait for
+ *        BUSY. Caller must call ssd1675a_wait_busy() before the next SPI write.
+ *        Only valid when keep_on=true (streaming mode). Falls back to the blocking
+ *        variant otherwise.
+ */
+void display_manager_update_partial_nowait(void);
+
+/**
  * @brief Streaming animation mode: charge HV rails once, then call
  *        update_frame_stream() per frame (~LUT wave time only), then end_streaming().
  */

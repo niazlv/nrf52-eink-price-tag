@@ -85,6 +85,9 @@ static int        vs_frame_count;
 static struct k_work_delayable vs_watchdog_work;
 
 static void vs_exit_streaming(void) {
+    /* Wait for any in-progress pipelined display refresh to finish before
+     * powering down HV rails. Safe to call even when no refresh is active. */
+    ssd1675a_wait_busy();
     k_work_cancel_delayable(&vs_watchdog_work);
     if (vstream_active) {
         vs_state       = VS_IDLE;
@@ -187,13 +190,21 @@ static void vs_flush_frame(void) {
     uint8_t crc = 0;
     for (int i = 0; i < FB_SIZE; i++) crc ^= fb[i];
 
+    /* Pipeline: wait for the PREVIOUS frame's display refresh to finish before
+     * writing new SPI data. The previous trigger was sent without blocking, so
+     * the display has been refreshing in the background while we received this
+     * frame over BLE. ms includes this wait so host sees real display timing. */
     int64_t t0 = k_uptime_get();
+    ssd1675a_wait_busy();
     display_manager_set_keep_on(true);
-    display_manager_update_partial();
+    display_manager_update_partial_nowait();
     int32_t ms = (int32_t)(k_uptime_get() - t0);
+
     vs_frame_count++;
     /* Reset watchdog — host is alive and sending frames. */
     k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
+    /* ACK sent immediately after SPI+trigger — display refreshes in background
+     * while host encodes and sends the next frame over BLE. */
     ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x\r\n",
                vs_frame_count, (int)ms, (int)vs_dec, (unsigned)crc);
 }

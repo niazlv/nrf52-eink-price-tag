@@ -372,6 +372,14 @@ void ssd1675a_update_frame_stream(void) {
     ssd1675a_wait_busy();
 }
 
+void ssd1675a_trigger_frame_stream_nowait(void) {
+    /* Same as update_frame_stream but does NOT wait for BUSY.
+     * Caller must call ssd1675a_wait_busy() before the next SPI write. */
+    send_cmd(0x22);
+    send_data(0x04);
+    send_cmd(0x20);
+}
+
 void ssd1675a_end_streaming(void) {
     // 0x03: Disable Analog + CLK — powers down ±15V rails.
     send_cmd(0x22);

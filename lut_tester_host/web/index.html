@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>nRF52 E-ink Controller</title>
 <style>
 :root {
@@ -47,10 +47,15 @@ body{
 .btn{
   background:var(--bg3);color:var(--fg2);
   border:1px solid var(--border);padding:3px 9px;border-radius:4px;
-  cursor:pointer;font-family:inherit;font-size:11px;transition:all .12s;
+  cursor:pointer;font-family:inherit;font-size:11px;line-height:1.25;
+  transition:all .12s;white-space:nowrap;
 }
 .btn:hover{background:var(--bg4);color:var(--fg);border-color:var(--accent)}
 .btn:active{transform:scale(.97)}
+.btn:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent);outline-offset:2px}
 .btn.acc {background:#162340;color:var(--accent);border-color:#2a4a80}
 .btn.ok  {background:#162a22;color:var(--green);border-color:#1e4030}
 .btn.bad {background:#2a1414;color:var(--red);border-color:#4a2020}
@@ -64,6 +69,7 @@ body{
 select,input[type=text],input[type=number],textarea{
   background:var(--bg3);color:var(--fg);border:1px solid var(--border);
   padding:3px 7px;border-radius:4px;font-family:inherit;font-size:11px;outline:none;
+  min-width:0;
 }
 select:hover,input[type=text]:focus,input[type=number]:focus,textarea:focus{border-color:var(--accent)}
 select{cursor:pointer}
@@ -82,10 +88,10 @@ select{cursor:pointer}
 
 /* ── Content / panels ── */
 .content{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
-.tp{display:none;flex:1;overflow:hidden;min-height:0}
-.tp.on{display:flex}
+.content > .tp{display:none;flex:1;overflow:hidden;min-height:0}
+.content > .tp.on{display:flex}
 .prow{display:flex;gap:10px;flex:1;overflow:hidden;padding:10px;min-height:0}
-.pcol{display:flex;flex-direction:column;gap:8px;overflow:hidden;min-height:0}
+.pcol{display:flex;flex-direction:column;gap:8px;overflow:hidden;min-height:0;min-width:0}
 .pscroll{overflow-y:auto}
 
 /* ── Card ── */
@@ -98,9 +104,13 @@ select{cursor:pointer}
 /* ── Button rows ── */
 .brow{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
 .blbl{color:var(--yellow);font-size:10px;white-space:nowrap;margin-right:1px}
+.brow > div[style*="display:flex"]{min-width:0}
 
 /* ── Display canvas ── */
-#disp-canvas{border:1px solid var(--border);border-radius:4px;image-rendering:pixelated;display:block}
+#disp-canvas,
+#anim-preview{
+  border:1px solid var(--border);border-radius:4px;image-rendering:pixelated;display:block;
+}
 
 /* ── Drop zone ── */
 .dropzone{
@@ -189,6 +199,105 @@ select{cursor:pointer}
 }
 #bot-con.collapsed #bot-body{display:none}
 #bot-con.collapsed #bot-hdr{opacity:.7}
+
+/* ── Responsive layout ── */
+#vs-grid,
+#tim-grid{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+@media (max-width: 900px) {
+  html,body{height:auto;min-height:100%;overflow:auto}
+  body{min-height:100vh;overflow-x:hidden}
+
+  .hdr{
+    flex-wrap:wrap;align-items:center;gap:8px;
+    padding:8px max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));
+  }
+  .hdr-title{flex:1 0 100%;font-size:13px}
+  .hdr-sep{display:none}
+  #dev-name{width:auto !important;flex:1 1 220px}
+  #st-txt{flex:1 1 160px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #mtu-txt{margin-left:0 !important}
+  .hdr > div[style*="flex:1"]{display:none}
+
+  .tabs{
+    position:sticky;top:0;z-index:10;overflow-x:auto;scrollbar-width:none;
+    padding:5px 8px 0;background:var(--bg2);
+  }
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{flex:1 0 auto;min-width:max-content;padding:8px 14px;text-align:center}
+
+  .content{display:block;overflow:visible}
+  .content > .tp{overflow:visible}
+  .content > .tp.on{display:block}
+  .prow{flex-direction:column;overflow:visible;padding:8px;min-height:0}
+  .pcol{width:100% !important;flex:0 0 auto !important;overflow:visible}
+  .pscroll{overflow:visible}
+  .card{padding:10px}
+  #disp-canvas,
+  #anim-preview{max-width:100%;height:auto;aspect-ratio:296/128}
+
+  #bot-con{height:180px;max-height:45vh}
+  #bot-resize{height:12px;cursor:ns-resize;touch-action:none}
+  .tbar{
+    overflow-x:auto;gap:12px;
+    padding:6px 10px calc(6px + env(safe-area-inset-bottom));
+  }
+  .tbar .ti{flex:0 0 auto}
+}
+
+@media (max-width: 640px) {
+  body{font-size:13px}
+  .hdr{padding:8px 8px}
+  .hdr .btn{flex:1 1 110px}
+  #btn-conn{flex:1 1 130px}
+
+  .btn{
+    min-height:40px;padding:9px 11px;font-size:13px;
+    white-space:normal;overflow-wrap:anywhere;
+  }
+  .btn.big{padding:10px 12px;font-size:14px}
+  select,input[type=text],input[type=number],textarea{
+    min-height:40px;padding:8px 10px;font-size:16px;
+  }
+  textarea{font-size:14px}
+
+  .brow{gap:6px}
+  .brow > .btn{flex:1 1 132px}
+  .brow > input[type=text],
+  .brow > select{flex:1 1 100%}
+  .brow > input[type=number]{flex:1 1 92px}
+  .brow > div[style*="display:flex"]{flex:1 1 100% !important}
+  .brow > label{flex:1 1 145px;min-height:32px}
+  .blbl{font-size:11px}
+
+  .ctitle{line-height:1.4;overflow-wrap:anywhere}
+  .dropzone{
+    min-height:86px;display:flex;flex-direction:column;
+    justify-content:center;gap:2px;
+  }
+
+  #disp-canvas,
+  #anim-preview{width:100% !important;height:auto !important;max-width:296px}
+  .con{font-size:11px;min-height:120px}
+
+  .dcrow{flex-wrap:wrap;gap:5px 7px}
+  .dclbl{width:78px}
+  .dcval{width:auto;flex:1 1 100%;padding-left:85px}
+
+  #bot-hdr{padding:6px 8px;gap:6px}
+  #bot-hdr .btn{flex:0 0 auto;min-height:32px;padding:5px 8px}
+  #bot-body{padding:0 8px 8px}
+}
+
+@media (hover: none) {
+  .btn:hover{background:var(--bg3);color:var(--fg2);border-color:var(--border)}
+  .btn.acc:hover{background:#162340;color:var(--accent);border-color:#2a4a80}
+  .btn.ok:hover{background:#162a22;color:var(--green);border-color:#1e4030}
+  .btn.bad:hover{background:#2a1414;color:var(--red);border-color:#4a2020}
+  .btn.warn:hover{background:#2a1e08;color:var(--orange);border-color:#4a3010}
+  .btn.pur:hover{background:#1e1230;color:var(--purple);border-color:#3a2060}
+  .btn.ylw:hover{background:#221c08;color:var(--yellow);border-color:#3a3010}
+}
 </style>
 </head>
 <body>
@@ -741,23 +850,26 @@ function updateMtuDisplay() {
   if (e2) e2.textContent = label;
 }
 
-async function sendBytes(data, noResponse=false) {
+async function sendBytes(data, noResponse=false, abortRef=null) {
   if (!connected || !rxChar) return;
   const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
   let chunkSz = mtu - 3;
   for (let i = 0; i < buf.length; ) {
+    if (abortRef?.abort) throw new Error(abortRef.reason ?? 'stopped');
     const sz = Math.min(chunkSz, buf.length - i);
     const chunk = buf.slice(i, i + sz);
     try {
       if (noResponse) {
-        await rxChar.writeValueWithoutResponse(chunk);
+        await Promise.race([
+          rxChar.writeValueWithoutResponse(chunk),
+          new Promise((_, r) => setTimeout(() => r(new Error('chunk timeout')), 5000))
+        ]);
       } else {
         await rxChar.writeValueWithResponse(chunk);
       }
       i += sz;
     } catch (e) {
       if (e.name === 'InvalidModificationError' && chunkSz > 20) {
-        // Negotiated ATT_MTU is smaller than we thought — shrink and retry
         chunkSz = Math.max(20, chunkSz >> 1);
         mtu = chunkSz + 3;
         updateMtuDisplay();
@@ -768,20 +880,21 @@ async function sendBytes(data, noResponse=false) {
   }
 }
 
-// sendBytes wrapper for streaming: cancellable via stopStream() + 15s auto-timeout.
-// writeValueWithResponse can hang for minutes on macOS when BLE is unstable;
-// this lets the Stop button and the watchdog abort it immediately.
+// sendBytes wrapper for streaming: truly cancellable via abortRef checked between chunks.
+// 8s total timeout + Stop button both set abortRef.abort, so sendBytes exits at next chunk boundary.
 async function sendBytesStream(data) {
+  const abortRef = { abort: false, reason: null };
   let cancelFn;
-  const cancelPromise = new Promise((_, rej) => {
-    streamSendCancel = cancelFn = () => rej(new Error('stopped'));
-  });
-  const timeoutPromise = new Promise((_, rej) =>
-    setTimeout(() => rej(new Error('BLE send timeout')), 15000)
-  );
+  const timer = setTimeout(() => {
+    if (!abortRef.abort) { abortRef.abort = true; abortRef.reason = 'BLE send timeout'; }
+  }, 8000);
+  streamSendCancel = cancelFn = () => {
+    if (!abortRef.abort) { abortRef.abort = true; abortRef.reason = 'stopped'; }
+  };
   try {
-    await Promise.race([sendBytes(data), cancelPromise, timeoutPromise]);
+    await sendBytes(data, true, abortRef);
   } finally {
+    clearTimeout(timer);
     if (streamSendCancel === cancelFn) streamSendCancel = null;
   }
 }
@@ -1275,8 +1388,10 @@ async function startStream() {
         if (!fr) {
           if (prev && performance.now() - lastSentMs > KEEPALIVE_MS) {
             const pkt = makeVSPkt(prev, encType, prev);
-            await sendBytesStream(pkt);
-            try { await waitAck(8000); } catch(e) { animLog('⚠ keepalive: '+e.message); break; }
+            try {
+              await sendBytesStream(pkt);
+              await waitAck(8000);
+            } catch(e) { animLog('⚠ keepalive: '+e.message); break; }
             lastSentMs = performance.now();
             animLog('↺ keepalive (screen stalled)');
           } else {
@@ -1285,13 +1400,24 @@ async function startStream() {
           continue;
         }
         const pkt = makeVSPkt(fr, encType, prev);
-        await sendBytesStream(pkt);
-        let ackMs;
+        let ackMs, needResync = false;
         try {
-          ackMs = await waitAck(8000);
+          await sendBytesStream(pkt);
         } catch(e) {
           if (e.message === 'stopped') break;
-          animLog(`↺ ACK timeout, resync RLE`);
+          needResync = true;
+          animLog(`↺ send error: ${e.message}`);
+        }
+        if (!needResync) {
+          try {
+            ackMs = await waitAck(8000);
+          } catch(e) {
+            if (e.message === 'stopped') break;
+            needResync = true;
+            animLog(`↺ ACK timeout, resync RLE`);
+          }
+        }
+        if (needResync) {
           try {
             await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null));
             ackMs = await waitAck(8000);
@@ -1319,14 +1445,24 @@ async function startStream() {
           const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale);
           if (!fr) { i++; continue; }
           const pkt = makeVSPkt(fr, encType, prev);
-          await sendBytesStream(pkt);
-          let ackMs;
+          let ackMs, needResync = false;
           try {
-            ackMs = await waitAck(8000);
+            await sendBytesStream(pkt);
           } catch(e) {
             if (e.message === 'stopped') break outer;
-            // Notification lost — resync with full RLE frame and retry once
-            animLog(`↺ ACK timeout [${i}], resync RLE`);
+            needResync = true;
+            animLog(`↺ send error [${i}]: ${e.message}`);
+          }
+          if (!needResync) {
+            try {
+              ackMs = await waitAck(8000);
+            } catch(e) {
+              if (e.message === 'stopped') break outer;
+              needResync = true;
+              animLog(`↺ ACK timeout [${i}], resync RLE`);
+            }
+          }
+          if (needResync) {
             try {
               await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null));
               ackMs = await waitAck(8000);
@@ -1361,7 +1497,7 @@ async function startStream() {
     }
   } catch(e) { animLog('Ошибка: '+e.message); logE(e.message); }
   finally {
-    await sendBytes(new Uint8Array([0xCC,0xDD]));
+    try { await sendBytes(new Uint8Array([0xCC,0xDD]), true); } catch(e) {}
     await sleep(300);
     vstreamAckFn=null; vstreamAckBuf=null; streamRunning=false; streamStop=false;
     $('btn-stream').textContent='▶ Stream';
@@ -1888,19 +2024,21 @@ function initBotResize() {
   const bc=$('bot-con'), rh=$('bot-resize');
   let dragging=false, startY=0, startH=0;
 
-  rh.addEventListener('mousedown', e=>{
+  rh.addEventListener('pointerdown', e=>{
     if (bc.classList.contains('collapsed')) return;
     dragging=true; startY=e.clientY; startH=bc.offsetHeight;
     rh.classList.add('drag');
+    rh.setPointerCapture?.(e.pointerId);
     document.body.style.userSelect='none';
     document.body.style.cursor='ns-resize';
     e.preventDefault();
   });
 
-  document.addEventListener('mousemove', e=>{
+  document.addEventListener('pointermove', e=>{
     if (!dragging) return;
     const delta = startY - e.clientY;
-    const newH = Math.max(24, Math.min(600, startH + delta));
+    const maxH = Math.max(120, Math.min(600, window.innerHeight * 0.7));
+    const newH = Math.max(24, Math.min(maxH, startH + delta));
     bc.style.height = newH+'px';
     bc.style.transition = 'none';
     if (newH <= 28) bc.classList.add('collapsed');
@@ -1908,8 +2046,9 @@ function initBotResize() {
     $('bot-tog').textContent = bc.classList.contains('collapsed') ? '▲' : '▼';
   });
 
-  document.addEventListener('mouseup', ()=>{
+  document.addEventListener('pointerup', e=>{
     if (!dragging) return;
+    rh.releasePointerCapture?.(e.pointerId);
     dragging=false; rh.classList.remove('drag');
     document.body.style.userSelect='';
     document.body.style.cursor='';

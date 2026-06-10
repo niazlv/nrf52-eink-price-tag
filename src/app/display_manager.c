@@ -132,6 +132,39 @@ void display_manager_update_partial(void) {
 
 
 
+void display_manager_update_partial_nowait(void) {
+    if (!gpio_dev_dm) return;
+
+    /* Non-streaming path must always block — fall back to regular update. */
+    if (!keep_display_on) {
+        display_manager_update_partial();
+        return;
+    }
+
+    stream_partial_count++;
+
+    /* Periodic DC-balance: every STREAM_REFRESH_INTERVAL frames do a full
+     * 0xC7 HV cycle. This one always blocks (caller's wait_busy already ran). */
+    if (streaming_active && (stream_partial_count % STREAM_REFRESH_INTERVAL == 0)) {
+        stop_streaming_if_active();
+        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        ssd1675a_update_partial();
+        return;
+    }
+
+    if (!streaming_active) {
+        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        ssd1675a_begin_streaming();
+        streaming_active = true;
+    } else {
+        ssd1675a_display_buffer_fast(graphics_get_buffer());
+    }
+    /* Trigger display refresh but return immediately — display runs in background. */
+    ssd1675a_trigger_frame_stream_nowait();
+}
+
 void display_manager_set_partial_mode(int mode) {
     stop_streaming_if_active();  // new LUT must be loaded in next begin_streaming()
     if (mode == 0) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
