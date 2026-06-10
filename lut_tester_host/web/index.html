@@ -1,0 +1,1654 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nRF52 E-ink Controller</title>
+<style>
+:root {
+  --bg:     #0d0d14;
+  --bg2:    #13131e;
+  --bg3:    #1b1b28;
+  --bg4:    #222232;
+  --border: #28283c;
+  --fg:     #d4d4e8;
+  --fg2:    #7878a0;
+  --accent: #5d9bf7;
+  --green:  #4dc9a0;
+  --red:    #f05050;
+  --orange: #e09050;
+  --yellow: #d4c060;
+  --purple: #a070e0;
+  --vgh:    #e07070;
+  --vgl:    #60a0f0;
+  --vsh2:   #d09040;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:'Menlo','Fira Code','JetBrains Mono',monospace;
+  background:var(--bg);color:var(--fg);
+  display:flex;flex-direction:column;font-size:12px;
+}
+
+/* ── Header ── */
+.hdr{
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:7px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;
+}
+.hdr-title{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.3px}
+.hdr-sep{color:var(--border);font-size:16px}
+
+/* ── Status dot ── */
+.dot{width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block;transition:background .3s}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+
+/* ── Buttons ── */
+.btn{
+  background:var(--bg3);color:var(--fg2);
+  border:1px solid var(--border);padding:3px 9px;border-radius:4px;
+  cursor:pointer;font-family:inherit;font-size:11px;transition:all .12s;
+}
+.btn:hover{background:var(--bg4);color:var(--fg);border-color:var(--accent)}
+.btn:active{transform:scale(.97)}
+.btn.acc {background:#162340;color:var(--accent);border-color:#2a4a80}
+.btn.ok  {background:#162a22;color:var(--green);border-color:#1e4030}
+.btn.bad {background:#2a1414;color:var(--red);border-color:#4a2020}
+.btn.warn{background:#2a1e08;color:var(--orange);border-color:#4a3010}
+.btn.pur {background:#1e1230;color:var(--purple);border-color:#3a2060}
+.btn.ylw {background:#221c08;color:var(--yellow);border-color:#3a3010}
+.btn.big {padding:5px 14px;font-size:12px;font-weight:700}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+
+/* ── Select / Input ── */
+select,input[type=text],input[type=number],textarea{
+  background:var(--bg3);color:var(--fg);border:1px solid var(--border);
+  padding:3px 7px;border-radius:4px;font-family:inherit;font-size:11px;outline:none;
+}
+select:hover,input[type=text]:focus,input[type=number]:focus,textarea:focus{border-color:var(--accent)}
+select{cursor:pointer}
+
+/* ── Tabs ── */
+.tabs{
+  display:flex;gap:2px;padding:5px 14px 0;
+  background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.tab{
+  padding:5px 15px;border-radius:4px 4px 0 0;cursor:pointer;
+  color:var(--fg2);border:1px solid transparent;border-bottom:none;transition:all .12s;
+}
+.tab:hover{color:var(--fg);background:var(--bg3)}
+.tab.on{color:var(--accent);background:var(--bg);border-color:var(--border);border-bottom-color:var(--bg);margin-bottom:-1px}
+
+/* ── Content / panels ── */
+.content{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.tp{display:none;flex:1;overflow:hidden;min-height:0}
+.tp.on{display:flex}
+.prow{display:flex;gap:10px;flex:1;overflow:hidden;padding:10px;min-height:0}
+.pcol{display:flex;flex-direction:column;gap:8px;overflow:hidden;min-height:0}
+.pscroll{overflow-y:auto}
+
+/* ── Card ── */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:9px 11px}
+.ctitle{
+  font-size:10px;font-weight:700;color:var(--fg2);
+  text-transform:uppercase;letter-spacing:.8px;margin-bottom:7px;
+}
+
+/* ── Button rows ── */
+.brow{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+.blbl{color:var(--yellow);font-size:10px;white-space:nowrap;margin-right:1px}
+
+/* ── Display canvas ── */
+#disp-canvas{border:1px solid var(--border);border-radius:4px;image-rendering:pixelated;display:block}
+
+/* ── Drop zone ── */
+.dropzone{
+  border:2px dashed var(--border);border-radius:6px;
+  padding:18px 10px;text-align:center;color:var(--fg2);
+  cursor:pointer;transition:all .15s;
+}
+.dropzone:hover,.dropzone.over{border-color:var(--accent);color:var(--fg);background:#141422}
+
+/* ── LUT cells ── */
+.lc{
+  width:33px;padding:2px 3px;text-align:center;font-size:11px;
+  border-radius:3px;background:var(--bg3);color:var(--fg);
+  border:1px solid var(--border);outline:none;font-family:inherit;
+}
+.lc:focus{border-color:var(--accent)}
+.lc.lc0{color:#d4d4d4}.lc.lc1{color:#98c379}.lc.lc2,.lc.lc3{color:#e06c75}.lc.lc4{color:#566}
+.lc.tp{color:var(--orange)}.lc.rp{color:var(--green)}
+.lc.bad{border-color:var(--red);color:var(--red)}
+
+/* ── DC balance ── */
+.dcrow{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+.dclbl{font-size:9px;width:76px;flex-shrink:0}
+.dctrack{flex:1;height:11px;background:var(--bg3);border-radius:2px;position:relative;overflow:hidden}
+.dcfill{position:absolute;top:0;bottom:0;transition:all .1s}
+.dccenter{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--border)}
+.dcval{font-size:9px;width:130px;flex-shrink:0}
+
+/* ── Console ── */
+.con{
+  flex:1;overflow-y:auto;font-size:10px;padding:6px 8px;
+  background:#08080e;border-radius:4px;line-height:1.5;min-height:0;
+}
+.con .rx{color:var(--green)}.con .tx{color:var(--accent)}
+.con .inf{color:var(--fg2)}.con .err{color:var(--red)}.con .ts{color:#383858}
+
+/* ── Progress ── */
+.pbar{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-top:6px}
+.pfill{height:100%;background:var(--accent);border-radius:2px;transition:width .2s}
+
+/* ── Tele bar ── */
+.tbar{
+  background:#0a0a12;border-top:1px solid var(--border);
+  padding:4px 14px;display:flex;gap:18px;align-items:center;flex-shrink:0;
+}
+.ti{display:flex;gap:5px;align-items:center;font-size:10px}
+.tl{color:var(--fg2)}.tv{color:var(--yellow);font-weight:700;min-width:50px}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--fg2)}
+
+/* ── Waveform canvas ── */
+#wf-canvas{display:block;width:100%;border:1px solid var(--border);border-radius:4px}
+
+/* ── Stream status ── */
+#stream-st{font-size:10px;color:var(--fg2);padding:3px 0}
+
+/* ── Bottom console panel ── */
+#bot-con{
+  background:var(--bg2);
+  display:flex;flex-direction:column;flex-shrink:0;
+  min-height:24px;height:150px;
+  transition:height .15s ease;
+}
+#bot-con.collapsed{height:24px !important}
+#bot-resize{
+  height:5px;cursor:ns-resize;flex-shrink:0;
+  background:linear-gradient(to bottom,transparent 2px,var(--border) 2px,var(--border) 3px,transparent 3px);
+  position:relative;transition:background .12s;
+}
+#bot-resize:hover,#bot-resize.drag{
+  background:linear-gradient(to bottom,transparent 1px,var(--accent) 1px,var(--accent) 4px,transparent 4px);
+}
+#bot-hdr{
+  display:flex;align-items:center;gap:8px;padding:3px 10px;
+  font-size:10px;font-weight:700;color:var(--fg2);
+  text-transform:uppercase;letter-spacing:.6px;flex-shrink:0;
+  user-select:none;cursor:default;
+}
+#bot-body{
+  display:flex;flex-direction:column;flex:1;overflow:hidden;
+  min-height:0;padding:0 8px 5px;gap:5px;
+}
+#bot-con.collapsed #bot-body{display:none}
+#bot-con.collapsed #bot-hdr{opacity:.7}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-title">nRF52 E-ink Controller</div>
+  <div class="hdr-sep">│</div>
+  <select id="dev-name" style="width:210px">
+    <option>nrf52-E-ink-clock-DEV</option>
+    <option>LUT-Tester</option>
+  </select>
+  <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Connect</button>
+  <span class="dot" id="dot"></span>
+  <span id="st-txt" style="color:var(--fg2);font-size:11px">Disconnected</span>
+  <span id="mtu-txt" style="color:var(--fg2);font-size:10px;margin-left:4px"></span>
+  <div style="flex:1"></div>
+  <button class="btn" onclick="send('HOST:1\n')" style="font-size:10px">HOST:1</button>
+  <button class="btn" onclick="send('STAT\n')" style="font-size:10px">STAT</button>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab on" onclick="tab('tag')">🏷 Ценник</div>
+  <div class="tab"    onclick="tab('anim')">🎬 Анимация</div>
+  <div class="tab"    onclick="tab('lut')">⚙ LUT</div>
+</div>
+
+<div class="content">
+
+<!-- ══ TAB: PRICE TAG ══ -->
+<div class="tp on" id="tp-tag">
+  <div class="prow">
+
+    <!-- Left: display preview -->
+    <div class="pcol" style="width:310px;flex-shrink:0">
+      <div class="card">
+        <div class="ctitle">Превью дисплея (296 × 128)</div>
+        <div style="display:flex;justify-content:center">
+          <canvas id="disp-canvas" width="296" height="128" style="width:296px;height:128px"></canvas>
+        </div>
+        <div class="brow" style="margin-top:8px;justify-content:center">
+          <button class="btn" onclick="clearCanvas()">Очистить</button>
+          <button class="btn acc" onclick="sendCanvas()">↑ Отправить на дисплей</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Загрузить изображение</div>
+        <div class="dropzone" id="img-drop" onclick="$('img-file').click()">
+          <div>PNG / JPG / BMP / GIF</div>
+          <div style="font-size:10px;margin-top:3px">Клик или перетащи</div>
+        </div>
+        <input type="file" id="img-file" accept="image/*" style="display:none" onchange="loadImg(this.files[0])">
+        <div class="brow" style="margin-top:7px">
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--fg2)">
+            <input type="checkbox" id="img-inv" style="accent-color:var(--accent)"> Инверт
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--fg2)">
+            <input type="checkbox" id="img-dith" style="accent-color:var(--accent)"> Дизер
+          </label>
+          <select id="img-thr" title="Threshold" style="font-size:10px">
+            <option value="96">Порог: 96</option>
+            <option value="127" selected>Порог: 127</option>
+            <option value="160">Порог: 160</option>
+          </select>
+          <button class="btn acc" onclick="sendCanvas()">Отправить</button>
+        </div>
+      </div>
+
+      <div class="card" style="flex-shrink:0">
+        <div class="ctitle">Тестовые паттерны</div>
+        <div class="brow">
+          <button class="btn ok" onclick="testPat(1)">BWR Полосы</button>
+          <button class="btn ok" onclick="testPat(2)">Текст/Фигуры</button>
+          <button class="btn ok" onclick="testPat(3)">Разрешение</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: controls -->
+    <div class="pcol pscroll" style="flex:1">
+      <div class="card">
+        <div class="ctitle">Дисплей</div>
+        <div class="brow">
+          <button class="btn acc big" onclick="send('UPDATE\n')">UPDATE</button>
+          <button class="btn big" onclick="send('FAST\n')">FAST</button>
+          <button class="btn ok big" onclick="send('FAPPLY\n')">FAPPLY</button>
+          <button class="btn" onclick="send('CLEAN\n')">CLEAN</button>
+          <button class="btn bad" onclick="nukeDialog()">NUKE</button>
+          <button class="btn bad" onclick="rebootDevice()" title="Перезагрузить устройство">REBOOT</button>
+          <button class="btn" onclick="sendTime()">TIME</button>
+          <button class="btn" onclick="send('BATT\n')">BATT</button>
+          <button class="btn" onclick="send('SAVER\n')">SAVER</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Режим и ориентация</div>
+        <div class="brow">
+          <span class="blbl">Режим:</span>
+          <select id="mode-sel" onchange="send('MODE: '+this.value+'\n')">
+            <option value="0">0 — Turbo</option>
+            <option value="1">1 — Balanced</option>
+            <option value="2">2 — Stable</option>
+            <option value="3">3 — Clean</option>
+          </select>
+          <span class="blbl" style="margin-left:10px">Поворот:</span>
+          <select id="rot-sel" onchange="send('ROT: '+this.value+'\n')">
+            <option value="0">ROT 0</option>
+            <option value="1">ROT 1</option>
+            <option value="2">ROT 2</option>
+            <option value="3">ROT 3</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Текст на дисплей</div>
+        <div class="brow">
+          <input type="text" id="txt-inp" placeholder="Введи текст…" style="flex:1"
+            onkeydown="if(event.key==='Enter')sendText()">
+          <button class="btn acc" onclick="sendText()">Отправить</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Preset LUT</div>
+        <div class="brow">
+          <button class="btn acc" onclick="send('LUTSET:TURBO\n')">TURBO</button>
+          <button class="btn ok"  onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
+          <button class="btn"     onclick="send('LUTSET:STABLE\n')">STABLE</button>
+          <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Скринсейвер / Анимация</div>
+        <div class="brow">
+          <button class="btn ok"  onclick="send('SS:1\n')">SS: ON</button>
+          <button class="btn bad" onclick="send('SS:0\n')">SS: OFF</button>
+          <button class="btn ok"  onclick="send('DSAVER 1\n')">DSAVER: ON</button>
+          <button class="btn"     onclick="send('DSAVER 0\n')">DSAVER: OFF</button>
+          <button class="btn pur" onclick="send('ANIM\n')">ANIM</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">LUT тест</div>
+        <div class="brow">
+          <button class="btn ylw" onclick="send('LTEST\n')">LTEST</button>
+          <button class="btn"     onclick="send('LTEST 0\n')">LTEST OFF</button>
+          <button class="btn ok"  onclick="send('LUTUSE:1\n')">LUTUSE: ON</button>
+          <button class="btn bad" onclick="send('LUTUSE:0\n')">LUTUSE: OFF</button>
+          <button class="btn"     onclick="send('STAT\n')">STAT</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TAB: ANIMATION ══ -->
+<div class="tp" id="tp-anim">
+  <div class="prow">
+
+    <!-- Left: file + params + controls + log -->
+    <div class="pcol pscroll" style="flex:1;min-width:0">
+      <div class="card">
+        <div class="ctitle">Файл анимации / видео</div>
+        <div class="dropzone" id="anim-drop" onclick="$('anim-file').click()">
+          <div style="font-size:13px">GIF · MP4 · WebM · AVI · PNG · JPG</div>
+          <div style="font-size:10px;margin-top:4px">Клик или перетащи файл сюда</div>
+        </div>
+        <input type="file" id="anim-file" accept="image/gif,video/*,image/*" style="display:none"
+          onchange="loadAnimFile(this.files[0])">
+        <div id="anim-info" style="margin-top:7px;font-size:11px;color:var(--fg2);min-height:18px"></div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Параметры стриминга</div>
+        <div class="brow" style="gap:10px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Кодирование:</span>
+            <select id="enc-type">
+              <option value="2" selected>DRLE (рекомендуется)</option>
+              <option value="1">RLE</option>
+              <option value="0">RAW</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">FPS (0=авто):</span>
+            <input type="number" id="enc-fps" value="0" min="0" max="60" step="1" style="width:52px">
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Поворот:</span>
+            <select id="enc-rot">
+              <option value="0">0°</option>
+              <option value="90">90° CW</option>
+              <option value="180">180°</option>
+              <option value="270">270° CW</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Синхронизация:</span>
+            <select id="enc-sync">
+              <option value="guaranteed">Гарантированный (все кадры)</option>
+              <option value="sync">По времени (с потерей кадров)</option>
+            </select>
+          </div>
+        </div>
+        <div class="brow" style="gap:12px;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
+            <input type="checkbox" id="enc-dith" style="accent-color:var(--accent)"> Дизер
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
+            <input type="checkbox" id="enc-inv" style="accent-color:var(--accent)"> Инверт
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
+            <input type="checkbox" id="enc-land" style="accent-color:var(--accent)" checked> Landscape (296×128)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
+            <input type="checkbox" id="enc-loop" style="accent-color:var(--accent)"> Loop
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Управление потоком</div>
+        <div class="brow">
+          <button class="btn ok big" id="btn-stream" onclick="toggleStream()">▶ Stream</button>
+          <button class="btn bad" onclick="stopStream()">■ Stop</button>
+          <button class="btn" onclick="previewFrame0()" title="Показать кадр 0 на превью">🔍 Превью</button>
+          <span id="stream-st"></span>
+        </div>
+        <div class="pbar"><div class="pfill" id="stream-prog" style="width:0%"></div></div>
+      </div>
+
+      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:120px">
+        <div class="ctitle">Лог стриминга</div>
+        <div class="con" id="anim-log" style="flex:1"></div>
+      </div>
+    </div>
+
+    <!-- Right: display preview -->
+    <div class="pcol" style="width:330px;flex-shrink:0">
+      <div class="card">
+        <div class="ctitle">Превью дисплея (296×128)</div>
+        <canvas id="anim-preview" width="296" height="128"
+          style="width:296px;height:128px;border:1px solid var(--border);border-radius:4px;
+                 image-rendering:pixelated;display:block;background:#fff;margin:0 auto"></canvas>
+        <div id="anim-prev-info" style="margin-top:5px;font-size:10px;color:var(--fg2);text-align:center">
+          Загрузи файл → нажми 🔍 Превью
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══ TAB: LUT EDITOR ══ -->
+<div class="tp" id="tp-lut">
+  <div class="prow">
+
+    <!-- Left: LUT grid -->
+    <div class="pcol pscroll" style="width:470px;flex-shrink:0">
+      <div class="card">
+        <div class="ctitle">Действия</div>
+        <div class="brow">
+          <button class="btn acc big" onclick="applyLut()">APPLY</button>
+          <button class="btn big"     onclick="getLut()">↓ GET LUT</button>
+          <button class="btn"         onclick="loadFactory()">Factory</button>
+          <button class="btn pur"     onclick="loadAnim()">Anim LUT</button>
+          <button class="btn"         onclick="togglePasteDlg()">Paste hex…</button>
+          <button class="btn"         onclick="exportLut()">Export</button>
+        </div>
+        <div class="brow" style="margin-top:5px">
+          <span class="blbl">Quick adjust TP:</span>
+          <button class="btn" onclick="adjTP(-2)" style="color:var(--vgl)">−−</button>
+          <button class="btn" onclick="adjTP(-1)" style="color:var(--vgl)">−</button>
+          <button class="btn" onclick="adjTP(+1)" style="color:var(--vgh)">+</button>
+          <button class="btn" onclick="adjTP(+2)" style="color:var(--vgh)">++</button>
+          <span class="blbl" style="margin-left:8px">RP:</span>
+          <button class="btn" onclick="adjRP(-1)" style="color:var(--vgl)">−</button>
+          <button class="btn" onclick="adjRP(+1)" style="color:var(--vgh)">+</button>
+        </div>
+        <div class="brow" style="margin-top:5px">
+          <span class="blbl">Preset:</span>
+          <button class="btn acc"  onclick="send('LUTSET:TURBO\n')">TURBO</button>
+          <button class="btn ok"   onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
+          <button class="btn"      onclick="send('LUTSET:STABLE\n')">STABLE</button>
+          <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
+        </div>
+      </div>
+
+      <!-- Paste dialog (inline, hidden by default) -->
+      <div class="card" id="paste-dlg" style="display:none">
+        <div class="ctitle">Вставить LUT hex</div>
+        <textarea id="paste-txt" rows="4"
+          style="width:100%;resize:vertical;margin-bottom:6px"
+          placeholder="Вставь: plain hex, C-array (0x22, 0x11, …), или с пробелами"></textarea>
+        <div style="font-size:10px;color:var(--fg2);margin-bottom:5px">
+          Нужно 70 байт = 140 hex-символов
+        </div>
+        <div class="brow">
+          <button class="btn ok" onclick="doPaste()">Загрузить</button>
+          <button class="btn" onclick="togglePasteDlg()">Отмена</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">VS — напряжения (байты 0-34)  &nbsp;
+          <span style="font-size:9px;color:var(--fg2);font-weight:400">
+            00=VSS  01=VSH1(+15V)  10=VSL(-15V)  11=VSH2(+5V)
+          </span>
+        </div>
+        <div id="vs-grid"></div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Timing — длительности (байты 35-69)  &nbsp;
+          <span style="font-size:9px;color:var(--fg2);font-weight:400">
+            TP_A/B/C/D ≈ 8ms/frame · RP=0→1 повтор
+          </span>
+        </div>
+        <div id="tim-grid"></div>
+      </div>
+    </div>
+
+    <!-- Right: waveform + DC + tele -->
+    <div class="pcol pscroll" style="flex:1">
+      <div class="card">
+        <div class="ctitle">Waveform — форма напряжений</div>
+        <canvas id="wf-canvas" height="260"></canvas>
+      </div>
+      <div class="card">
+        <div class="ctitle">DC Balance</div>
+        <div id="dc-bars"></div>
+      </div>
+      <div class="card">
+        <div class="ctitle">Telemetry</div>
+        <div class="brow" style="gap:18px">
+          <div class="ti"><span class="tl">Frames:</span><span class="tv" id="tt-fr">—</span></div>
+          <div class="ti"><span class="tl">Pred ms:</span><span class="tv" id="tt-pr">—</span></div>
+          <div class="ti"><span class="tl">FAST:</span><span class="tv" id="tt-fast">—</span></div>
+          <div class="ti"><span class="tl">FAPPLY:</span><span class="tv" id="tt-fap">—</span></div>
+          <div class="ti"><span class="tl">UPDATE:</span><span class="tv" id="tt-upd">—</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /content -->
+
+<!-- BOTTOM CONSOLE -->
+<div id="bot-con">
+  <div id="bot-resize"></div>
+  <div id="bot-hdr">
+    <span>💻 Консоль BLE</span>
+    <div style="flex:1"></div>
+    <button class="btn" onclick="$('main-con').innerHTML=''" style="font-size:9px;padding:1px 7px">Очистить</button>
+    <button class="btn" id="bot-tog" onclick="toggleBotCon()" style="font-size:10px;padding:1px 8px;min-width:24px">▼</button>
+  </div>
+  <div id="bot-body">
+    <div class="con" id="main-con" style="flex:1"></div>
+    <div class="brow" style="flex-shrink:0;gap:5px">
+      <input type="text" id="cmd-inp" placeholder="Команда (без \n)…" style="flex:1"
+        onkeydown="if(event.key==='Enter')sendRaw()">
+      <button class="btn acc" onclick="sendRaw()">Отправить</button>
+    </div>
+  </div>
+</div>
+
+<!-- TELE BAR -->
+<div class="tbar">
+  <div class="ti"><span class="tl">FAPPLY:</span><span class="tv" id="tb-fap">—</span></div>
+  <div class="ti"><span class="tl">FAST:</span><span class="tv" id="tb-fast">—</span></div>
+  <div class="ti"><span class="tl">UPDATE:</span><span class="tv" id="tb-upd">—</span></div>
+  <div class="ti"><span class="tl">LUT:</span><span class="tv" id="tb-lut">—</span></div>
+  <div style="flex:1"></div>
+  <span style="font-size:10px;color:var(--fg2)" id="tb-mtu"></span>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  Constants
+// ═══════════════════════════════════════════════════════════════════
+const NUS_SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+const DISP_W  = 128;  // physical width
+const DISP_H  = 296;  // physical height
+const FB_SIZE = DISP_W * DISP_H / 8; // 4736
+
+const LUT_SZ   = 70;
+const N_GROUPS = 5;
+const N_PHASES = 7;
+const FW_CHUNK = 48;
+
+const GRP_LABELS = ['BLACK (00)','WHITE (01)','RED (10)','RED (11)','VCOM (!)'];
+const GRP_COLORS = ['#d4d4d4','#98c379','#e06c75','#e06c75','#556666'];
+
+const FACTORY_LUT = new Uint8Array([
+  0x22,0x11,0x10,0x00,0x10,0x00,0x00,  // VS LUT0 BLACK
+  0x11,0x88,0x80,0x80,0x80,0x00,0x00,  // VS LUT1 WHITE
+  0x6A,0x9B,0xA8,0x9B,0x9B,0xFF,0xFF,  // VS LUT2 RED
+  0x6A,0x9B,0xA8,0x9B,0x9B,0xFF,0xFF,  // VS LUT3 RED
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // VS LUT4 VCOM
+  0x00,0x14,0x00,0x12,0x01,  // Ph0 timing
+  0x06,0x06,0x06,0x06,0x02,  // Ph1
+  0x14,0x14,0x14,0x14,0x01,  // Ph2
+  0x00,0x00,0x00,0x00,0x00,  // Ph3
+  0x00,0x00,0x04,0x3B,0x07,  // Ph4
+  0x14,0x14,0x14,0x3B,0x00,  // Ph5
+  0x14,0x14,0x14,0x3B,0x00,  // Ph6
+]);
+
+const ANIM_LUT = new Uint8Array([
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x60,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x90,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x01,0x03,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,
+]);
+
+// ═══════════════════════════════════════════════════════════════════
+//  App state
+// ═══════════════════════════════════════════════════════════════════
+let bleDevice=null, rxChar=null, txChar=null;
+let connected=false, mtu=247; // optimistic; shrinks on InvalidModificationError
+let rxBuf='';
+let lut = new Uint8Array(FACTORY_LUT);
+let lgetBuf = Array(7).fill(null);
+let tele = {fap:null, fast:null, full:null, lut_name:null};
+
+// VStream
+let streamRunning=false, streamStop=false;
+let vstreamAckFn=null, vstreamAckBuf=null;
+let animVideoEl=null, animDecoder=null;
+let animTotalFrames=0, animFileType=null, animImgEl=null;
+
+// ═══════════════════════════════════════════════════════════════════
+//  Utility
+// ═══════════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const hexB = b => b.toString(16).padStart(2,'0').toUpperCase();
+const hexOf = a => Array.from(a).map(b=>b.toString(16).padStart(2,'0')).join('');
+const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+// ═══════════════════════════════════════════════════════════════════
+//  BLE
+// ═══════════════════════════════════════════════════════════════════
+async function bleConnect() {
+  if (connected) { bleDevice && bleDevice.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth не поддерживается.\nОткрой в Chrome и разреши bluetooth.');
+    return;
+  }
+  const name = $('dev-name').value.trim();
+  setStatus('Сканирую…', false);
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{name}],
+      optionalServices: [NUS_SVC],
+    });
+    bleDevice.addEventListener('gattserverdisconnected', onBleDisc);
+    const server  = await bleDevice.gatt.connect();
+    const service = await server.getPrimaryService(NUS_SVC);
+    rxChar = await service.getCharacteristic(NUS_RX);
+    txChar = await service.getCharacteristic(NUS_TX);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onNotify);
+    connected = true;
+    mtu = 247; // reset to optimistic; sendBytes will shrink on first oversized write
+    updateMtuDisplay();
+    setStatus(`Подключено → ${bleDevice.name}`, true);
+    $('btn-conn').textContent = 'Disconnect';
+    logI(`Connected to ${bleDevice.name}`);
+    await sleep(400);
+    sendRaw_('HOST:1');
+  } catch(e) {
+    setStatus('Ошибка: ' + e.message, false);
+    logE(e.message);
+  }
+}
+
+function onBleDisc() {
+  connected = false;
+  setStatus('Disconnected', false);
+  $('btn-conn').textContent = 'Connect';
+  logI('Disconnected');
+}
+
+function onNotify(ev) {
+  rxBuf += new TextDecoder().decode(ev.target.value);
+  let nl;
+  while ((nl = rxBuf.indexOf('\n')) >= 0) {
+    const line = rxBuf.slice(0, nl).trim();
+    rxBuf = rxBuf.slice(nl + 1);
+    if (!line) continue;
+    logR(line);
+    if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
+    if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
+    if (line.startsWith('TELE:vs')) {
+      if (vstreamAckFn) vstreamAckFn(line);
+      else vstreamAckBuf = line; // buffer in case sendBytes resolved before waitAck registered
+    }
+    if (line.startsWith('VSTREAM:')) logI(line);
+  }
+}
+
+function updateMtuDisplay() {
+  const label = `MTU ${mtu} (payload ${mtu-3}B)`;
+  const e1 = $('mtu-txt'), e2 = $('tb-mtu');
+  if (e1) e1.textContent = label;
+  if (e2) e2.textContent = label;
+}
+
+async function sendBytes(data) {
+  if (!connected || !rxChar) return;
+  const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+  let chunkSz = mtu - 3;
+  for (let i = 0; i < buf.length; ) {
+    const sz = Math.min(chunkSz, buf.length - i);
+    try {
+      await rxChar.writeValueWithResponse(buf.slice(i, i + sz));
+      i += sz;
+    } catch (e) {
+      if (e.name === 'InvalidModificationError' && chunkSz > 20) {
+        // Negotiated ATT_MTU is smaller than we thought — shrink and retry
+        chunkSz = Math.max(20, chunkSz >> 1);
+        mtu = chunkSz + 3;
+        updateMtuDisplay();
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
+function send(cmd) {
+  sendBytes(new TextEncoder().encode(cmd)).catch(e => logE(e.message));
+  logT(cmd.trim());
+}
+
+function sendRaw_(cmd) {
+  send(cmd + '\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Status
+// ═══════════════════════════════════════════════════════════════════
+function setStatus(msg, on) {
+  $('st-txt').textContent = msg;
+  $('dot').className = 'dot' + (on ? ' on' : '');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Logging
+// ═══════════════════════════════════════════════════════════════════
+function appendLog(el, cls, pre, msg) {
+  const ts = new Date().toTimeString().slice(0,8);
+  const d = document.createElement('div');
+  d.innerHTML = `<span class="ts">${ts}</span> <span class="${cls}">${pre} ${esc(msg)}</span>`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+  while (el.children.length > 500) el.removeChild(el.firstChild);
+}
+function logR(m) { appendLog($('main-con'),'rx','←',m); }
+function logT(m) { appendLog($('main-con'),'tx','→',m); }
+function logI(m) { appendLog($('main-con'),'inf','·',m); }
+function logE(m) { appendLog($('main-con'),'err','!',m); }
+function animLog(m){ appendLog($('anim-log'),'inf','·',m); }
+
+// ═══════════════════════════════════════════════════════════════════
+//  Telemetry parsing
+// ═══════════════════════════════════════════════════════════════════
+function parseTele(line) {
+  const ms = key => { const m=line.match(new RegExp(`${key}=(\\d+)ms?`)); return m?+m[1]:null; };
+  if (line.includes('fapply') || line.includes('FAPPLY')) { const v=ms('time'); if(v) tele.fap=v; }
+  if (line.includes(':fast'))  { const v=ms('time'); if(v) tele.fast=v; }
+  if (line.includes(':full') || line.includes('UPDATE')) { const v=ms('time'); if(v) tele.full=v; }
+  const lm = line.match(/lut=(\S+)/); if (lm) tele.lut_name = lm[1];
+  renderTele();
+}
+
+function renderTele() {
+  const f = v => v!=null ? v+'ms' : '—';
+  $('tb-fap').textContent  = f(tele.fap);
+  $('tb-fast').textContent = f(tele.fast);
+  $('tb-upd').textContent  = f(tele.full);
+  $('tb-lut').textContent  = tele.lut_name || '—';
+  $('tt-fast').textContent = f(tele.fast);
+  $('tt-fap').textContent  = f(tele.fap);
+  $('tt-upd').textContent  = f(tele.full);
+}
+
+function parseLget(line) {
+  // LUT:N:XXXXXXXXXXXXXXXXXXXX
+  if (line.length < 26 || line[5] !== ':') return;
+  const idx = parseInt(line[4]);
+  if (isNaN(idx)||idx<0||idx>=7) return;
+  lgetBuf[idx] = line.slice(6, 26).trim();
+  if (lgetBuf.some(s=>s===null)) return;
+  const hex = lgetBuf.join('');
+  lgetBuf = Array(7).fill(null);
+  if (hex.length !== LUT_SZ*2) { logE('LGET: bad length '+hex.length); return; }
+  for (let i=0; i<LUT_SZ; i++) lut[i] = parseInt(hex.slice(i*2, i*2+2), 16);
+  lutToUI(); drawWf();
+  logI('[LGET] LUT загружен с устройства');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Device commands
+// ═══════════════════════════════════════════════════════════════════
+function sendTime() {
+  const n = new Date();
+  sendRaw_(`TIME=${n.getHours()}:${n.getMinutes()}:${n.getSeconds()}`);
+}
+function sendText() {
+  const t = $('txt-inp').value.trim();
+  if (!t) return;
+  send(`TEXT: ${t}\n`);
+  $('txt-inp').value = '';
+}
+function rebootDevice() {
+  if (!connected) { alert('Не подключено'); return; }
+  if (!confirm('Перезагрузить устройство?\n\nBLE-соединение разорвётся — переподключись вручную.')) return;
+  send('REBOOT\n');
+  // BLE disconnects as part of reboot — clear state after short delay
+  setTimeout(() => {
+    logI('Device rebooting — reconnect manually');
+  }, 300);
+}
+
+function nukeDialog() {
+  const n = prompt('NUKE — глубокая очистка\nЦиклов B/W/R (5-50):', '20');
+  if (!n) return;
+  const v = parseInt(n);
+  if (v>=5&&v<=50) send(`NUKE:${v}\n`); else alert('Введи число 5–50');
+}
+function sendRaw() {
+  const v = $('cmd-inp').value.trim();
+  if (!v) return;
+  send(v + '\n');
+  $('cmd-inp').value = '';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Tab switching
+// ═══════════════════════════════════════════════════════════════════
+function tab(name) {
+  const names = ['tag','anim','lut'];
+  document.querySelectorAll('.tab').forEach((el,i) =>
+    el.classList.toggle('on', names[i] === name));
+  document.querySelectorAll('.tp').forEach(el =>
+    el.classList.toggle('on', el.id === 'tp-'+name));
+  if (name === 'lut') setTimeout(drawWf, 60);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Display canvas
+// ═══════════════════════════════════════════════════════════════════
+function clearCanvas() {
+  const ctx = $('disp-canvas').getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 296, 128);
+}
+
+function loadImg(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const ctx = $('disp-canvas').getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,296,128);
+    const sc = Math.min(296/img.width, 128/img.height);
+    const w=img.width*sc, h=img.height*sc;
+    ctx.drawImage(img, (296-w)/2, (128-h)/2, w, h);
+    URL.revokeObjectURL(url);
+    const dith  = $('img-dith').checked;
+    const inv   = $('img-inv').checked;
+    const thr   = parseInt($('img-thr').value);
+    threshold2d(ctx, 296, 128, thr, dith, inv);
+  };
+  img.src = url;
+}
+
+// Floyd-Steinberg or simple threshold on an RGBA ImageData in ctx
+function threshold2d(ctx, w, h, thr, dith, inv) {
+  const id = ctx.getImageData(0, 0, w, h);
+  const d = id.data;
+  const gray = new Float32Array(w * h);
+  for (let i=0; i<w*h; i++) gray[i] = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2];
+  if (dith) {
+    for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
+      const i=y*w+x, old=gray[i], nw=old<thr?0:255;
+      gray[i]=nw; const e=old-nw;
+      if(x+1<w) gray[i+1]+=e*7/16;
+      if(y+1<h){ if(x>0) gray[i+w-1]+=e*3/16; gray[i+w]+=e*5/16; if(x+1<w) gray[i+w+1]+=e/16; }
+    }
+  }
+  for (let i=0; i<w*h; i++) {
+    const v = (dith?gray[i]<128:gray[i]<thr) !== inv ? 0 : 255;
+    d[i*4]=d[i*4+1]=d[i*4+2]=v; d[i*4+3]=255;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+// Convert 296×128 logical canvas → physical 128×296 1-bpp buffer (4736 bytes)
+// Logical (lx, ly): lx∈[0,296), ly∈[0,128)
+// Physical: phx = 127-ly, phy = lx
+function canvasToPhys(ctx) {
+  const id = ctx.getImageData(0, 0, 296, 128);
+  const d  = id.data;
+  const bw = new Uint8Array(FB_SIZE).fill(0xFF); // all white
+  for (let ly=0; ly<DISP_W; ly++) {
+    for (let lx=0; lx<DISP_H; lx++) {
+      const pi  = (ly*296 + lx)*4;
+      const blk = (d[pi]+d[pi+1]+d[pi+2])/3 < 128;
+      if (!blk) continue;
+      const phx = DISP_W-1-ly, phy = lx;
+      const bi  = phy*16 + (phx>>3);
+      bw[bi] &= ~(1 << (7-(phx&7)));
+    }
+  }
+  return bw;
+}
+
+async function sendCanvas() {
+  if (!connected) { alert('Не подключено'); return; }
+  const ctx = $('disp-canvas').getContext('2d');
+  await sendBWR(canvasToPhys(ctx), new Uint8Array(FB_SIZE), 'canvas');
+}
+
+async function sendBWR(bw, red, desc) {
+  logI(`Отправляю ${desc}…`);
+  await sendBytes(new TextEncoder().encode('SS:0\n'));
+  await sleep(350);
+  const hasRed = red.some(b=>b!==0);
+  let sent=0, total=Math.ceil(FB_SIZE/FW_CHUNK)*(hasRed?2:1);
+  for (let off=0; off<FB_SIZE; off+=FW_CHUNK) {
+    const ch = bw.slice(off, Math.min(off+FW_CHUNK, FB_SIZE));
+    await sendBytes(new TextEncoder().encode(`FW:${off}:${hexOf(ch).toUpperCase()}\n`));
+    sent++; if(sent%20===0) logI(`  BW ${off+ch.length}/${FB_SIZE}B (${Math.round(sent*100/total)}%)`);
+    await sleep(5);
+  }
+  if (hasRed) {
+    for (let off=0; off<FB_SIZE; off+=FW_CHUNK) {
+      const ch = red.slice(off, Math.min(off+FW_CHUNK, FB_SIZE));
+      await sendBytes(new TextEncoder().encode(`RW:${off}:${hexOf(ch).toUpperCase()}\n`));
+      sent++; if(sent%20===0) logI(`  RW ${off+ch.length}/${FB_SIZE}B`);
+      await sleep(5);
+    }
+  }
+  await sendBytes(new TextEncoder().encode('FAPPLY\n'));
+  logI(`${desc} отправлено → FAPPLY`);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Test patterns (drawn on the 296×128 logical canvas)
+// ═══════════════════════════════════════════════════════════════════
+function testPat(n) {
+  const c=$('disp-canvas'), ctx=c.getContext('2d');
+  ctx.fillStyle='white'; ctx.fillRect(0,0,296,128);
+  if(n===1) patBands(ctx);
+  else if(n===2) patText(ctx);
+  else patGrid(ctx);
+  sendCanvas();
+}
+
+function patBands(ctx){
+  ctx.fillStyle='black'; ctx.fillRect(0,0,99,128);
+  ctx.fillStyle='#c80000'; ctx.fillRect(198,0,98,128);
+  ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(99,0,99,128);
+  ctx.font='bold 13px monospace';
+  ctx.fillStyle='white';  ctx.fillText('BLACK',14,68);
+  ctx.fillStyle='black';  ctx.fillText('WHITE',120,68);
+  ctx.fillStyle='white';  ctx.fillText('RED',220,68);
+  ctx.fillStyle='black';  ctx.fillRect(0,0,296,14);
+  ctx.fillStyle='white';  ctx.font='10px monospace';
+  ctx.fillText('BWR COLOR BANDS TEST — SSD1675A',4,11);
+}
+
+function patText(ctx){
+  ctx.fillStyle='black'; ctx.fillRect(0,0,296,14);
+  ctx.fillStyle='white'; ctx.font='10px monospace';
+  ctx.fillText('SSD1675A — TEXT & SHAPES TEST',4,11);
+  ctx.fillStyle='black'; ctx.font='11px monospace';
+  ctx.fillText('Hello World!',4,28);
+  ctx.fillRect(4,35,85,16);
+  ctx.fillStyle='white'; ctx.fillText('FILLED',8,48);
+  ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(4,56,85,16);
+  ctx.fillStyle='black'; ctx.fillText('BORDER',8,69);
+  for(let r=0;r<4;r++) for(let c=0;c<12;c++)
+    if((r+c)%2){ ctx.fillStyle='black'; ctx.fillRect(4+c*8,80+r*6,8,6); }
+  // Red section
+  ctx.fillStyle='#c80000'; ctx.font='11px monospace';
+  ctx.fillText('Red text!',196,28);
+  ctx.fillRect(196,35,85,16);
+  ctx.fillStyle='white'; ctx.fillText('RED FILL',200,48);
+  ctx.strokeStyle='#c80000'; ctx.lineWidth=2; ctx.strokeRect(196,56,85,16);
+  ctx.fillStyle='#c80000'; ctx.fillText('RED BRD',200,69);
+  ctx.beginPath(); ctx.arc(244,100,20,0,Math.PI*2);
+  ctx.fillStyle='#c80000'; ctx.fill();
+}
+
+function patGrid(ctx){
+  ctx.fillStyle='black'; ctx.fillRect(0,0,296,14);
+  ctx.fillStyle='white'; ctx.font='10px monospace';
+  ctx.fillText('RESOLUTION & DITHER TEST — SSD1675A',4,11);
+  // H-lines
+  for(let y=16;y<66;y+=2){ ctx.fillStyle='black'; ctx.fillRect(0,y,74,1); }
+  // V-lines
+  for(let x=74;x<148;x+=2){ ctx.fillStyle='black'; ctx.fillRect(x,16,1,50); }
+  // Checkerboard
+  for(let y=16;y<66;y++) for(let x=148;x<222;x++)
+    if((x+y)%2){ ctx.fillStyle='black'; ctx.fillRect(x,y,1,1); }
+  // Density gradient
+  for(let st=0;st<8;st++){
+    const dens=st/7, x0=Math.floor(st*37);
+    for(let y=78;y<114;y++) for(let x=0;x<37;x++)
+      if(Math.random()<dens){ ctx.fillStyle='black'; ctx.fillRect(x0+x,y,1,1); }
+  }
+  ctx.fillStyle='black'; ctx.font='9px monospace';
+  ctx.fillText('H-lines',2,76); ctx.fillText('V-lines',76,76);
+  ctx.fillText('Checker',150,76); ctx.fillText('Gradient',224,76);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Drag & drop
+// ═══════════════════════════════════════════════════════════════════
+function setupDrop(zone, handler) {
+  zone.addEventListener('dragover', e=>{ e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', ()=>zone.classList.remove('over'));
+  zone.addEventListener('drop', e=>{
+    e.preventDefault(); zone.classList.remove('over');
+    const f=e.dataTransfer.files[0]; if(f) handler(f);
+  });
+}
+setupDrop($('img-drop'),  f=>loadImg(f));
+setupDrop($('anim-drop'), f=>loadAnimFile(f));
+
+// ═══════════════════════════════════════════════════════════════════
+//  VStream — animation streaming
+// ═══════════════════════════════════════════════════════════════════
+async function loadAnimFile(file) {
+  if (!file) return;
+  const info = $('anim-info');
+  info.textContent = 'Загружаю: ' + file.name + '…';
+  animDecoder=null; animVideoEl=null; animImgEl=null;
+  animTotalFrames=0; animFileType=null;
+
+  const isGif  = file.name.toLowerCase().endsWith('.gif') || file.type==='image/gif';
+  const isVideo = file.type.startsWith('video/') || /\.(mp4|webm|avi|mov|mkv)$/i.test(file.name);
+
+  if (isGif && typeof ImageDecoder !== 'undefined') {
+    try {
+      const buf = await file.arrayBuffer();
+      const dec = new ImageDecoder({ data: buf, type: 'image/gif' });
+      await dec.tracks.ready;
+      animTotalFrames = dec.tracks.selectedTrack.frameCount;
+      animDecoder = dec;
+      animFileType = 'gif';
+      info.textContent = `GIF: ${animTotalFrames} кадров | ${(file.size/1024).toFixed(0)} KB`;
+      return;
+    } catch(e) { logE('GIF decoder: '+e.message); }
+  }
+
+  if (isVideo || isGif) {
+    if (!animVideoEl) {
+      animVideoEl = document.createElement('video');
+      animVideoEl.muted = true; animVideoEl.style.display='none';
+      document.body.appendChild(animVideoEl);
+    }
+    animVideoEl.src = URL.createObjectURL(file);
+    animFileType = 'video';
+    await new Promise(res => { animVideoEl.onloadedmetadata=res; });
+    const userFps = parseFloat($('enc-fps').value)||12;
+    animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * userFps));
+    info.textContent = `Видео: ${file.name} | ~${animTotalFrames} кадров @ ${userFps}fps`;
+  } else {
+    const url = URL.createObjectURL(file);
+    animImgEl = new Image();
+    await new Promise(res => { animImgEl.onload=res; animImgEl.src=url; });
+    animTotalFrames=1; animFileType='img';
+    info.textContent = `Изображение: ${file.name}`;
+  }
+}
+
+function toggleStream() { if(streamRunning) stopStream(); else startStream(); }
+
+function stopStream() {
+  streamStop=true;
+  if(vstreamAckFn) vstreamAckFn(null);
+}
+
+async function startStream() {
+  if (!connected){ alert('Не подключено'); return; }
+  if (!animFileType){ alert('Загрузи файл анимации'); return; }
+  streamRunning=true; streamStop=false; vstreamAckBuf=null;
+  $('btn-stream').textContent='⏸ Pause';
+
+  const encType  = parseInt($('enc-type').value);
+  const fps      = parseFloat($('enc-fps').value)||12;
+  const dith     = $('enc-dith').checked;
+  const inv      = $('enc-inv').checked;
+  const land     = $('enc-land').checked;
+  const loop     = $('enc-loop').checked;
+  const rot      = parseInt($('enc-rot').value)||0;
+  const syncMode = $('enc-sync').value;
+  const tw       = land ? DISP_H : DISP_W;
+  const th       = land ? DISP_W : DISP_H;
+
+  const oc  = new OffscreenCanvas(tw, th);
+  const oct = oc.getContext('2d', {willReadFrequently:true});
+
+  await sendBytes(new TextEncoder().encode('VSTREAM:start\n'));
+  await sleep(400);
+  animLog(`▶ VSTREAM:start | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
+
+  const waitAck = (to=8000) => new Promise((res,rej) => {
+    if (vstreamAckBuf !== null) {
+      const line=vstreamAckBuf; vstreamAckBuf=null;
+      const m=line.match(/ms=(\d+)/); res(m?+m[1]:0); return;
+    }
+    vstreamAckFn = line => {
+      vstreamAckFn=null;
+      if (line===null) rej(new Error('stopped'));
+      else { const m=line.match(/ms=(\d+)/); res(m?+m[1]:0); }
+    };
+    setTimeout(()=>{ if(vstreamAckFn){vstreamAckFn=null;rej(new Error('ACK timeout'));} }, to);
+  });
+
+  let prev=null, loop_n=0;
+  const t0 = performance.now();
+  let framesDone=0;
+
+  try {
+    outer: while (!streamStop) {
+      loop_n++;
+      if (animFileType==='video' && animVideoEl)
+        animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * fps));
+
+      let i=0;
+      while (i < animTotalFrames && !streamStop) {
+        const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot);
+        if (!fr) { i++; continue; }
+        const pkt = makeVSPkt(fr, encType, prev);
+        await sendBytes(pkt);
+        let ackMs;
+        try { ackMs = await waitAck(); }
+        catch(e) { animLog('⚠ '+e.message); break outer; }
+        prev = fr;
+        framesDone++;
+        const elapsed = (performance.now()-t0)/1000;
+        const actualFps = framesDone/elapsed;
+
+        let skipped=0;
+        if (syncMode==='sync') {
+          const targetFrame = Math.floor(elapsed * fps);
+          if (targetFrame > i+1) { skipped=targetFrame-(i+1); i=targetFrame; }
+          else i++;
+        } else {
+          i++;
+        }
+
+        const pct = (i/animTotalFrames*100).toFixed(0);
+        $('stream-prog').style.width = pct+'%';
+        $('stream-st').textContent =
+          `[${i}/${animTotalFrames}] ${actualFps.toFixed(1)}fps | disp=${ackMs}ms | pkt=${pkt.length}B`+
+          (skipped>0?` | ⏭${skipped}`:'');
+        if (framesDone%20===0)
+          animLog(`Frame ${i}/${animTotalFrames} | ${actualFps.toFixed(1)}fps | pkt=${pkt.length}B | disp=${ackMs}ms`+
+                  (skipped>0?` | skip=${skipped}`:''));
+      }
+      if (!loop || streamStop) break;
+      animLog(`Loop ${loop_n} завершён`);
+    }
+  } catch(e) { animLog('Ошибка: '+e.message); logE(e.message); }
+  finally {
+    await sendBytes(new Uint8Array([0xCC,0xDD]));
+    await sleep(300);
+    vstreamAckFn=null; vstreamAckBuf=null; streamRunning=false; streamStop=false;
+    $('btn-stream').textContent='▶ Stream';
+    $('stream-st').textContent='Завершено';
+    $('stream-prog').style.width='0%';
+    animLog('■ VSTREAM stopped');
+  }
+}
+
+async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0) {
+  ctx.fillStyle='white'; ctx.fillRect(0,0,tw,th);
+
+  if (animFileType==='gif' && animDecoder) {
+    const res = await animDecoder.decode({frameIndex:i});
+    const bmp = res.image;
+    drawScaledRotated(ctx, bmp, bmp.width, bmp.height, tw, th, rot);
+  } else if (animFileType==='video' && animVideoEl) {
+    const t = (i/(Math.max(total-1,1))) * animVideoEl.duration;
+    animVideoEl.currentTime = t;
+    await new Promise(res => {
+      let done=false;
+      const timer = setTimeout(()=>{ if(!done){done=true;res();} }, 3000);
+      animVideoEl.addEventListener('seeked', ()=>{ if(!done){done=true;clearTimeout(timer);res();} }, {once:true});
+    });
+    drawScaledRotated(ctx, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot);
+  } else if (animFileType==='img' && animImgEl) {
+    drawScaledRotated(ctx, animImgEl, animImgEl.width, animImgEl.height, tw, th, rot);
+  } else return null;
+
+  const buf = canvasTo1bpp(ctx, tw, th, dith, inv, land);
+  updateAnimPreview(buf);
+  return buf;
+}
+
+function drawScaledRotated(ctx, source, srcW, srcH, tw, th, rot) {
+  if (!srcW || !srcH) return;
+  const swapped = rot===90 || rot===270;
+  const effW = swapped ? srcH : srcW;
+  const effH = swapped ? srcW : srcH;
+  const sc = Math.min(tw/effW, th/effH);
+  const fw = effW*sc, fh = effH*sc;
+  ctx.save();
+  ctx.translate(tw/2, th/2);
+  ctx.rotate(rot * Math.PI/180);
+  ctx.drawImage(source, swapped?-fh/2:-fw/2, swapped?-fw/2:-fh/2,
+                        swapped? fh : fw,     swapped? fw : fh);
+  ctx.restore();
+}
+
+function updateAnimPreview(buf) {
+  const canvas = $('anim-preview');
+  if (!canvas) return;
+  const pctx = canvas.getContext('2d');
+  const id = pctx.createImageData(296, 128);
+  const data = id.data;
+  for (let cy=0; cy<128; cy++) {
+    const phx = 127-cy;
+    const byteOff = phx>>3;
+    const bitMask = 1<<(7-(phx&7));
+    for (let cx=0; cx<296; cx++) {
+      const v = (buf[cx*16+byteOff] & bitMask) ? 255 : 0;
+      const pi = (cy*296+cx)*4;
+      data[pi]=data[pi+1]=data[pi+2]=v; data[pi+3]=255;
+    }
+  }
+  pctx.putImageData(id, 0, 0);
+  $('anim-prev-info').textContent = new Date().toTimeString().slice(0,8)+' — обновлено';
+}
+
+async function previewFrame0() {
+  if (!animFileType) { animLog('Загрузи файл'); return; }
+  const land = $('enc-land').checked;
+  const tw = land ? DISP_H : DISP_W;
+  const th = land ? DISP_W : DISP_H;
+  const rot  = parseInt($('enc-rot').value)||0;
+  const dith = $('enc-dith').checked;
+  const inv  = $('enc-inv').checked;
+  const oc   = new OffscreenCanvas(tw, th);
+  const oct  = oc.getContext('2d', {willReadFrequently:true});
+  const buf  = await getAnimFrame(0, Math.max(animTotalFrames,1), 12, oct, tw, th, dith, inv, land, rot);
+  if (buf) animLog('Превью кадра 0 обновлено');
+}
+
+function canvasTo1bpp(ctx, tw, th, dith, inv, land) {
+  const id = ctx.getImageData(0, 0, tw, th);
+  const d  = id.data;
+  const n  = tw*th;
+  const g  = new Float32Array(n);
+  for (let i=0; i<n; i++) g[i] = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2];
+  if (dith) {
+    for (let y=0; y<th; y++) for (let x=0; x<tw; x++) {
+      const i=y*tw+x, old=g[i], nw=old<128?0:255; g[i]=nw; const e=old-nw;
+      if(x+1<tw) g[i+1]+=e*7/16;
+      if(y+1<th){ if(x>0) g[i+tw-1]+=e*3/16; g[i+tw]+=e*5/16; if(x+1<tw) g[i+tw+1]+=e/16; }
+    }
+  }
+  const buf = new Uint8Array(FB_SIZE).fill(0xFF);
+  if (land) {
+    // Landscape: tw=296, th=128 → same physical rotation as BWR frame
+    for (let ly=0; ly<th; ly++) for (let lx=0; lx<tw; lx++) {
+      const blk = (g[ly*tw+lx]<128) !== inv;
+      if (!blk) continue;
+      const phx=DISP_W-1-ly, phy=lx;
+      buf[phy*16+(phx>>3)] &= ~(1<<(7-(phx&7)));
+    }
+  } else {
+    // Portrait: tw=128, th=296
+    for (let y=0; y<th; y++) for (let x=0; x<tw; x++) {
+      const blk = (g[y*tw+x]<128) !== inv;
+      if (!blk) continue;
+      buf[y*16+(x>>3)] &= ~(1<<(7-(x&7)));
+    }
+  }
+  return buf;
+}
+
+// ── PackBits encoder ──────────────────────────────────────────────
+function packBits(data) {
+  const out=[]; let i=0, n=data.length;
+  while (i<n) {
+    let j=i;
+    while (j<n-1 && data[j]===data[j+1] && j-i<127) j++;
+    if (j-i+1>=3) { out.push(((j-i)&0x7F)|0x80, data[i]); i=j+1; }
+    else {
+      j=i;
+      while (j<n && j-i<128) { if(j+2<n&&data[j]===data[j+1]&&data[j+1]===data[j+2]) break; j++; }
+      out.push(j-i-1); for(let k=i;k<j;k++) out.push(data[k]);
+      i=j;
+    }
+  }
+  return new Uint8Array(out);
+}
+
+function makeVSPkt(frame, enc, prev) {
+  let payload, type;
+  if (enc===2) { // DRLE
+    if (!prev) { payload=packBits(frame); type=1; }
+    else {
+      const d=new Uint8Array(frame.length);
+      for(let i=0;i<frame.length;i++) d[i]=frame[i]^prev[i];
+      payload=packBits(d); type=2;
+    }
+  } else if (enc===1) { payload=packBits(frame); type=1; }
+  else { payload=frame; type=0; }
+  const ln=payload.length;
+  const pkt=new Uint8Array(6+ln);
+  pkt[0]=0xAA; pkt[1]=0x55; pkt[2]=type;
+  pkt[3]=(ln>>8)&0xFF; pkt[4]=ln&0xFF;
+  pkt.set(payload,5); pkt[5+ln]=0xBB;
+  return pkt;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  LUT editor
+// ═══════════════════════════════════════════════════════════════════
+const GRP_CLS = ['lc0','lc1','lc2','lc3','lc4'];
+
+function buildLUTEditor() {
+  buildVsGrid(); buildTimGrid(); buildDcBars();
+}
+
+function buildVsGrid() {
+  const cont=$('vs-grid');
+  // Headers
+  let h='<div style="display:grid;grid-template-columns:80px repeat(7,37px);gap:2px;margin-bottom:3px">';
+  h+='<div style="font-size:9px;color:var(--fg2)">Группа \\ Фаза</div>';
+  for(let p=0;p<7;p++) h+=`<div style="font-size:9px;color:var(--fg2);text-align:center">${p}</div>`;
+  h+='</div>';
+  for(let g=0;g<N_GROUPS;g++){
+    h+=`<div style="display:flex;align-items:center;gap:2px;margin-bottom:2px">
+      <div style="font-size:9px;color:${GRP_COLORS[g]};width:80px;flex-shrink:0">${GRP_LABELS[g]}</div>`;
+    for(let p=0;p<7;p++){
+      const idx=g*7+p;
+      h+=`<input type="text" maxlength="2" class="lc ${GRP_CLS[g]}" data-idx="${idx}"
+            value="${hexB(lut[idx])}" oninput="onLC(this,${idx})">`;
+    }
+    h+='</div>';
+  }
+  cont.innerHTML=h;
+}
+
+function buildTimGrid(){
+  const cont=$('tim-grid');
+  let h='<div style="display:grid;grid-template-columns:48px repeat(5,37px);gap:2px;margin-bottom:3px">';
+  h+='<div style="font-size:9px;color:var(--fg2)">Фаза</div>';
+  for(const l of ['TP_A','TP_B','TP_C','TP_D','RP'])
+    h+=`<div style="font-size:9px;color:var(--fg2);text-align:center">${l}</div>`;
+  h+='</div>';
+  for(let p=0;p<7;p++){
+    h+=`<div style="display:flex;align-items:center;gap:2px;margin-bottom:2px">
+      <div style="font-size:9px;color:var(--fg2);width:48px">Ph ${p}</div>`;
+    for(let s=0;s<5;s++){
+      const idx=35+p*5+s, cls=s<4?'tp':'rp';
+      h+=`<input type="text" maxlength="2" class="lc ${cls}" data-idx="${idx}"
+            value="${hexB(lut[idx])}" oninput="onLC(this,${idx})">`;
+    }
+    h+='</div>';
+  }
+  cont.innerHTML=h;
+}
+
+function buildDcBars(){
+  let h='';
+  for(let g=0;g<N_GROUPS;g++)
+    h+=`<div class="dcrow">
+      <div class="dclbl" style="color:${GRP_COLORS[g]}">${GRP_LABELS[g]}</div>
+      <div class="dctrack" id="dct${g}"><div class="dccenter"></div><div class="dcfill" id="dcf${g}"></div></div>
+      <div class="dcval" id="dcv${g}"></div>
+    </div>`;
+  $('dc-bars').innerHTML=h;
+  renderDC();
+}
+
+function onLC(el, idx){
+  const v=parseInt(el.value.trim(),16);
+  if (isNaN(v)||v<0||v>255){ el.classList.add('bad'); return; }
+  el.classList.remove('bad');
+  lut[idx]=v;
+  drawWf(); renderDC(); renderTicks();
+}
+
+function lutToUI(){
+  document.querySelectorAll('.lc[data-idx]').forEach(el=>{
+    el.value=hexB(lut[+el.dataset.idx]);
+    el.classList.remove('bad');
+  });
+  renderDC(); renderTicks();
+}
+
+function renderTicks(){
+  const fr=calcTicks(), pr=Math.round(fr*8+550);
+  $('tt-fr').textContent=String(fr);
+  $('tt-pr').textContent=`~${pr}ms`;
+}
+
+function calcTicks(){
+  let t=0;
+  for(let p=0;p<7;p++){
+    const b=35+p*5;
+    t+=(lut[b]+lut[b+1]+lut[b+2]+lut[b+3])*(lut[b+4]+1);
+  }
+  return t;
+}
+
+// ── Waveform ────────────────────────────────────────────────────────
+function decodeWF(g){
+  const segs=[];
+  for(let p=0;p<7;p++){
+    const vs=lut[g*7+p], b=35+p*5;
+    const tp=[lut[b],lut[b+1],lut[b+2],lut[b+3]], rp=lut[b+4];
+    for(let r=0;r<=rp;r++)
+      for(let s=0;s<4;s++){
+        const v=(vs>>((3-s)*2))&3, d=tp[s];
+        if(d>0) segs.push({v,d});
+      }
+  }
+  return segs;
+}
+
+const VS_V = [0,1,-1,1/3];
+const VS_C = ['#4a4a5a','#e07070','#60a0f0','#d09040'];
+
+function drawWf(){
+  const canvas=$('wf-canvas');
+  const W=canvas.clientWidth; if(!W){setTimeout(drawWf,50);return;}
+  canvas.width=W; const H=260;
+  const ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+
+  const ml=68,mr=8,mt=7,mb=34;
+  const pw=W-ml-mr, ph=H-mt-mb;
+  const th=ph/N_GROUPS;
+
+  const allS=Array.from({length:N_GROUPS},(_,g)=>decodeWF(g));
+  const totT=Math.max(...allS.map(s=>s.reduce((a,{d})=>a+d,0)),1);
+
+  const phF=[];
+  for(let p=0;p<7;p++){const b=35+p*5; phF.push((lut[b]+lut[b+1]+lut[b+2]+lut[b+3])*(lut[b+4]+1));}
+
+  for(let g=0;g<N_GROUPS;g++){
+    const ty=mt+g*th, mid=ty+th/2;
+    const segs=allS[g], col=GRP_COLORS[g];
+    const vcomBad=g===4&&Array.from({length:7},(_,p)=>lut[28+p]).some(b=>b!==0);
+
+    // Background
+    ctx.fillStyle=vcomBad?'#2a0606':'#16161e';
+    ctx.fillRect(ml,ty,pw,th-2);
+
+    // Group label
+    ctx.font='9px monospace'; ctx.textAlign='right';
+    ctx.fillStyle=vcomBad?'#f05050':col;
+    ctx.fillText(GRP_LABELS[g],ml-4,mid+3);
+
+    // Reference lines
+    const yv={vsh1:ty+th*.14, vsh2:ty+th*.28, vss:ty+th*.5, vsl:ty+th*.86};
+    ctx.setLineDash([2,5]); ctx.lineWidth=.5;
+    [[yv.vsh1,'#e0707044'],[yv.vsh2,'#d0904044'],[yv.vss,'#38384c'],[yv.vsl,'#60a0f044']].forEach(([y,c])=>{
+      ctx.strokeStyle=c; ctx.beginPath(); ctx.moveTo(ml,y); ctx.lineTo(W-mr,y); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+
+    // Ref labels
+    ctx.font='7px monospace'; ctx.textAlign='right';
+    [[yv.vsh1,'+15V','#e0707060'],[yv.vsh2,'+5V','#d0904060'],[yv.vsl,'-15V','#60a0f060']].forEach(([y,l,c])=>{
+      ctx.fillStyle=c; ctx.fillText(l,ml-2,y+2);
+    });
+
+    if(vcomBad){
+      ctx.fillStyle='#f0505030'; ctx.fillRect(ml,ty,pw,th-2);
+      ctx.fillStyle='#f05050'; ctx.textAlign='center'; ctx.font='bold 9px monospace';
+      ctx.fillText('⚠ VCOM NON-ZERO — DISPLAY DISASTER',ml+pw/2,mid+3);
+      continue;
+    }
+    if(!segs.length){
+      ctx.fillStyle='#404050'; ctx.textAlign='center'; ctx.font='9px monospace';
+      ctx.fillText('(inactive)',ml+pw/2,mid+3); continue;
+    }
+
+    // Waveform
+    ctx.lineWidth=2;
+    let x=ml, py_=null;
+    const yM=[yv.vss,yv.vsh1,yv.vsl,yv.vsh2];
+    for(const{v,d}of segs){
+      const px=Math.max(1,Math.round(d/totT*pw)), y=yM[v], c=VS_C[v];
+      if(py_!==null&&py_!==y){ctx.beginPath();ctx.strokeStyle=c;ctx.moveTo(x,py_);ctx.lineTo(x,y);ctx.stroke();}
+      ctx.beginPath();ctx.strokeStyle=c;ctx.moveTo(x,y);ctx.lineTo(x+px,y);ctx.stroke();
+      ctx.fillStyle=c+'3a';
+      ctx.fillRect(x,Math.min(y,yv.vss),px,Math.abs(y-yv.vss));
+      x+=px; py_=y;
+    }
+  }
+
+  // Phase dividers + labels
+  ctx.setLineDash([3,3]); ctx.lineWidth=1; let cum=0;
+  for(let p=0;p<7;p++){
+    const f=phF[p], xs=ml+Math.round(cum/totT*pw), xe=ml+Math.round((cum+f)/totT*pw), xm=(xs+xe)/2;
+    if(p>0){ctx.strokeStyle='#383850';ctx.beginPath();ctx.moveTo(xs,mt);ctx.lineTo(xs,H-mb);ctx.stroke();}
+    ctx.setLineDash([]);
+    ctx.font='8px monospace'; ctx.textAlign='center';
+    ctx.fillStyle=f>0?'#808090':'#404050';
+    ctx.fillText('Ph'+p, f>0?xm:xs+5, H-mb+10);
+    if(f>0){ctx.fillStyle='#505060'; ctx.fillText(f+'f',xm,H-mb+20);}
+    ctx.setLineDash([3,3]); cum+=f;
+  }
+  ctx.setLineDash([]);
+}
+
+// ── DC balance bars ───────────────────────────────────────────────
+function dcBal(g){
+  const segs=decodeWF(g);
+  let pos=0,neg=0,bal=0;
+  for(const{v,d}of segs){const c=VS_V[v]*d; bal+=c; if(c>0)pos+=c; else neg-=c;}
+  return{pos,neg,bal};
+}
+
+function renderDC(){
+  for(let g=0;g<N_GROUPS;g++){
+    const{pos,neg,bal}=dcBal(g);
+    const tot=(pos+neg)||1, warn=Math.abs(bal)>10;
+    const track=$(`dct${g}`), fill=$(`dcf${g}`), val=$(`dcv${g}`);
+    const tw=track.offsetWidth||200, cx=tw/2, mh=cx-2;
+    if(Math.abs(bal)<.5){
+      fill.style.cssText=`left:${cx-2}px;width:4px;background:var(--green)`;
+      val.textContent='OK (balanced)'; val.style.color='var(--green)';
+    } else if(bal>0){
+      const w=Math.min(mh,Math.round(bal/tot*mh*2));
+      fill.style.cssText=`left:${cx}px;width:${Math.max(w,2)}px;background:${warn?'var(--red)':'var(--vgh)'}`;
+      val.textContent=`+${bal.toFixed(1)} DC HIGH${warn?' ⚠':''}`;
+      val.style.color=warn?'var(--red)':'var(--orange)';
+    } else {
+      const w=Math.min(mh,Math.round(-bal/tot*mh*2));
+      fill.style.cssText=`left:${cx-Math.max(w,2)}px;width:${Math.max(w,2)}px;background:${warn?'var(--red)':'var(--vgl)'}`;
+      val.textContent=`${bal.toFixed(1)} DC LOW${warn?' ⚠':''}`;
+      val.style.color=warn?'var(--red)':'var(--orange)';
+    }
+  }
+}
+
+// ── LUT actions ────────────────────────────────────────────────────
+function applyLut(){
+  send('LUTW:'+hexOf(lut).toUpperCase()+'\nAPPLY\n');
+}
+function getLut(){ lgetBuf=Array(7).fill(null); send('LGET\n'); }
+function loadFactory(){ lut.set(FACTORY_LUT); lutToUI(); drawWf(); logI('Factory LUT loaded'); }
+function loadAnim()   { lut.set(ANIM_LUT);    lutToUI(); drawWf(); logI('Anim partial LUT loaded'); }
+function adjTP(d){ for(let p=0;p<7;p++) for(let s=0;s<4;s++){const i=35+p*5+s; lut[i]=clamp(lut[i]+d,0,255);} lutToUI(); drawWf(); }
+function adjRP(d){ for(let p=0;p<7;p++){const i=35+p*5+4; lut[i]=clamp(lut[i]+d,0,255);} lutToUI(); drawWf(); }
+
+function togglePasteDlg(){
+  const d=$('paste-dlg'); d.style.display=d.style.display==='none'?'':'none';
+}
+function doPaste(){
+  const raw=$('paste-txt').value;
+  const hex=raw.replace(/\/\/[^\n]*/g,'').replace(/\/\*[\s\S]*?\*\//g,'')
+               .replace(/0[xX]/g,'').replace(/[^0-9a-fA-F]/g,'');
+  if(hex.length!==LUT_SZ*2){
+    alert(`Нужно ${LUT_SZ*2} hex-символов (${LUT_SZ} байт).\nПолучено: ${hex.length} (${hex.length/2} байт)`);
+    return;
+  }
+  for(let i=0;i<LUT_SZ;i++) lut[i]=parseInt(hex.slice(i*2,i*2+2),16);
+  lutToUI(); drawWf();
+  togglePasteDlg();
+  logI(`LUT paste OK (${LUT_SZ} bytes)`);
+}
+function exportLut(){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([hexOf(lut).toUpperCase()+'\n'],{type:'text/plain'}));
+  a.download='lut.hex'; a.click(); URL.revokeObjectURL(a.href);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', ()=>{
+  clearCanvas();
+  buildLUTEditor();
+  lutToUI(); renderTele(); renderTicks();
+  const ro=new ResizeObserver(()=>drawWf());
+  ro.observe($('wf-canvas'));
+  initBotResize();
+});
+
+// ── Bottom console resize + collapse ─────────────────────────────
+function initBotResize() {
+  const bc=$('bot-con'), rh=$('bot-resize');
+  let dragging=false, startY=0, startH=0;
+
+  rh.addEventListener('mousedown', e=>{
+    if (bc.classList.contains('collapsed')) return;
+    dragging=true; startY=e.clientY; startH=bc.offsetHeight;
+    rh.classList.add('drag');
+    document.body.style.userSelect='none';
+    document.body.style.cursor='ns-resize';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e=>{
+    if (!dragging) return;
+    const delta = startY - e.clientY;
+    const newH = Math.max(24, Math.min(600, startH + delta));
+    bc.style.height = newH+'px';
+    bc.style.transition = 'none';
+    if (newH <= 28) bc.classList.add('collapsed');
+    else            bc.classList.remove('collapsed');
+    $('bot-tog').textContent = bc.classList.contains('collapsed') ? '▲' : '▼';
+  });
+
+  document.addEventListener('mouseup', ()=>{
+    if (!dragging) return;
+    dragging=false; rh.classList.remove('drag');
+    document.body.style.userSelect='';
+    document.body.style.cursor='';
+    bc.style.transition='';
+  });
+}
+
+function toggleBotCon() {
+  const bc=$('bot-con');
+  if (bc.classList.contains('collapsed')) {
+    bc.classList.remove('collapsed');
+    bc.style.height='150px';
+    $('bot-tog').textContent='▼';
+  } else {
+    bc.classList.add('collapsed');
+    bc.style.height='24px';
+    $('bot-tog').textContent='▲';
+  }
+}
+</script>
+</body>
+</html>

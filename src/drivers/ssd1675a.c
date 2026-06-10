@@ -176,13 +176,15 @@ void ssd1675a_init(const struct device *gpio_dev) {
     
     // Hardware Reset
     gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
-    k_msleep(10); // Reduced to 10ms for speed (PLL boost removed, so safe now)
+    k_msleep(10);
     gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
-    k_msleep(10); // Reduced to 10ms for speed
+    // SSD1675A spec: wait for BUSY to go LOW after HW reset before issuing commands.
+    // Without this, configure_registers() was being sent while controller still initialising.
+    ssd1675a_wait_busy();
 
-    // Software Reset - REMOVED for speed (HW reset is sufficient)
-    // send_cmd(0x12);
-    // ssd1675a_wait_busy();
+    // Software Reset: ensures a clean controller state (e.g. after mid-operation reflash).
+    send_cmd(0x12);
+    ssd1675a_wait_busy();
 
     // Initialization Sequence
     configure_registers();
@@ -196,15 +198,26 @@ void ssd1675a_init_partial(const struct device *gpio_dev) {
     gpio_pin_configure(eink_gpio_dev, PIN_VCC, GPIO_OUTPUT_ACTIVE);
     gpio_pin_configure(eink_gpio_dev, PIN_RST, GPIO_OUTPUT_ACTIVE);
     gpio_pin_configure(eink_gpio_dev, PIN_BUSY, GPIO_INPUT);
-    
+
     // SPI Init (Pins)
     soft_spi_init(gpio_dev);
 
     // Power On Sequence (Safe to call if already on)
     ssd1675a_power_on();
-    
-    // SKIP Hardware Reset to preserve RAM
-    // Just re-configure registers which might be lost in Sleep
+
+    // Recovery: if BUSY is already HIGH the controller is stuck (e.g. mid-operation
+    // reflash, or HV rails never discharged).  Hard-reset to unblock it.
+    // RAM will be lost, but a corrupted FB is better than an infinite busy-wait.
+    if (gpio_pin_get(eink_gpio_dev, PIN_BUSY) == 1) {
+        gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
+        k_msleep(10);
+        gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
+        ssd1675a_wait_busy();
+        send_cmd(0x12);   // software reset
+        ssd1675a_wait_busy();
+    }
+
+    // Re-configure registers (may be lost after Sleep or reset above)
     configure_registers();
 }
 

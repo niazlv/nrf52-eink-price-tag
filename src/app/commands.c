@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/sys/reboot.h>
 
 typedef void (*cmd_handler_t)(char *args);
 struct shell_cmd {
@@ -737,6 +738,14 @@ void cmd_vstream(char *args)
     ble_printf("VSTREAM:unknown\r\n");
 }
 
+static void cmd_reboot(char *args)
+{
+    (void)args;
+    ble_printf("REBOOT\r\n");
+    k_sleep(K_MSEC(100));   /* flush BLE TX before reset */
+    sys_reboot(SYS_REBOOT_COLD);
+}
+
 /* ── Command table ───────────────────────────────────────────────────────── */
 
 const struct shell_cmd commands[] = {
@@ -775,6 +784,8 @@ const struct shell_cmd commands[] = {
     /* Frame buffers */
     {"FW:",         cmd_fw,         "Write BW frame: FW:offset:HH.."},
     {"RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.."},
+    /* System */
+    {"REBOOT",      cmd_reboot,     "Cold reboot the device"},
     /* Debug */
     {"VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
     {"DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (legacy)"},
