@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /**
  * @brief Callback for received data
@@ -38,5 +39,18 @@ void ble_printf(const char *fmt, ...);
  * @brief Check if BLE is connected
  */
 int ble_service_is_connected(void);
+
+/**
+ * @brief Switch BLE between low-power idle mode and high-throughput streaming.
+ *
+ * Idle mode uses slow connectable advertising / relaxed connection params.
+ * Streaming mode requests fast connection params for VSTREAM transfers.
+ */
+void ble_service_set_streaming_mode(bool enable);
+
+/**
+ * @brief Current runtime advertising/GAP name.
+ */
+const char *ble_service_get_device_name(void);
 
 #endif // BLE_SERVICE_H

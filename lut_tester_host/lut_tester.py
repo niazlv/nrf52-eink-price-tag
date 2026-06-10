@@ -4,7 +4,7 @@ SSD1675A LUT Tester + Device Controller — macOS BLE companion.
 
 Supports both:
   • LUT-Tester   (lut_tester sub-project firmware)
-  • nrf52-E-ink-clock-DEV  (root peripheral_uart firmware)
+  • nrf52-E-ink-clock-*    (root peripheral_uart firmware with unique suffix)
 
 Layout:
   Top bar   — BLE connect + LUT actions + test patterns
@@ -40,14 +40,36 @@ FW_BYTES_PER_CHUNK = 48                  # 96 hex chars per FW/RW line
 RW_BYTES_PER_CHUNK = 48
 
 # NUS UUIDs
+NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 # Known device names (shown in the device selector)
 DEVICE_NAMES = [
-    "LUT-Tester",
+    "nrf52-E-ink-clock-*",
     "nrf52-E-ink-clock-DEV",
+    "LUT-Tester",
 ]
+
+def is_name_prefix(selector: str) -> bool:
+    return selector.endswith('*')
+
+def adv_has_nus(adv) -> bool:
+    return NUS_SERVICE_UUID in [u.lower() for u in (getattr(adv, 'service_uuids', None) or [])]
+
+async def find_device_by_selector(selector: str, timeout: float = 8.0):
+    if is_name_prefix(selector):
+        prefix = selector[:-1]
+        device = await BleakScanner.find_device_by_filter(
+            lambda dev, adv: ((dev.name or '').startswith(prefix) or
+                              (getattr(adv, 'local_name', None) or '').startswith(prefix)),
+            timeout=timeout)
+        if device is not None:
+            return device
+        return await BleakScanner.find_device_by_filter(
+            lambda dev, adv: adv_has_nus(adv),
+            timeout=3.0)
+    return await BleakScanner.find_device_by_name(selector, timeout=timeout)
 
 # Dark theme
 C = {
@@ -463,7 +485,7 @@ class App:
         self._set_status(f"Scanning for '{target}'…")
         self._log_info(f"Scanning for '{target}'…")
         try:
-            device = await BleakScanner.find_device_by_name(target, timeout=8.0)
+            device = await find_device_by_selector(target, timeout=8.0)
             if device is None:
                 self._set_status(f"'{target}' not found")
                 self._log_info("Device not found")

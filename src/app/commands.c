@@ -7,6 +7,7 @@
 #include "lib/graphics.h"
 #include <drivers/ssd1675a.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <zephyr/kernel.h>
@@ -88,6 +89,7 @@ static void vs_exit_streaming(void) {
     /* Wait for any in-progress pipelined display refresh to finish before
      * powering down HV rails. Safe to call even when no refresh is active. */
     ssd1675a_wait_busy();
+    ble_service_set_streaming_mode(false);
     k_work_cancel_delayable(&vs_watchdog_work);
     if (vstream_active) {
         vs_state       = VS_IDLE;
@@ -408,6 +410,7 @@ void cmd_time_eq(char *args)
     struct tm t = {0};
     get_system_time(&t);
     set_system_time(h, m, s, t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
+    display_manager_force_update();
     ble_printf("TIME set %02d:%02d:%02d\r\n", h, m, s);
 }
 
@@ -759,6 +762,7 @@ void cmd_vstream(char *args)
         graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
         display_manager_set_keep_on(true);
         display_manager_set_partial_mode(0);  /* TURBO for max fps */
+        ble_service_set_streaming_mode(true);
         vs_state       = VS_IDLE;
         vs_frame_count = 0;
         vs_reset_frame();

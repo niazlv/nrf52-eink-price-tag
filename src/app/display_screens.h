@@ -11,6 +11,13 @@ typedef struct {
     int battery_percent;
     int32_t last_render_ms;
     int64_t uptime_sec;
+    int saver_mode;
+    int partial_mode;
+    int maintenance_countdown;
+    bool custom_lut;
+    bool keep_display_on;
+    bool streaming_active;
+    bool power_after_update;
 } display_status_model_t;
 
 void display_screens_reset_dynamic(void);

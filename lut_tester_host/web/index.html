@@ -307,6 +307,7 @@ select{cursor:pointer}
   <div class="hdr-title">nRF52 E-ink Controller</div>
   <div class="hdr-sep">│</div>
   <select id="dev-name" style="width:210px">
+    <option>nrf52-E-ink-clock-*</option>
     <option>nrf52-E-ink-clock-DEV</option>
     <option>LUT-Tester</option>
   </select>
@@ -791,10 +792,13 @@ async function bleConnect() {
     return;
   }
   const name = $('dev-name').value.trim();
+  const nameFilter = name.endsWith('*')
+    ? {namePrefix: name.slice(0, -1)}
+    : {name};
   setStatus('Сканирую…', false);
   try {
     bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [{name}],
+      filters: [nameFilter, {services: [NUS_SVC]}],
       optionalServices: [NUS_SVC],
     });
     bleDevice.addEventListener('gattserverdisconnected', onBleDisc);

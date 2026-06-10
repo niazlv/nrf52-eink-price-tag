@@ -13,7 +13,7 @@ Protocol (device side: VSTREAM: command):
 Usage:
   python vstream_player.py bad_apple.gif
   python vstream_player.py bad_apple.mp4 --fps 12 --enc drle --dither
-  python vstream_player.py bad_apple.gif --device "nrf52-E-ink-clock-DEV" --loop
+  python vstream_player.py bad_apple.gif --device "nrf52-E-ink-clock-*" --loop
 
 Deps:  pip install bleak pillow
 Opt:   pip install numpy opencv-python   (faster processing + video file support)
@@ -48,8 +48,10 @@ except ImportError:
     CV2_OK = False
 
 # ── NUS UUIDs ─────────────────────────────────────────────────────────────────
+NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # write → device
 NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # notify ← device
+DEFAULT_DEVICE_SELECTOR = "nrf52-E-ink-clock-*"
 
 # ── Display geometry ──────────────────────────────────────────────────────────
 DISP_W  = 128
@@ -63,6 +65,23 @@ VS_STOP  = bytes([0xCC, 0xDD])
 VS_RAW   = 0x00
 VS_RLE   = 0x01
 VS_DRLE  = 0x02
+
+def adv_has_nus(adv) -> bool:
+    return NUS_SERVICE in [u.lower() for u in (getattr(adv, "service_uuids", None) or [])]
+
+async def find_device_by_selector(selector: str, timeout: float = 10.0):
+    if selector.endswith("*"):
+        prefix = selector[:-1]
+        device = await BleakScanner.find_device_by_filter(
+            lambda dev, adv: ((dev.name or "").startswith(prefix) or
+                              (getattr(adv, "local_name", None) or "").startswith(prefix)),
+            timeout=timeout)
+        if device:
+            return device
+        return await BleakScanner.find_device_by_filter(
+            lambda dev, adv: adv_has_nus(adv),
+            timeout=3.0)
+    return await BleakScanner.find_device_by_name(selector, timeout=timeout)
 
 # ── PackBits encoder ──────────────────────────────────────────────────────────
 
@@ -297,7 +316,7 @@ async def run(args):
     if args.address:
         device = await BleakScanner.find_device_by_address(args.address, timeout=10)
     else:
-        device = await BleakScanner.find_device_by_name(args.device, timeout=10)
+        device = await find_device_by_selector(args.device, timeout=10)
     if not device:
         print("Device not found"); sys.exit(1)
     print(f"Connecting to {device.name} ({device.address})...")
@@ -355,7 +374,8 @@ async def run(args):
 def main():
     p = argparse.ArgumentParser(description="Stream video/GIF to e-ink via BLE vstream")
     p.add_argument("file", help="Input file (GIF, MP4, AVI, etc.)")
-    p.add_argument("--device",  default="nrf52-E-ink-clock-DEV", help="BLE device name")
+    p.add_argument("--device",  default=DEFAULT_DEVICE_SELECTOR,
+                   help="BLE device name or prefix wildcard, e.g. nrf52-E-ink-clock-*")
     p.add_argument("--address", default=None, help="BLE address (overrides --device)")
     p.add_argument("--enc",     default="drle", choices=["raw","rle","drle"],
                    help="Frame encoding: raw|rle|drle (default: drle)")

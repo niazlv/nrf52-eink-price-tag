@@ -17,13 +17,22 @@ static const struct device *gpio_dev_dm;
 static bool screensaver_enabled = true;
 static bool keep_display_on = false;
 static bool streaming_active = false;
-static int update_counter = 59; // Start at 59 so first increment hits 60 -> Full Update
+static int partial_mode_current = 1;
 
 // DC-balance maintenance: after this many streaming partial frames, force one
 // full 0xC7 cycle to prevent particle polarization / ghost burn-in.
 // At ~270ms/frame: 500 frames ≈ 2.25min between maintenance passes (~1-2s pause each).
 #define STREAM_REFRESH_INTERVAL 500
 static int stream_partial_count = 0;
+
+/* Static saver power policy:
+ * - first frame and periodic maintenance use a full refresh so the panel has
+ *   a known clean baseline;
+ * - minute ticks use the TURBO partial LUT so the panel can sleep quickly.
+ */
+#define STATIC_SAVER_FULL_INTERVAL 20
+#define STATIC_SAVER_PARTIAL_MODE 0
+static int static_saver_frame_count = 0;
 
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
@@ -47,9 +56,52 @@ K_MUTEX_DEFINE(display_lock);
 
 static void stop_streaming_if_active(void) {
     if (streaming_active) {
+        ssd1675a_wait_busy();
         ssd1675a_end_streaming();
+        ssd1675a_wait_busy();
         streaming_active = false;
     }
+}
+
+static bool should_power_down_after_update(void)
+{
+    return !keep_display_on &&
+           (!screensaver_enabled || screensaver_mode == SCREENSAVER_MODE_STATIC);
+}
+
+static void power_down_after_idle_update(void)
+{
+    if (should_power_down_after_update()) {
+        ssd1675a_sleep();
+        ssd1675a_power_off();
+    }
+}
+
+static void force_builtin_partial_mode(int mode, bool *prev_custom, int *prev_mode)
+{
+    if (prev_custom) {
+        *prev_custom = ssd1675a_get_use_custom_lut();
+    }
+    if (prev_mode) {
+        *prev_mode = partial_mode_current;
+    }
+
+    ssd1675a_set_use_custom_lut(false);
+    display_manager_set_partial_mode(mode);
+}
+
+static void restore_partial_mode(bool prev_custom, int prev_mode)
+{
+    display_manager_set_partial_mode(prev_mode);
+    ssd1675a_set_use_custom_lut(prev_custom);
+}
+
+static int maintenance_countdown(int current_count, int interval)
+{
+    int next_count = current_count + 1;
+    int phase = next_count % interval;
+
+    return (phase == 0) ? 0 : (interval - phase);
 }
 
 void display_manager_init(void) {
@@ -69,12 +121,7 @@ static void perform_display_update(void) {
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
 
-    // Only power off/sleep if Screensaver is disabled.
-    // If active, we keep VCC On and avoid Deep Sleep to allow Partial Init (No Reset).
-    if (!screensaver_enabled && !keep_display_on) {
-        ssd1675a_sleep();
-        ssd1675a_power_off();
-    }
+    power_down_after_idle_update();
 
     // k_mutex_unlock(&display_lock);
 }
@@ -87,10 +134,24 @@ static void perform_display_update_flush_red(void) {
     ssd1675a_init(gpio_dev_dm);
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display_flush_red();
-    if (!screensaver_enabled && !keep_display_on) {
-        ssd1675a_sleep();
-        ssd1675a_power_off();
+    power_down_after_idle_update();
+}
+
+static void display_manager_update_static_saver(bool full_refresh)
+{
+    bool prev_custom;
+    int prev_mode;
+
+    force_builtin_partial_mode(STATIC_SAVER_PARTIAL_MODE, &prev_custom, &prev_mode);
+
+    if (full_refresh) {
+        stop_streaming_if_active();
+        perform_display_update();
+    } else {
+        display_manager_update_partial();
     }
+
+    restore_partial_mode(prev_custom, prev_mode);
 }
 
 void display_manager_update_partial(void) {
@@ -123,10 +184,7 @@ void display_manager_update_partial(void) {
         ssd1675a_init_partial(gpio_dev_dm);
         ssd1675a_display_buffer_fast(graphics_get_buffer());
         ssd1675a_update_partial();
-        if (!screensaver_enabled) {
-            ssd1675a_sleep();
-            ssd1675a_power_off();
-        }
+        power_down_after_idle_update();
     }
 }
 
@@ -167,22 +225,37 @@ void display_manager_update_partial_nowait(void) {
 
 void display_manager_set_partial_mode(int mode) {
     stop_streaming_if_active();  // new LUT must be loaded in next begin_streaming()
-    if (mode == 0) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
-    else if (mode == 1) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_BALANCED);
-    else if (mode == 2) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
-    else if (mode == 3) ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_CLEAN);
+    if (mode == 0) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
+    } else if (mode == 1) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_BALANCED);
+    } else if (mode == 2) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
+    } else if (mode == 3) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_CLEAN);
+    } else {
+        return;
+    }
+    partial_mode_current = mode;
 }
 
 void display_manager_begin_streaming(void) {
-    ssd1675a_begin_streaming();
+    if (!streaming_active) {
+        ssd1675a_begin_streaming();
+        streaming_active = true;
+    }
 }
 
 void display_manager_update_frame_stream(void) {
+    if (!streaming_active) {
+        ssd1675a_begin_streaming();
+        streaming_active = true;
+    }
     ssd1675a_update_frame_stream();
 }
 
 void display_manager_end_streaming(void) {
-    ssd1675a_end_streaming();
+    stop_streaming_if_active();
 }
 
 void display_manager_reset_lut_test(void) {
@@ -262,8 +335,9 @@ void display_manager_set_screensaver_mode(int mode) {
         display_manager_reset_lut_test();
         k_sem_give(&sem_screensaver_wake);
     } else {
+        static_saver_frame_count = 0;
         display_manager_set_keep_on(false);
-        display_manager_set_partial_mode(1);
+        display_manager_set_partial_mode(STATIC_SAVER_PARTIAL_MODE);
     }
 }
 
@@ -280,6 +354,18 @@ void display_manager_update_status(void) {
     model.battery_percent = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv - 2000) / 10);
     model.last_render_ms = last_dur;
     model.uptime_sec = k_uptime_get() / 1000;
+    model.saver_mode = screensaver_mode;
+    model.partial_mode = (screensaver_mode == SCREENSAVER_MODE_STATIC)
+                         ? STATIC_SAVER_PARTIAL_MODE : partial_mode_current;
+    model.custom_lut = (screensaver_mode != SCREENSAVER_MODE_STATIC) &&
+                       ssd1675a_get_use_custom_lut();
+    model.keep_display_on = keep_display_on;
+    model.streaming_active = streaming_active;
+    model.power_after_update = should_power_down_after_update();
+    model.maintenance_countdown =
+        (screensaver_mode == SCREENSAVER_MODE_STATIC)
+            ? maintenance_countdown(static_saver_frame_count, STATIC_SAVER_FULL_INTERVAL)
+            : maintenance_countdown(stream_partial_count, STREAM_REFRESH_INTERVAL);
 
     if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
         display_screens_render_status_dynamic(&model);
@@ -295,14 +381,10 @@ void display_manager_update_status(void) {
         }
     } else {
         display_screens_render_status_static(&model);
-        update_counter++;
-
-        if (update_counter >= 60) {
-            update_counter = 0;
-            perform_display_update(); // Full Update
-        } else {
-            display_manager_update_partial(); 
-        }
+        bool full_refresh = (static_saver_frame_count == 0) ||
+                            ((static_saver_frame_count % STATIC_SAVER_FULL_INTERVAL) == 0);
+        static_saver_frame_count++;
+        display_manager_update_static_saver(full_refresh);
 
         last_dur = (int32_t)(k_uptime_get() - start_render);
     }
@@ -372,7 +454,7 @@ void display_manager_enable_screensaver(bool enable) {
     screensaver_enabled = enable;
     if (enable && !prev) {
         // Just switched on, force update
-        update_counter = 59; // Force Full Update next time
+        static_saver_frame_count = 0;
         k_sem_give(&sem_screensaver_wake);
     }
 }
@@ -412,7 +494,7 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
     }
 }
 
-K_THREAD_DEFINE(screensaver_tid, 1024, screensaver_thread, NULL, NULL, NULL, 7, 0, 0);
+K_THREAD_DEFINE(screensaver_tid, 2048, screensaver_thread, NULL, NULL, NULL, 7, 0, 0);
 
 void display_manager_force_update(void) {
     if (screensaver_enabled) {
@@ -434,8 +516,7 @@ void display_manager_set_keep_on(bool enable) {
         stop_streaming_if_active();
     }
     keep_display_on = enable;
-    if (!enable && !screensaver_enabled) {
-        ssd1675a_sleep();
-        ssd1675a_power_off();
+    if (!enable) {
+        power_down_after_idle_update();
     }
 }

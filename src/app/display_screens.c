@@ -1,11 +1,12 @@
 #include "display_screens.h"
+#include "display_manager.h"
 #include <lib/graphics.h>
 #include <lib/life.h>
 #include <drivers/ssd1675a.h>
 #include <stdio.h>
 #include <stdbool.h>
 
-static char date_str[24];
+static char date_str[40];
 static char stat_str[48];
 static life_world_t life_world;
 
@@ -23,9 +24,9 @@ static void format_uptime(int64_t uptime_sec, char *buf, size_t buf_size)
     int s = uptime_sec % 60;
 
     if (d > 0) {
-        snprintf(buf, buf_size, "%dd%dh%dm%ds", d, h, m, s);
+        snprintf(buf, buf_size, "%dd%dh", d, h);
     } else if (h > 0) {
-        snprintf(buf, buf_size, "%dh%dm%ds", h, m, s);
+        snprintf(buf, buf_size, "%dh%dm", h, m);
     } else if (m > 0) {
         snprintf(buf, buf_size, "%dm%ds", m, s);
     } else {
@@ -33,11 +34,56 @@ static void format_uptime(int64_t uptime_sec, char *buf, size_t buf_size)
     }
 }
 
+static const char *saver_mode_tag(int mode)
+{
+    switch (mode) {
+    case SCREENSAVER_MODE_DYNAMIC:  return "DY";
+    case SCREENSAVER_MODE_LUT_TEST: return "LT";
+    case SCREENSAVER_MODE_STATIC:
+    default:                        return "ST";
+    }
+}
+
+static const char *partial_mode_tag(const display_status_model_t *model)
+{
+    if (model->custom_lut) {
+        return "CU";
+    }
+
+    switch (model->partial_mode) {
+    case 0:  return "T";
+    case 1:  return "B";
+    case 2:  return "S";
+    case 3:  return "C";
+    default: return "?";
+    }
+}
+
+static const char *power_tag(const display_status_model_t *model)
+{
+    if (model->power_after_update) {
+        return "Z";
+    }
+    if (model->streaming_active) {
+        return "S";
+    }
+    if (model->keep_display_on) {
+        return "K";
+    }
+    return "ON";
+}
+
 static void render_stats(const display_status_model_t *model, int x, int y)
 {
     char time_part[20] = {0};
     format_uptime(model->uptime_sec, time_part, sizeof(time_part));
-    snprintf(stat_str, sizeof(stat_str), "Up: %s | R: %dms", time_part, model->last_render_ms);
+    snprintf(stat_str, sizeof(stat_str), "U:%s R:%d %s:%s A:%d %s",
+             time_part,
+             model->last_render_ms,
+             saver_mode_tag(model->saver_mode),
+             partial_mode_tag(model),
+             model->maintenance_countdown,
+             power_tag(model));
     graphics_draw_string(x, y, stat_str);
 }
 

@@ -13,7 +13,7 @@ set -e
 cd "$(dirname "$0")"
 
 EBF="bad_apple.ebf"
-DEVICE="nrf52-E-ink-clock-DEV"
+DEVICE="nrf52-E-ink-clock-*"
 
 if [ ! -f "$EBF" ]; then
     echo "ERROR: $EBF not found. Run ./convert_bad_apple.sh first."

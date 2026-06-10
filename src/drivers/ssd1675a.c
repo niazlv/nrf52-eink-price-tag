@@ -9,6 +9,7 @@ LOG_MODULE_REGISTER(ssd1675a, LOG_LEVEL_INF);
 
 static const struct device *eink_gpio_dev;
 static uint8_t vcom_register_value = 0x68;
+static bool controller_sleeping = true;
 
 /* v5-balanced: bright BWR + DC-compensated Ph2 for all groups.
  * Measured: ~8707ms full update. DC balance: BLK=0, WHT=0, RED=-3.3
@@ -159,6 +160,18 @@ static void configure_registers(void) {
 #endif
 }
 
+static void reset_controller(void)
+{
+    gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
+    k_msleep(10);
+    gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
+    ssd1675a_wait_busy();
+
+    send_cmd(0x12);
+    ssd1675a_wait_busy();
+    controller_sleeping = false;
+}
+
 void ssd1675a_init(const struct device *gpio_dev) {
     eink_gpio_dev = gpio_dev;
     if (!device_is_ready(eink_gpio_dev)) return;
@@ -174,17 +187,7 @@ void ssd1675a_init(const struct device *gpio_dev) {
     // Initial Power On Sequence
     ssd1675a_power_on();
     
-    // Hardware Reset
-    gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
-    k_msleep(10);
-    gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
-    // SSD1675A spec: wait for BUSY to go LOW after HW reset before issuing commands.
-    // Without this, configure_registers() was being sent while controller still initialising.
-    ssd1675a_wait_busy();
-
-    // Software Reset: ensures a clean controller state (e.g. after mid-operation reflash).
-    send_cmd(0x12);
-    ssd1675a_wait_busy();
+    reset_controller();
 
     // Initialization Sequence
     configure_registers();
@@ -208,17 +211,13 @@ void ssd1675a_init_partial(const struct device *gpio_dev) {
     // Recovery: if BUSY is already HIGH the controller is stuck (e.g. mid-operation
     // reflash, or HV rails never discharged).  Hard-reset to unblock it.
     // RAM will be lost, but a corrupted FB is better than an infinite busy-wait.
-    if (gpio_pin_get(eink_gpio_dev, PIN_BUSY) == 1) {
-        gpio_pin_set(eink_gpio_dev, PIN_RST, 0);
-        k_msleep(10);
-        gpio_pin_set(eink_gpio_dev, PIN_RST, 1);
-        ssd1675a_wait_busy();
-        send_cmd(0x12);   // software reset
-        ssd1675a_wait_busy();
+    if (controller_sleeping || gpio_pin_get(eink_gpio_dev, PIN_BUSY) == 1) {
+        reset_controller();
     }
 
     // Re-configure registers (may be lost after Sleep or reset above)
     configure_registers();
+    controller_sleeping = false;
 }
 
 void ssd1675a_set_vcom_register(uint8_t val) {
@@ -232,11 +231,13 @@ void ssd1675a_power_on(void) {
 
 void ssd1675a_power_off(void) {
     gpio_pin_set(eink_gpio_dev, PIN_VCC, 1); // OFF
+    controller_sleeping = true;
 }
 
 void ssd1675a_sleep(void) {
     send_cmd(0x10); // Deep Sleep
     send_data(0x01);
+    controller_sleeping = true;
 }
 
 void ssd1675a_update_display(void) {

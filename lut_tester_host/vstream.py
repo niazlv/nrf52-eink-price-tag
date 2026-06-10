@@ -52,8 +52,10 @@ DISP_H  = 296
 FB_SIZE = DISP_W * DISP_H // 8   # 4736 bytes
 
 # ── protocol ──────────────────────────────────────────────────────────────────
+NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+DEFAULT_DEVICE_SELECTOR = "nrf52-E-ink-clock-*"
 
 VS_HDR1, VS_HDR2 = 0xAA, 0x55
 VS_FLUSH = 0xBB
@@ -64,6 +66,23 @@ VS_RLE  = 0x01
 VS_DRLE = 0x02
 
 ENC_NAMES = {'raw': VS_RAW, 'rle': VS_RLE, 'drle': VS_DRLE}
+
+def adv_has_nus(adv) -> bool:
+    return NUS_SERVICE in [u.lower() for u in (getattr(adv, "service_uuids", None) or [])]
+
+async def find_device_by_selector(selector: str, timeout: float = 12.0):
+    if selector.endswith("*"):
+        prefix = selector[:-1]
+        dev = await BleakScanner.find_device_by_filter(
+            lambda dev, adv: ((dev.name or "").startswith(prefix) or
+                              (getattr(adv, "local_name", None) or "").startswith(prefix)),
+            timeout=timeout)
+        if dev:
+            return dev
+        return await BleakScanner.find_device_by_filter(
+            lambda dev, adv: adv_has_nus(adv),
+            timeout=3.0)
+    return await BleakScanner.find_device_by_name(selector, timeout=timeout)
 
 # ── EBF (eink binary frames) format ──────────────────────────────────────────
 # 16-byte header:  magic(4) width(2) height(2) fps(f32) n_frames(u32)
@@ -482,7 +501,7 @@ async def run_play(args):
     if args.address:
         dev = await BleakScanner.find_device_by_address(args.address, timeout=12)
     else:
-        dev = await BleakScanner.find_device_by_name(args.device, timeout=12)
+        dev = await find_device_by_selector(args.device, timeout=12)
     if not dev:
         print("Device not found"); sys.exit(1)
     print(f"Connecting {dev.name} ({dev.address})...")
@@ -683,7 +702,8 @@ def build_parser():
     # ── play ─────────────────────────────────────────────────────────────────
     pl = sub.add_parser("play", help="Play .ebf or video on display")
     pl.add_argument("file", help="Input .ebf or video file")
-    pl.add_argument("--device",     default="nrf52-E-ink-clock-DEV", help="BLE device name")
+    pl.add_argument("--device",     default=DEFAULT_DEVICE_SELECTOR,
+                    help="BLE device name or prefix wildcard, e.g. nrf52-E-ink-clock-*")
     pl.add_argument("--address",    default=None, help="BLE address (overrides --device)")
     pl.add_argument("--mode",       default="guaranteed",
                     choices=["guaranteed", "sync"],
