@@ -36,7 +36,10 @@ int main(void)
     graphics_init(); 
     display_manager_init();
 
-    // 3. Init BLE with Command Processor
+    // 3. Init commands module (watchdog work item, etc.)
+    commands_init();
+
+    // 4. Init BLE with Command Processor
     int err = ble_service_init(commands_process);
     if (err) {
         LOG_ERR("BLE Init failed: %d", err);

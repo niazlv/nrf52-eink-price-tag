@@ -357,13 +357,17 @@ select{cursor:pointer}
     <!-- Left: file + params + controls + log -->
     <div class="pcol pscroll" style="flex:1;min-width:0">
       <div class="card">
-        <div class="ctitle">Файл анимации / видео</div>
+        <div class="ctitle">Источник анимации</div>
         <div class="dropzone" id="anim-drop" onclick="$('anim-file').click()">
           <div style="font-size:13px">GIF · MP4 · WebM · AVI · PNG · JPG</div>
           <div style="font-size:10px;margin-top:4px">Клик или перетащи файл сюда</div>
         </div>
         <input type="file" id="anim-file" accept="image/gif,video/*,image/*" style="display:none"
           onchange="loadAnimFile(this.files[0])">
+        <div class="brow" style="margin-top:8px">
+          <button class="btn pur big" id="btn-screen" onclick="toggleScreenShare()">📺 Screen Share</button>
+          <span id="screen-st" style="font-size:10px;color:var(--fg2)">Не активен</span>
+        </div>
         <div id="anim-info" style="margin-top:7px;font-size:11px;color:var(--fg2);min-height:18px"></div>
       </div>
 
@@ -389,6 +393,23 @@ select{cursor:pointer}
               <option value="90">90° CW</option>
               <option value="180">180°</option>
               <option value="270">270° CW</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Масштаб:</span>
+            <select id="enc-scale">
+              <option value="fit">Fit (letterbox)</option>
+              <option value="fill">Fill (обрезка)</option>
+              <option value="stretch">Stretch (растяжение)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">LUT:</span>
+            <select id="enc-lut">
+              <option value="TURBO" selected>TURBO</option>
+              <option value="BALANCED">BALANCED</option>
+              <option value="STABLE">STABLE</option>
+              <option value="CLEAN">CLEAN</option>
             </select>
           </div>
           <div style="display:flex;align-items:center;gap:5px">
@@ -635,8 +656,11 @@ let tele = {fap:null, fast:null, full:null, lut_name:null};
 // VStream
 let streamRunning=false, streamStop=false;
 let vstreamAckFn=null, vstreamAckBuf=null;
+let streamSendCancel=null; // cancels stuck sendBytesStream()
 let animVideoEl=null, animDecoder=null;
 let animTotalFrames=0, animFileType=null, animImgEl=null;
+let animPreEncoded=null; // Array of Uint8Array (1-bpp frames), filled by preEncodeVideo()
+let animScreenStream=null; // MediaStream from getDisplayMedia
 
 // ═══════════════════════════════════════════════════════════════════
 //  Utility
@@ -717,14 +741,19 @@ function updateMtuDisplay() {
   if (e2) e2.textContent = label;
 }
 
-async function sendBytes(data) {
+async function sendBytes(data, noResponse=false) {
   if (!connected || !rxChar) return;
   const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
   let chunkSz = mtu - 3;
   for (let i = 0; i < buf.length; ) {
     const sz = Math.min(chunkSz, buf.length - i);
+    const chunk = buf.slice(i, i + sz);
     try {
-      await rxChar.writeValueWithResponse(buf.slice(i, i + sz));
+      if (noResponse) {
+        await rxChar.writeValueWithoutResponse(chunk);
+      } else {
+        await rxChar.writeValueWithResponse(chunk);
+      }
       i += sz;
     } catch (e) {
       if (e.name === 'InvalidModificationError' && chunkSz > 20) {
@@ -736,6 +765,24 @@ async function sendBytes(data) {
         throw e;
       }
     }
+  }
+}
+
+// sendBytes wrapper for streaming: cancellable via stopStream() + 15s auto-timeout.
+// writeValueWithResponse can hang for minutes on macOS when BLE is unstable;
+// this lets the Stop button and the watchdog abort it immediately.
+async function sendBytesStream(data) {
+  let cancelFn;
+  const cancelPromise = new Promise((_, rej) => {
+    streamSendCancel = cancelFn = () => rej(new Error('stopped'));
+  });
+  const timeoutPromise = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error('BLE send timeout')), 15000)
+  );
+  try {
+    await Promise.race([sendBytes(data), cancelPromise, timeoutPromise]);
+  } finally {
+    if (streamSendCancel === cancelFn) streamSendCancel = null;
   }
 }
 
@@ -1076,6 +1123,7 @@ async function loadAnimFile(file) {
     }
     animVideoEl.src = URL.createObjectURL(file);
     animFileType = 'video';
+    animPreEncoded = null; // invalidate cache on new file
     await new Promise(res => { animVideoEl.onloadedmetadata=res; });
     const userFps = parseFloat($('enc-fps').value)||12;
     animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * userFps));
@@ -1089,10 +1137,65 @@ async function loadAnimFile(file) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Screen capture
+// ═══════════════════════════════════════════════════════════════════
+async function startScreenShare() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    alert('getDisplayMedia не поддерживается.\nОткрой в Chrome и убедись что сайт открыт через https:// или localhost.');
+    return;
+  }
+  try {
+    animScreenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 30 },
+      audio: false,
+    });
+    if (!animVideoEl) {
+      animVideoEl = document.createElement('video');
+      animVideoEl.muted = true;
+      animVideoEl.style.display = 'none';
+      document.body.appendChild(animVideoEl);
+    }
+    animVideoEl.srcObject = animScreenStream;
+    await animVideoEl.play();
+    animFileType = 'screen';
+    animTotalFrames = 0;
+    const track = animScreenStream.getVideoTracks()[0];
+    const s = track.getSettings();
+    $('anim-info').textContent = `Screen: ${s.width||'?'}×${s.height||'?'} @ ${s.frameRate||'?'}fps`;
+    $('screen-st').textContent = '🔴 Захват активен';
+    $('btn-screen').textContent = '⏹ Стоп Screen';
+    $('btn-screen').className = 'btn bad big';
+    track.addEventListener('ended', stopScreenShare);
+    logI(`Screen capture started: ${s.width}×${s.height}`);
+  } catch(e) {
+    logE('Screen capture: ' + e.message);
+  }
+}
+
+function stopScreenShare() {
+  if (animScreenStream) {
+    animScreenStream.getTracks().forEach(t => t.stop());
+    animScreenStream = null;
+  }
+  if (animVideoEl) animVideoEl.srcObject = null;
+  if (animFileType === 'screen') { animFileType = null; animTotalFrames = 0; }
+  $('anim-info').textContent = '';
+  $('screen-st').textContent = 'Не активен';
+  $('btn-screen').textContent = '📺 Screen Share';
+  $('btn-screen').className = 'btn pur big';
+}
+
+function toggleScreenShare() {
+  if (animFileType === 'screen') stopScreenShare();
+  else startScreenShare();
+}
+
 function toggleStream() { if(streamRunning) stopStream(); else startStream(); }
 
 function stopStream() {
   streamStop=true;
+  if(streamSendCancel) { streamSendCancel(); streamSendCancel=null; }
   if(vstreamAckFn) vstreamAckFn(null);
 }
 
@@ -1109,16 +1212,41 @@ async function startStream() {
   const land     = $('enc-land').checked;
   const loop     = $('enc-loop').checked;
   const rot      = parseInt($('enc-rot').value)||0;
+  const scale    = $('enc-scale').value;
   const syncMode = $('enc-sync').value;
+  const lut      = $('enc-lut').value;
   const tw       = land ? DISP_H : DISP_W;
   const th       = land ? DISP_W : DISP_H;
 
   const oc  = new OffscreenCanvas(tw, th);
   const oct = oc.getContext('2d', {willReadFrequently:true});
 
+  // Pre-encode video frames sequentially (no seeking) for maximum throughput.
+  // For GIF/image the cache is not needed — ImageDecoder already gives random access.
+  if (animFileType === 'video') {
+    animPreEncoded = null;
+    animLog('⏳ Кодирование кадров…');
+    $('stream-st').textContent = 'Кодирую…';
+    const ok = await preEncodeVideo(tw, th, dith, inv, land, rot, scale,
+      (done, total) => {
+        $('stream-prog').style.width = (done/total*100).toFixed(1)+'%';
+        $('stream-st').textContent = `Кодирую ${done}/${total}`;
+      });
+    if (streamStop) return; // user aborted during pre-encode
+    if (ok) {
+      animTotalFrames = animPreEncoded.length; // use actual encoded count
+      animLog(`✓ Закодировано ${animTotalFrames} кадров`);
+    } else {
+      animLog('⚠ Pre-encode недоступен, seek-режим');
+    }
+    $('stream-prog').style.width = '0%';
+  }
+
+  await sendBytes(new TextEncoder().encode(`LUTSET:${lut}\n`));
+  await sleep(150);
   await sendBytes(new TextEncoder().encode('VSTREAM:start\n'));
   await sleep(400);
-  animLog(`▶ VSTREAM:start | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
+  animLog(`▶ VSTREAM:start | lut=${lut} mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
 
   const waitAck = (to=8000) => new Promise((res,rej) => {
     if (vstreamAckBuf !== null) {
@@ -1138,45 +1266,98 @@ async function startStream() {
   let framesDone=0;
 
   try {
-    outer: while (!streamStop) {
-      loop_n++;
-      if (animFileType==='video' && animVideoEl)
-        animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * fps));
-
-      let i=0;
-      while (i < animTotalFrames && !streamStop) {
-        const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot);
-        if (!fr) { i++; continue; }
+    if (animFileType === 'screen') {
+      // Real-time screen capture — no seeking, no frame count, ACK-throttled
+      let lastSentMs = performance.now();
+      const KEEPALIVE_MS = 5000; // re-send prev frame if stalled to beat device watchdog (30s)
+      while (!streamStop) {
+        const fr = await getAnimFrame(0, 1, fps, oct, tw, th, dith, inv, land, rot, scale);
+        if (!fr) {
+          if (prev && performance.now() - lastSentMs > KEEPALIVE_MS) {
+            const pkt = makeVSPkt(prev, encType, prev);
+            await sendBytesStream(pkt);
+            try { await waitAck(8000); } catch(e) { animLog('⚠ keepalive: '+e.message); break; }
+            lastSentMs = performance.now();
+            animLog('↺ keepalive (screen stalled)');
+          } else {
+            await sleep(16);
+          }
+          continue;
+        }
         const pkt = makeVSPkt(fr, encType, prev);
-        await sendBytes(pkt);
+        await sendBytesStream(pkt);
         let ackMs;
-        try { ackMs = await waitAck(); }
-        catch(e) { animLog('⚠ '+e.message); break outer; }
+        try {
+          ackMs = await waitAck(8000);
+        } catch(e) {
+          if (e.message === 'stopped') break;
+          animLog(`↺ ACK timeout, resync RLE`);
+          try {
+            await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null));
+            ackMs = await waitAck(8000);
+          } catch(e2) { animLog('⚠ resync failed: '+e2.message); break; }
+        }
         prev = fr;
+        lastSentMs = performance.now();
         framesDone++;
         const elapsed = (performance.now()-t0)/1000;
         const actualFps = framesDone/elapsed;
-
-        let skipped=0;
-        if (syncMode==='sync') {
-          const targetFrame = Math.floor(elapsed * fps);
-          if (targetFrame > i+1) { skipped=targetFrame-(i+1); i=targetFrame; }
-          else i++;
-        } else {
-          i++;
-        }
-
-        const pct = (i/animTotalFrames*100).toFixed(0);
-        $('stream-prog').style.width = pct+'%';
         $('stream-st').textContent =
-          `[${i}/${animTotalFrames}] ${actualFps.toFixed(1)}fps | disp=${ackMs}ms | pkt=${pkt.length}B`+
-          (skipped>0?` | ⏭${skipped}`:'');
-        if (framesDone%20===0)
-          animLog(`Frame ${i}/${animTotalFrames} | ${actualFps.toFixed(1)}fps | pkt=${pkt.length}B | disp=${ackMs}ms`+
-                  (skipped>0?` | skip=${skipped}`:''));
+          `[${framesDone}] ${actualFps.toFixed(1)}fps | disp=${ackMs}ms | pkt=${pkt.length}B`;
+        if (framesDone%30===0)
+          animLog(`Screen frame ${framesDone} | ${actualFps.toFixed(1)}fps | pkt=${pkt.length}B | disp=${ackMs}ms`);
       }
-      if (!loop || streamStop) break;
-      animLog(`Loop ${loop_n} завершён`);
+    } else {
+      outer: while (!streamStop) {
+        loop_n++;
+        if (animFileType==='video' && animVideoEl)
+          if (!animPreEncoded)
+            animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * fps));
+
+        let i=0;
+        while (i < animTotalFrames && !streamStop) {
+          const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale);
+          if (!fr) { i++; continue; }
+          const pkt = makeVSPkt(fr, encType, prev);
+          await sendBytesStream(pkt);
+          let ackMs;
+          try {
+            ackMs = await waitAck(8000);
+          } catch(e) {
+            if (e.message === 'stopped') break outer;
+            // Notification lost — resync with full RLE frame and retry once
+            animLog(`↺ ACK timeout [${i}], resync RLE`);
+            try {
+              await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null));
+              ackMs = await waitAck(8000);
+            } catch(e2) { animLog('⚠ resync failed: '+e2.message); break outer; }
+          }
+          prev = fr;
+          framesDone++;
+          const elapsed = (performance.now()-t0)/1000;
+          const actualFps = framesDone/elapsed;
+
+          let skipped=0;
+          if (syncMode==='sync') {
+            const targetFrame = Math.floor(elapsed * fps);
+            if (targetFrame > i+1) { skipped=targetFrame-(i+1); i=targetFrame; }
+            else i++;
+          } else {
+            i++;
+          }
+
+          const pct = (i/animTotalFrames*100).toFixed(0);
+          $('stream-prog').style.width = pct+'%';
+          $('stream-st').textContent =
+            `[${i}/${animTotalFrames}] ${actualFps.toFixed(1)}fps | disp=${ackMs}ms | pkt=${pkt.length}B`+
+            (skipped>0?` | ⏭${skipped}`:'');
+          if (framesDone%20===0)
+            animLog(`Frame ${i}/${animTotalFrames} | ${actualFps.toFixed(1)}fps | pkt=${pkt.length}B | disp=${ackMs}ms`+
+                    (skipped>0?` | skip=${skipped}`:''));
+        }
+        if (!loop || streamStop) break;
+        animLog(`Loop ${loop_n} завершён`);
+      }
     }
   } catch(e) { animLog('Ошибка: '+e.message); logE(e.message); }
   finally {
@@ -1187,16 +1368,24 @@ async function startStream() {
     $('stream-st').textContent='Завершено';
     $('stream-prog').style.width='0%';
     animLog('■ VSTREAM stopped');
+    if (animFileType === 'screen') stopScreenShare();
   }
 }
 
-async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0) {
+async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, scale='fit') {
+  // Fast path: use pre-encoded cache if available (video only)
+  if (animPreEncoded && animPreEncoded[i]) {
+    const buf = animPreEncoded[i];
+    updateAnimPreview(buf);
+    return buf;
+  }
+
   ctx.fillStyle='white'; ctx.fillRect(0,0,tw,th);
 
   if (animFileType==='gif' && animDecoder) {
     const res = await animDecoder.decode({frameIndex:i});
     const bmp = res.image;
-    drawScaledRotated(ctx, bmp, bmp.width, bmp.height, tw, th, rot);
+    drawScaledRotated(ctx, bmp, bmp.width, bmp.height, tw, th, rot, scale);
   } else if (animFileType==='video' && animVideoEl) {
     const t = (i/(Math.max(total-1,1))) * animVideoEl.duration;
     animVideoEl.currentTime = t;
@@ -1205,9 +1394,12 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0) 
       const timer = setTimeout(()=>{ if(!done){done=true;res();} }, 3000);
       animVideoEl.addEventListener('seeked', ()=>{ if(!done){done=true;clearTimeout(timer);res();} }, {once:true});
     });
-    drawScaledRotated(ctx, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot);
+    drawScaledRotated(ctx, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot, scale);
   } else if (animFileType==='img' && animImgEl) {
-    drawScaledRotated(ctx, animImgEl, animImgEl.width, animImgEl.height, tw, th, rot);
+    drawScaledRotated(ctx, animImgEl, animImgEl.width, animImgEl.height, tw, th, rot, scale);
+  } else if (animFileType==='screen' && animVideoEl) {
+    if (animVideoEl.readyState < 2 || !animVideoEl.videoWidth) return null;
+    drawScaledRotated(ctx, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot, scale);
   } else return null;
 
   const buf = canvasTo1bpp(ctx, tw, th, dith, inv, land);
@@ -1215,13 +1407,100 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0) 
   return buf;
 }
 
-function drawScaledRotated(ctx, source, srcW, srcH, tw, th, rot) {
+/* Pre-encode all video frames sequentially using requestVideoFrameCallback.
+ * Plays the video at max speed, captures each decoded frame in order — no
+ * seeking, so the browser decoder runs in its fast sequential path.
+ * Result stored in animPreEncoded (Array of Uint8Array 1-bpp buffers). */
+async function preEncodeVideo(tw, th, dith, inv, land, rot, scale, onProgress) {
+  animPreEncoded = null;
+  if (animFileType !== 'video' || !animVideoEl) return false;
+  if (!('requestVideoFrameCallback' in animVideoEl)) {
+    animLog('requestVideoFrameCallback не поддерживается браузером — seek-режим');
+    return false;
+  }
+
+  const fps   = parseFloat($('enc-fps').value) || 12;
+  const total = Math.max(1, Math.round(animVideoEl.duration * fps));
+  const interval = animVideoEl.duration / total;
+  const frames = new Array(total).fill(null); // pre-allocated, no sparse array bugs
+  let frameCount = 0;
+  const oc  = new OffscreenCanvas(tw, th);
+  const oct = oc.getContext('2d', {willReadFrequently:true});
+
+  animVideoEl.currentTime = 0;
+  await new Promise(r => animVideoEl.addEventListener('seeked', r, {once:true}));
+  animVideoEl.playbackRate = 16;
+
+  await new Promise((resolve) => {
+    let lastTarget = -1;
+    let resolved = false;
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      animVideoEl.pause();
+      animVideoEl.removeEventListener('ended', done);
+      resolve();
+    };
+
+    // Safety net: video may end without the last rVFC callback firing
+    animVideoEl.addEventListener('ended', done, {once:true});
+
+    const onFrame = (_now, meta) => {
+      if (streamStop || resolved) { done(); return; }
+      const t = meta.mediaTime;
+      const targetIdx = Math.min(total - 1, Math.floor(t / interval));
+
+      if (targetIdx > lastTarget) {
+        lastTarget = targetIdx;
+        oct.fillStyle = 'white';
+        oct.fillRect(0, 0, tw, th);
+        drawScaledRotated(oct, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot, scale);
+        frames[targetIdx] = canvasTo1bpp(oct, tw, th, dith, inv, land);
+        frameCount++;
+        if (frameCount % 10 === 0 || lastTarget === total - 1)
+          updateAnimPreview(frames[lastTarget]);
+        onProgress(frameCount, total);
+      }
+
+      if (lastTarget >= total - 1) {
+        done();
+      } else {
+        animVideoEl.requestVideoFrameCallback(onFrame);
+      }
+    };
+
+    animVideoEl.requestVideoFrameCallback(onFrame);
+    animVideoEl.play().catch(done);
+  });
+
+  // Fill gaps with nearest collected neighbour
+  let last = null;
+  for (let i = 0; i < total; i++) {
+    if (frames[i]) last = frames[i];
+    else if (last) frames[i] = last;
+  }
+
+  animPreEncoded = frames.filter(Boolean);
+  animVideoEl.pause();
+  animVideoEl.currentTime = 0;
+  return animPreEncoded.length > 0;
+}
+
+function drawScaledRotated(ctx, source, srcW, srcH, tw, th, rot, scale='fit') {
   if (!srcW || !srcH) return;
   const swapped = rot===90 || rot===270;
   const effW = swapped ? srcH : srcW;
   const effH = swapped ? srcW : srcH;
-  const sc = Math.min(tw/effW, th/effH);
-  const fw = effW*sc, fh = effH*sc;
+  let fw, fh;
+  if (scale === 'stretch') {
+    fw = tw; fh = th;
+  } else if (scale === 'fill') {
+    const sc = Math.max(tw/effW, th/effH);
+    fw = effW*sc; fh = effH*sc;
+  } else { // fit
+    const sc = Math.min(tw/effW, th/effH);
+    fw = effW*sc; fh = effH*sc;
+  }
   ctx.save();
   ctx.translate(tw/2, th/2);
   ctx.rotate(rot * Math.PI/180);
@@ -1255,12 +1534,13 @@ async function previewFrame0() {
   const land = $('enc-land').checked;
   const tw = land ? DISP_H : DISP_W;
   const th = land ? DISP_W : DISP_H;
-  const rot  = parseInt($('enc-rot').value)||0;
-  const dith = $('enc-dith').checked;
-  const inv  = $('enc-inv').checked;
-  const oc   = new OffscreenCanvas(tw, th);
-  const oct  = oc.getContext('2d', {willReadFrequently:true});
-  const buf  = await getAnimFrame(0, Math.max(animTotalFrames,1), 12, oct, tw, th, dith, inv, land, rot);
+  const rot   = parseInt($('enc-rot').value)||0;
+  const scale = $('enc-scale').value;
+  const dith  = $('enc-dith').checked;
+  const inv   = $('enc-inv').checked;
+  const oc    = new OffscreenCanvas(tw, th);
+  const oct   = oc.getContext('2d', {willReadFrequently:true});
+  const buf   = await getAnimFrame(0, Math.max(animTotalFrames,1), 12, oct, tw, th, dith, inv, land, rot, scale);
   if (buf) animLog('Превью кадра 0 обновлено');
 }
 

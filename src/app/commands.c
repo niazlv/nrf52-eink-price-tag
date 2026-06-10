@@ -79,6 +79,30 @@ static rle_dec_t  vs_rle;
 static bool       vstream_active;
 static int        vs_frame_count;
 
+/* Watchdog: if no frame flush arrives within this window, abort the stream
+ * and restore the screensaver so the device doesn't stay frozen. */
+#define VS_WATCHDOG_MS 30000
+static struct k_work_delayable vs_watchdog_work;
+
+static void vs_exit_streaming(void) {
+    k_work_cancel_delayable(&vs_watchdog_work);
+    if (vstream_active) {
+        vs_state       = VS_IDLE;
+        vstream_active = false;
+        vs_frame_count = 0;
+        display_manager_set_keep_on(false);
+    }
+    display_manager_enable_screensaver(true);
+}
+
+static void vs_watchdog_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    if (vstream_active) {
+        ble_printf("VSTREAM:timeout\r\n");
+        vs_exit_streaming();
+    }
+}
+
 /* Track bytes written via FW:/RW: since last clear — reported in FAPPLY. */
 static int fw_written;
 static int rw_written;
@@ -168,6 +192,8 @@ static void vs_flush_frame(void) {
     display_manager_update_partial();
     int32_t ms = (int32_t)(k_uptime_get() - t0);
     vs_frame_count++;
+    /* Reset watchdog — host is alive and sending frames. */
+    k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
     ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x\r\n",
                vs_frame_count, (int)ms, (int)vs_dec, (unsigned)crc);
 }
@@ -206,9 +232,7 @@ static void vs_process_byte(uint8_t b) {
         break;
     case VS_STOP2_WAIT:
         if (b == VS_STOP2) {
-            display_manager_set_keep_on(false);
-            vstream_active   = false;
-            vs_frame_count   = 0;
+            vs_exit_streaming();
             ble_printf("VSTREAM:stopped\r\n");
         }
         vs_state = VS_IDLE;
@@ -714,11 +738,7 @@ void cmd_vstream(char *args)
         return;
     }
     if (args[0] == '0' || strncmp(args, "stop", 4) == 0) {
-        if (vstream_active) {
-            display_manager_set_keep_on(false);
-            vstream_active = false;
-            vs_frame_count = 0;
-        }
+        vs_exit_streaming();
         ble_printf("VSTREAM:stopped\r\n");
         return;
     }
@@ -732,6 +752,7 @@ void cmd_vstream(char *args)
         vs_frame_count = 0;
         vs_reset_frame();
         vstream_active = true;
+        k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
         ble_printf("VSTREAM:ready type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD\r\n");
         return;
     }
@@ -819,7 +840,13 @@ static void dispatch_line(const char *line)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-void commands_init(void) {}
+void commands_init(void) {
+    k_work_init_delayable(&vs_watchdog_work, vs_watchdog_handler);
+}
+
+void commands_on_disconnect(void) {
+    vs_exit_streaming();
+}
 
 void commands_process(const void *data, uint16_t len)
 {

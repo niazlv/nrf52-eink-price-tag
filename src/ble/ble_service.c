@@ -1,4 +1,5 @@
 #include "ble_service.h"
+#include "../app/commands.h"
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
 #include <zephyr/logging/log.h>
@@ -73,6 +74,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		dk_set_led_off(CON_STATUS_LED);
 	}
     ble_connected = false;
+    commands_on_disconnect();
 }
 
 static void recycled_cb(void)
