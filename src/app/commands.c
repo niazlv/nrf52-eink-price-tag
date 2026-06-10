@@ -34,6 +34,50 @@ static int  rx_len;
 static uint8_t *fb_bw(void)  { return (uint8_t *)graphics_get_buffer(); }
 static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
 
+/* ── Binary vstream (animation streaming over BLE) ──────────────────────────
+ *
+ * Wire protocol:
+ *   Start : text command  VSTREAM:start   → device replies VSTREAM:ready
+ *   Frame : [0xAA][0x55][type][len_hi][len_lo][payload*len][0xBB]
+ *     0x00 RAW  — 4736 bytes uncompressed 1-bpp B&W
+ *     0x01 RLE  — PackBits full frame
+ *     0x02 DRLE — PackBits XOR-delta (current FB = prev frame, XOR in-place)
+ *   ACK   : "TELE:vs f=N ms=M\r\n" after every flush (host flow-control)
+ *   Stop  : [0xCC][0xDD] binary escape, or VSTREAM:stop text before streaming
+ *
+ * PackBits:  ctrl bit7=1 → next byte × (ctrl&0x7F)+1 times (run)
+ *            ctrl bit7=0 → next (ctrl+1) bytes literal
+ */
+#define VS_HDR1  0xAAu
+#define VS_HDR2  0x55u
+#define VS_FLUSH 0xBBu
+#define VS_STOP1 0xCCu
+#define VS_STOP2 0xDDu
+
+#define VS_TYPE_RAW  0x00u
+#define VS_TYPE_RLE  0x01u
+#define VS_TYPE_DRLE 0x02u
+
+typedef enum {
+    VS_IDLE, VS_HDR2_WAIT, VS_TYPE_RD, VS_LEN_HI, VS_LEN_LO,
+    VS_DATA, VS_FLUSH_WAIT, VS_STOP2_WAIT
+} vs_state_t;
+
+typedef struct {
+    int8_t  mode;   /* 0=ctrl  1=literal  2=run_first_byte  3=run_repeat */
+    uint8_t count;
+    uint8_t val;
+} rle_dec_t;
+
+static vs_state_t vs_state;
+static uint8_t    vs_type;
+static uint16_t   vs_plen;   /* compressed payload length */
+static uint16_t   vs_prx;    /* compressed bytes received */
+static uint16_t   vs_dec;    /* uncompressed bytes written to FB */
+static rle_dec_t  vs_rle;
+static bool       vstream_active;
+static int        vs_frame_count;
+
 /* Track bytes written via FW:/RW: since last clear — reported in FAPPLY. */
 static int fw_written;
 static int rw_written;
@@ -58,6 +102,117 @@ static int hex_byte(const char *s)
     int lo = hex_nibble(s[1]);
     if (hi < 0 || lo < 0) return -1;
     return (hi << 4) | lo;
+}
+
+/* ── Vstream helpers ─────────────────────────────────────────────────────── */
+
+static void vs_reset_frame(void) {
+    vs_prx = 0;
+    vs_dec = 0;
+    vs_rle.mode = 0;
+    vs_rle.count = 0;
+    vs_rle.val = 0;
+}
+
+static inline void vs_write_byte(uint8_t b) {
+    if (vs_dec >= FB_SIZE) return;
+    uint8_t *fb = fb_bw();
+    fb[vs_dec] = (vs_type == VS_TYPE_DRLE) ? (fb[vs_dec] ^ b) : b;
+    vs_dec++;
+}
+
+static void vs_rle_feed(uint8_t b) {
+    /* Drain pending run bytes first — they don't consume compressed input.
+     * Without this, each run-continuation output would eat one real input
+     * byte (the next instruction), corrupting the entire stream. */
+    while (vs_rle.mode == 3) {
+        vs_write_byte(vs_rle.val);
+        if (--vs_rle.count == 0) { vs_rle.mode = 0; break; }
+    }
+    /* Now consume the actual compressed byte. */
+    switch (vs_rle.mode) {
+    case 0:
+        if (b & 0x80) { vs_rle.count = (b & 0x7F) + 1; vs_rle.mode = 2; }
+        else          { vs_rle.count = b + 1;            vs_rle.mode = 1; }
+        break;
+    case 1:
+        vs_write_byte(b);
+        if (--vs_rle.count == 0) vs_rle.mode = 0;
+        break;
+    case 2:
+        vs_rle.val = b;
+        vs_write_byte(b);
+        if (--vs_rle.count == 0) vs_rle.mode = 0;
+        else vs_rle.mode = 3;
+        break;
+    }
+}
+
+static void vs_flush_frame(void) {
+    /* Flush any trailing run bytes that arrived at end of compressed stream. */
+    if (vs_type != VS_TYPE_RAW) {
+        while (vs_rle.mode == 3 && vs_dec < FB_SIZE) {
+            vs_write_byte(vs_rle.val);
+            if (--vs_rle.count == 0) { vs_rle.mode = 0; break; }
+        }
+    }
+
+    /* XOR checksum of the decoded framebuffer for host-side integrity check. */
+    const uint8_t *fb = fb_bw();
+    uint8_t crc = 0;
+    for (int i = 0; i < FB_SIZE; i++) crc ^= fb[i];
+
+    int64_t t0 = k_uptime_get();
+    display_manager_set_keep_on(true);
+    display_manager_update_partial();
+    int32_t ms = (int32_t)(k_uptime_get() - t0);
+    vs_frame_count++;
+    ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x\r\n",
+               vs_frame_count, (int)ms, (int)vs_dec, (unsigned)crc);
+}
+
+static void vs_process_byte(uint8_t b) {
+    switch (vs_state) {
+    case VS_IDLE:
+        if      (b == VS_HDR1)  vs_state = VS_HDR2_WAIT;
+        else if (b == VS_STOP1) vs_state = VS_STOP2_WAIT;
+        break;
+    case VS_HDR2_WAIT:
+        vs_state = (b == VS_HDR2) ? VS_TYPE_RD : VS_IDLE;
+        break;
+    case VS_TYPE_RD:
+        vs_type  = b;
+        vs_state = VS_LEN_HI;
+        break;
+    case VS_LEN_HI:
+        vs_plen  = (uint16_t)b << 8;
+        vs_state = VS_LEN_LO;
+        break;
+    case VS_LEN_LO:
+        vs_plen |= b;
+        vs_reset_frame();
+        vs_state = (vs_plen > 0) ? VS_DATA : VS_FLUSH_WAIT;
+        break;
+    case VS_DATA:
+        vs_prx++;
+        if (vs_type == VS_TYPE_RAW) vs_write_byte(b);
+        else                        vs_rle_feed(b);
+        if (vs_prx >= vs_plen) vs_state = VS_FLUSH_WAIT;
+        break;
+    case VS_FLUSH_WAIT:
+        if (b == VS_FLUSH) vs_flush_frame();  /* flush_frame handles pending run drain */
+        vs_state = VS_IDLE;
+        break;
+    case VS_STOP2_WAIT:
+        if (b == VS_STOP2) {
+            display_manager_set_keep_on(false);
+            vstream_active   = false;
+            vs_frame_count   = 0;
+            ble_printf("VSTREAM:stopped\r\n");
+        }
+        vs_state = VS_IDLE;
+        break;
+    }
 }
 
 /* ── Standard commands ───────────────────────────────────────────────────── */
@@ -550,6 +705,38 @@ void cmd_lutset(char *args)
     ble_printf("LUTSET:%s (mode=%d, custom=off)\r\n", names[mode], mode);
 }
 
+/* VSTREAM:start|stop — enter/exit binary animation streaming mode */
+void cmd_vstream(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("VSTREAM:usage start|stop\r\n");
+        return;
+    }
+    if (args[0] == '0' || strncmp(args, "stop", 4) == 0) {
+        if (vstream_active) {
+            display_manager_set_keep_on(false);
+            vstream_active = false;
+            vs_frame_count = 0;
+        }
+        ble_printf("VSTREAM:stopped\r\n");
+        return;
+    }
+    if (args[0] == '1' || strncmp(args, "start", 5) == 0) {
+        display_manager_enable_screensaver(false);
+        k_msleep(50);  /* let screensaver thread finish any in-progress update */
+        graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
+        display_manager_set_keep_on(true);
+        display_manager_set_partial_mode(0);  /* TURBO for max fps */
+        vs_state       = VS_IDLE;
+        vs_frame_count = 0;
+        vs_reset_frame();
+        vstream_active = true;
+        ble_printf("VSTREAM:ready type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD\r\n");
+        return;
+    }
+    ble_printf("VSTREAM:unknown\r\n");
+}
+
 /* ── Command table ───────────────────────────────────────────────────────── */
 
 const struct shell_cmd commands[] = {
@@ -574,6 +761,7 @@ const struct shell_cmd commands[] = {
     {"ROT:",        cmd_rot,        "Set rotation 0-3"},
     {"ANIM",        cmd_anim,       "Run bouncing-ball animation"},
     {"TEST",        cmd_test,       "Infinite partial stress test"},
+    {"VSTREAM:",    cmd_vstream,    "Binary anim stream: VSTREAM:start|stop  (then binary frames)"},
     /* LUT editor */
     {"LUTW:",       cmd_lutw,       "Write full LUT: LUTW:HH..HH (140 hex)"},
     {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
@@ -626,6 +814,10 @@ void commands_process(const void *data, uint16_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
     for (uint16_t i = 0; i < len; i++) {
+        if (vstream_active) {
+            vs_process_byte(p[i]);
+            continue;
+        }
         char c = (char)p[i];
         if (c == '\r') continue;
         if (c == '\n') {

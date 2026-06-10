@@ -68,8 +68,8 @@ static void perform_display_update(void) {
     ssd1675a_init(gpio_dev_dm);
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
-    
-    // Only power off/sleep if Screensaver is disabled. 
+
+    // Only power off/sleep if Screensaver is disabled.
     // If active, we keep VCC On and avoid Deep Sleep to allow Partial Init (No Reset).
     if (!screensaver_enabled && !keep_display_on) {
         ssd1675a_sleep();
@@ -77,6 +77,20 @@ static void perform_display_update(void) {
     }
 
     // k_mutex_unlock(&display_lock);
+}
+
+// Like perform_display_update() but uses the red-clearing LUT (VSL on red
+// channel) to actively drive red pigment away.  Called after clean/nuke cycles
+// to eliminate the reddish tint left by the "red fixation" phases of the main LUT.
+static void perform_display_update_flush_red(void) {
+    if (!gpio_dev_dm) return;
+    ssd1675a_init(gpio_dev_dm);
+    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+    ssd1675a_update_display_flush_red();
+    if (!screensaver_enabled && !keep_display_on) {
+        ssd1675a_sleep();
+        ssd1675a_power_off();
+    }
 }
 
 void display_manager_update_partial(void) {
@@ -279,24 +293,35 @@ void display_manager_clean(void) {
         graphics_clear(GFX_RED);
         perform_display_update();
     }
+    // Two red-clearing passes: VSL on red channel actively drives pigment away,
+    // eliminating the reddish tint left by the "red fixation" phases in lut_data.
     graphics_clear(GFX_WHITE);
-    perform_display_update();
+    perform_display_update_flush_red();
+    perform_display_update_flush_red();
 }
 
 void display_manager_deep_clean(int cycles) {
     if (!gpio_dev_dm) return;
     stop_streaming_if_active();
     stream_partial_count = 0;
+    // Phase 1: white-only pre-soak — repeated VSL application kills VSH1
+    // polarization from streaming without re-applying it (no black phase).
     for (int i = 0; i < cycles; i++) {
-        graphics_clear(GFX_BLACK);
+        graphics_clear(GFX_WHITE);
         perform_display_update();
+    }
+    // Phase 2: W→R cycles — VSL depolarize, then VSH2 drive red.
+    // No black phase here either: black (LUT0 Ph4) re-applies 472f of VSH1,
+    // which is exactly what caused the red burn-in.
+    for (int i = 0; i < cycles; i++) {
         graphics_clear(GFX_WHITE);
         perform_display_update();
         graphics_clear(GFX_RED);
         perform_display_update();
     }
     graphics_clear(GFX_WHITE);
-    perform_display_update();
+    perform_display_update_flush_red();
+    perform_display_update_flush_red();
 }
 
 void display_manager_clear(void) {

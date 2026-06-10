@@ -51,5 +51,6 @@ void ssd1675a_begin_streaming(void);
 void ssd1675a_update_frame_stream(void);
 void ssd1675a_end_streaming(void);
 void ssd1675a_load_default_lut(void);
+void ssd1675a_update_display_flush_red(void);
 
 #endif // SSD1675A_H

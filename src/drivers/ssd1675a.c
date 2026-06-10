@@ -374,6 +374,40 @@ void ssd1675a_load_default_lut(void) {
     }
 }
 
+// LUT for red-channel flush after clean/nuke cycles.
+// LUT0/LUT1: same BW waveform as lut_data_default.
+// LUT2/LUT3: 0xAA = VSL (negative voltage) for all transitions — actively
+//   drives red pigment particles away from the viewing surface.
+// Ph4 timing zeroed: skips the main red-drive phase so we don't re-activate.
+static const uint8_t lut_flush_red[] = {
+    /* VS section */
+    /* LUT0 BLACK */ 0x22, 0x11, 0x10, 0x00, 0x10, 0x00, 0x00,
+    /* LUT1 WHITE */ 0x11, 0x88, 0x80, 0x80, 0x80, 0x00, 0x00,
+    /* LUT2 RED   */ 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+    /* LUT3 RED   */ 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+    /* LUT4 VCOM  */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    /* Timing — same as lut_data_default but Ph4 zeroed */
+    /* Ph0 */ 0x00, 0x14, 0x00, 0x12, 0x01,
+    /* Ph1 */ 0x06, 0x06, 0x06, 0x06, 0x02,
+    /* Ph2 */ 0x14, 0x14, 0x14, 0x14, 0x01,
+    /* Ph3 */ 0x00, 0x00, 0x00, 0x00, 0x00,
+    /* Ph4 */ 0x00, 0x00, 0x00, 0x00, 0x00,
+    /* Ph5 */ 0x14, 0x14, 0x14, 0x3B, 0x00,
+    /* Ph6 */ 0x14, 0x14, 0x14, 0x3B, 0x00,
+};
+
+void ssd1675a_update_display_flush_red(void) {
+    send_cmd(0x32);
+    for (size_t i = 0; i < sizeof(lut_flush_red); i++) {
+        send_data(lut_flush_red[i]);
+    }
+    send_cmd(0x22);
+    send_data(0xC7);
+    send_cmd(0x20);
+    ssd1675a_wait_busy();
+    ssd1675a_load_default_lut();
+}
+
 void ssd1675a_display_buffer(const uint8_t *bw_buffer, const uint8_t *red_buffer) {
     // 1. Write BW Buffer (0x24)
     set_ram_pointer(0, 0);

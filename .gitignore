@@ -9,3 +9,5 @@ build_*/
 .venv
 .DS_Store
 __pycache__/
+videos/
+*.ebf
