@@ -3,30 +3,46 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>nRF52 E-ink Controller</title>
+<title>E·INK · nRF52</title>
+<meta name="description" content="BLE-пульт e-ink дисплея: изображения с дизерингом, анимация, LUT-тюнинг. Работает офлайн.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0b10">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="E·INK">
 <style>
 :root {
-  --bg:     #0d0d14;
-  --bg2:    #13131e;
-  --bg3:    #1b1b28;
-  --bg4:    #222232;
-  --border: #28283c;
-  --fg:     #d4d4e8;
-  --fg2:    #7878a0;
-  --accent: #5d9bf7;
-  --green:  #4dc9a0;
-  --red:    #f05050;
-  --orange: #e09050;
-  --yellow: #d4c060;
-  --purple: #a070e0;
+  --bg:     #0a0b10;
+  --bg2:    #10121a;
+  --bg3:    #171a26;
+  --bg4:    #1f2333;
+  --border: #262b3d;
+  --fg:     #e7e9f2;
+  --fg2:    #8b91ab;
+  --accent: #6aa3ff;
+  --green:  #46d39a;
+  --red:    #f25555;
+  --orange: #f0964f;
+  --yellow: #e3c860;
+  --purple: #a77ef2;
   --vgh:    #e07070;
   --vgl:    #60a0f0;
   --vsh2:   #d09040;
+  --paper:  #f2efe6;
+  --ink-r:  #d8362a;
+  --r:      10px;
+  --r-s:    7px;
+  --sans:   ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono:   ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{
-  font-family:'Menlo','Fira Code','JetBrains Mono',monospace;
+  font-family:var(--sans);
   background:var(--bg);color:var(--fg);
   display:flex;flex-direction:column;font-size:12px;
 }
@@ -143,6 +159,7 @@ select{cursor:pointer}
 #disp-canvas.grabby:active{cursor:grabbing}
 #ie-orig{touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
 .iehint{font-size:9px;color:var(--fg2);margin-top:5px;line-height:1.4}
+.iebar select{flex:1;min-width:0}
 
 /* ── LUT cells ── */
 .lc{
@@ -337,26 +354,170 @@ select{cursor:pointer}
   .btn.pur:hover{background:#1e1230;color:var(--purple);border-color:#3a2060}
   .btn.ylw:hover{background:#221c08;color:var(--yellow);border-color:#3a3010}
 }
+
+/* ═══════════════════════════════════════════════════════
+   v2 — оболочка приложения и рескин
+   sans — интерфейс · mono — данные · BWR — идентичность
+   ═══════════════════════════════════════════════════════ */
+body{
+  background:
+    radial-gradient(120% 60% at 50% -12%, #151a2c 0%, transparent 62%),
+    var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+select,input[type=text],input[type=number],textarea,.con,
+.tl,.tv,.ieval,.lc,#stream-st,#mtu-txt{font-family:var(--mono)}
+select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
+
+/* ── Кнопки: мягкая глубина ── */
+.btn{
+  border-radius:var(--r-s);font-family:var(--sans);font-weight:600;
+  background:linear-gradient(180deg,#1b1f2d,var(--bg3));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.045);
+}
+.btn:active{transform:translateY(1px) scale(.985)}
+.btn.big{border-radius:9px}
+
+/* ── Карточки ── */
+.card{
+  border-radius:var(--r);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03), 0 10px 26px -22px rgba(0,0,0,.9);
+}
+.ctitle{letter-spacing:1.3px}
+
+/* ── Шапка: бренд + стекло ── */
+.hdr{
+  background:color-mix(in srgb, var(--bg2) 86%, transparent);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  padding-top:calc(7px + env(safe-area-inset-top));
+}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:14px;letter-spacing:.5px;color:var(--fg);white-space:nowrap}
+.brand .inks{display:flex;gap:3px;align-items:center}
+.brand .inks i{width:9px;height:9px;border-radius:50%;display:block}
+.inks .k{background:#06070a;box-shadow:inset 0 0 0 1.5px #2d3346}
+.inks .w{background:var(--paper)}
+.inks .r{background:var(--ink-r)}
+.brand small{font-weight:500;color:var(--fg2);font-size:10px;letter-spacing:.7px}
+
+/* ── Индикатор связи ── */
+.dot{width:9px;height:9px}
+.dot.on{animation:dotpulse 2.2s ease-in-out infinite}
+@keyframes dotpulse{
+  0%,100%{box-shadow:0 0 4px var(--green)}
+  50%{box-shadow:0 0 12px var(--green), 0 0 3px var(--green)}
+}
+
+/* ── Вкладки: сегментный переключатель ── */
+.tabs{gap:5px;padding:8px 14px;background:transparent;border-bottom:1px solid var(--border)}
+.tab{
+  border-radius:9px;border:1px solid transparent;border-bottom:1px solid transparent;
+  font-weight:600;color:var(--fg2);
+}
+.tab.on{
+  background:var(--bg3);border-color:var(--border);color:var(--fg);margin-bottom:0;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+             0 0 18px -8px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+@media (max-width:900px){
+  .tabs{padding:8px;background:color-mix(in srgb, var(--bg) 78%, transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+}
+.content > .tp.on{animation:tfade .18s ease}
+@keyframes tfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ── Фирменный элемент: e-ink модуль в безеле ── */
+.bezel{
+  background:linear-gradient(180deg,#191c28,#101218);
+  border:1px solid var(--border);border-radius:16px;
+  padding:15px 16px 10px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.045), 0 14px 34px -24px #000;
+}
+.bezel .scrn{display:flex;justify-content:center}
+#disp-canvas{
+  border-radius:3px;border:1px solid #3a4158;
+  box-shadow:0 0 0 5px #0b0d13, 0 0 0 6px #2d3346;
+  background:var(--paper);
+}
+.bezel-label{
+  display:flex;justify-content:space-between;gap:8px;
+  font-size:9px;letter-spacing:1.6px;color:#565d78;text-transform:uppercase;
+  margin-top:10px;padding:0 2px;
+}
+.bezel-label .inks{display:inline-flex;gap:3px;align-items:center}
+.bezel-label .inks i{width:6px;height:6px;border-radius:50%;display:block}
+
+/* ── Телеметрия: чипы ── */
+.tbar{
+  background:color-mix(in srgb, var(--bg2) 82%, transparent);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  padding-top:6px;padding-bottom:calc(6px + env(safe-area-inset-bottom));
+}
+.ti{background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:2px 10px}
+.tv{min-width:0}
+
+/* ── Консоль ── */
+#bot-hdr{font-family:var(--sans)}
+.con{border:1px solid #14161f;background:#07080d}
+
+/* ── PWA: установка, сеть, обновление ── */
+#net-chip{
+  font-size:10px;font-weight:600;color:var(--orange);
+  border:1px solid #4a3010;background:#2a1e08;border-radius:999px;padding:2px 9px;white-space:nowrap;
+}
+#sw-toast{
+  position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));
+  transform:translateX(-50%);z-index:99;
+  display:flex;gap:11px;align-items:center;
+  background:var(--bg3);border:1px solid var(--border);border-radius:13px;
+  padding:9px 9px 9px 14px;font-size:12px;color:var(--fg);
+  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,420px);
+  animation:tfade .2s ease;
+}
+#sw-toast[hidden]{display:none}
+
+#pwa-warn{
+  display:flex;align-items:center;gap:9px;flex-shrink:0;
+  padding:7px 12px;font-size:11px;line-height:1.45;color:#f5c98a;
+  background:linear-gradient(180deg,#2a1e08,#241a08);
+  border-bottom:1px solid #4a3010;
+}
+#pwa-warn[hidden]{display:none}
+#pwa-warn a{color:var(--accent)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important}
+}
 </style>
 </head>
 <body>
 
 <!-- HEADER -->
 <div class="hdr">
-  <div class="hdr-title">nRF52 E-ink Controller</div>
+  <div class="hdr-title brand">
+    <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i></span>
+    E·INK <small>nRF52 controller</small>
+  </div>
   <div class="hdr-sep">│</div>
   <select id="dev-name" style="width:210px">
     <option>nrf52-E-ink-clock-*</option>
     <option>nrf52-E-ink-clock-DEV</option>
     <option>LUT-Tester</option>
   </select>
-  <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Connect</button>
+  <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Подключить</button>
   <span class="dot" id="dot"></span>
-  <span id="st-txt" style="color:var(--fg2);font-size:11px">Disconnected</span>
+  <span id="st-txt" style="color:var(--fg2);font-size:11px">Не подключено</span>
   <span id="mtu-txt" style="color:var(--fg2);font-size:10px;margin-left:4px"></span>
+  <span id="net-chip" hidden>⚡ офлайн</span>
   <div style="flex:1"></div>
+  <button class="btn ok" id="btn-install" hidden title="Установить как приложение">⤓ Установить</button>
   <button class="btn" onclick="send('HOST:1\n')" style="font-size:10px">HOST:1</button>
   <button class="btn" onclick="send('STAT\n')" style="font-size:10px">STAT</button>
+</div>
+
+<!-- Предупреждение о среде запуска (file:// / http без TLS) -->
+<div id="pwa-warn" hidden>
+  <span>⚠</span>
+  <span id="pwa-warn-txt" style="flex:1"></span>
+  <button class="btn" onclick="this.parentElement.hidden=true" style="font-size:10px;padding:2px 8px">✕</button>
 </div>
 
 <!-- TABS -->
@@ -375,11 +536,17 @@ select{cursor:pointer}
     <!-- Left: display preview -->
     <div class="pcol" style="width:310px;flex-shrink:0">
       <div class="card">
-        <div class="ctitle">Превью дисплея (296 × 128)</div>
-        <div style="display:flex;justify-content:center">
-          <canvas id="disp-canvas" width="296" height="128" style="width:296px;height:128px"></canvas>
+        <div class="ctitle">Дисплей · живое превью</div>
+        <div class="bezel">
+          <div class="scrn">
+            <canvas id="disp-canvas" width="296" height="128" style="width:296px;height:128px"></canvas>
+          </div>
+          <div class="bezel-label">
+            <span>SSD1675A · 296×128</span>
+            <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i>&nbsp;BWR</span>
+          </div>
         </div>
-        <div class="brow" style="margin-top:8px;justify-content:center">
+        <div class="brow" style="margin-top:9px;justify-content:center">
           <button class="btn" onclick="clearCanvas()">Очистить</button>
           <button class="btn acc" onclick="sendCanvas()">↑ Отправить на дисплей</button>
         </div>
@@ -395,7 +562,7 @@ select{cursor:pointer}
 
         <div id="img-ed" style="display:none;margin-top:7px">
           <div class="ierow iebar">
-            <select id="ie-mode" onchange="ieSet()" style="flex:1" title="Режим размещения">
+            <select id="ie-mode" onchange="ieSet()" title="Режим размещения">
               <option value="fit" selected>Fit — вписать</option>
               <option value="fill">Fill — заполнить</option>
               <option value="stretch">Stretch — растянуть</option>
@@ -871,6 +1038,22 @@ const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;
 // ═══════════════════════════════════════════════════════════════════
 //  BLE
 // ═══════════════════════════════════════════════════════════════════
+// GATT-коннект с повторами: nRF52 часто промахивается с первого раза
+// (узкое окно advertising, сон, перестройка стека после разрыва)
+async function gattConnectRetry(device, tries = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      setStatus(`Подключение… попытка ${i}/${tries}`, false);
+      return await device.gatt.connect();
+    } catch (e) {
+      logE(`GATT (${i}/${tries}): ${e.message}`);
+      if (i >= tries) throw e;
+      try { device.gatt.disconnect(); } catch {}
+      await sleep(500 * i);
+    }
+  }
+}
+
 async function bleConnect() {
   if (connected) { bleDevice && bleDevice.gatt.disconnect(); return; }
   if (!navigator.bluetooth) {
@@ -888,7 +1071,7 @@ async function bleConnect() {
       optionalServices: [NUS_SVC],
     });
     bleDevice.addEventListener('gattserverdisconnected', onBleDisc);
-    const server  = await bleDevice.gatt.connect();
+    const server  = await gattConnectRetry(bleDevice);
     const service = await server.getPrimaryService(NUS_SVC);
     rxChar = await service.getCharacteristic(NUS_RX);
     txChar = await service.getCharacteristic(NUS_TX);
@@ -898,20 +1081,32 @@ async function bleConnect() {
     mtu = 247; // reset to optimistic; sendBytes will shrink on first oversized write
     updateMtuDisplay();
     setStatus(`Подключено → ${bleDevice.name}`, true);
-    $('btn-conn').textContent = 'Disconnect';
+    $('btn-conn').textContent = 'Отключить';
     logI(`Connected to ${bleDevice.name}`);
     await sleep(400);
     sendRaw_('HOST:1');
   } catch(e) {
     setStatus('Ошибка: ' + e.message, false);
     logE(e.message);
+    if (/Connection attempt failed|GATT operation|not connected|range/i.test(e.message)) {
+      logI('Частые причины и что сделать:');
+      logI('· ценник уже занят другим окном — закрой прочие вкладки и установленное приложение (смахни из недавних), затем повтори');
+      logI('· устройство спит между advertising-окнами — разбуди его (кнопка/перезагрузка питания) и подключайся сразу');
+      logI('· выключи и включи Bluetooth на телефоне; если ценник «сопряжён» в системных настройках — удали сопряжение');
+    }
   }
 }
 
+// Освобождаем ценник при закрытии окна/приложения,
+// иначе фоновая PWA держит единственный слот подключения nRF52
+window.addEventListener('pagehide', () => {
+  try { if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect(); } catch {}
+});
+
 function onBleDisc() {
   connected = false;
-  setStatus('Disconnected', false);
-  $('btn-conn').textContent = 'Connect';
+  setStatus('Не подключено', false);
+  $('btn-conn').textContent = 'Подключить';
   logI('Disconnected');
 }
 
@@ -2375,6 +2570,86 @@ function toggleBotCon() {
     $('bot-tog').textContent='▲';
   }
 }
+</script>
+
+<!-- Тост обновления PWA -->
+<div id="sw-toast" hidden>
+  <span>Доступна новая версия приложения</span>
+  <button class="btn acc" id="sw-reload">Обновить</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  PWA: офлайн-оболочка, обновления, установка
+// ═══════════════════════════════════════════════════════════════════
+(function pwa() {
+  // — Диагностика среды: объясняем, почему установка может не работать —
+  const proto = location.protocol;
+  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  let warn = null;
+  if (proto === 'file:' || proto === 'content:') {
+    warn = 'Страница открыта как локальный файл. «Добавить на главный экран» в этом режиме создаёт нерабочий ярлык — Android не даёт ему доступа к файлу. Для настоящей установки и офлайн-режима размести эти файлы на HTTPS-хостинге (GitHub Pages, Netlify) и открой оттуда.';
+  } else if (proto === 'http:' && !isLocalhost) {
+    warn = 'Открыто по HTTP без шифрования (' + location.host + '). Chrome не разрешает установку PWA и офлайн-режим на таком адресе — нужен HTTPS или localhost.';
+  }
+  if (warn) {
+    $('pwa-warn-txt').textContent = warn;
+    $('pwa-warn').hidden = false;
+    logE('PWA: установка недоступна — ' + (proto === 'http:' ? 'нет HTTPS' : 'открыто как файл (' + proto + '//)'));
+  } else if (window.matchMedia('(display-mode: standalone)').matches) {
+    logI('PWA: запущено как установленное приложение');
+  } else {
+    logI('PWA: среда пригодна для установки (' + (location.host || proto) + ')');
+  }
+
+  // — Service worker (нужен http(s); на file:// просто пропускаем) —
+  if ('serviceWorker' in navigator && proto.startsWith('http')) {
+    let waitingSW = null;
+    const toast = $('sw-toast');
+    const showUpdate = sw => { waitingSW = sw; toast.hidden = false; };
+    $('sw-reload').onclick = () => {
+      toast.hidden = true;
+      if (waitingSW) waitingSW.postMessage('SKIP_WAITING');
+    };
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloading) return; reloading = true; location.reload();
+    });
+    navigator.serviceWorker.register('sw.js', { scope: './' }).then(reg => {
+      if (reg.waiting && navigator.serviceWorker.controller) showUpdate(reg.waiting);
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        sw && sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) showUpdate(sw);
+        });
+      });
+    }).catch(e => logE('SW: ' + e.message));
+  }
+
+  // — Установка на рабочий стол —
+  let deferredPrompt = null;
+  const ib = $('btn-install');
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    ib.hidden = false;
+  });
+  ib.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    ib.hidden = true;
+  });
+  window.addEventListener('appinstalled', () => { ib.hidden = true; logI('Приложение установлено'); });
+
+  // — Индикатор сети (BLE и офлайн работают — это просто статус) —
+  const chip = $('net-chip');
+  const net = () => { chip.hidden = navigator.onLine; };
+  window.addEventListener('online', net);
+  window.addEventListener('offline', net);
+  net();
+})();
 </script>
 </body>
 </html>
