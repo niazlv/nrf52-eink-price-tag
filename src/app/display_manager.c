@@ -556,9 +556,12 @@ void display_manager_enable_screensaver(bool enable) {
     screensaver_enabled = enable;
     power_estimate_resync_idle();
     if (enable && !prev) {
-        // Just switched on, force update
         static_saver_frame_count = 0;
         k_sem_give(&sem_screensaver_wake);
+    } else if (!enable && keep_display_on) {
+        /* Entering image mode from dynamic screensaver: stop streaming and
+         * power off display so the HV rails don't stay on indefinitely. */
+        display_manager_set_keep_on(false);
     }
 }
 
@@ -584,8 +587,12 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
             }
         }
 
-        if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC ||
-            screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
+        if (!screensaver_enabled) {
+            /* Image mode: nothing to update, sleep until explicitly woken.
+             * Time is tracked via k_uptime_get() and needs no periodic wakeup. */
+            k_sem_take(&sem_screensaver_wake, K_FOREVER);
+        } else if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC ||
+                   screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
             k_sem_take(&sem_screensaver_wake, K_MSEC(10));
         } else {
             struct tm t;

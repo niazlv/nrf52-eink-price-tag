@@ -120,6 +120,30 @@ select{cursor:pointer}
 }
 .dropzone:hover,.dropzone.over{border-color:var(--accent);color:var(--fg);background:#141422}
 
+/* ── Image editor ── */
+.ierow{display:flex;align-items:center;gap:6px;margin-top:5px;min-width:0}
+.ielbl{font-size:9px;color:var(--fg2);width:44px;flex-shrink:0;text-transform:uppercase;letter-spacing:.4px}
+.ieval{font-size:9px;color:var(--yellow);width:36px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums}
+.ierow input[type=range]{
+  flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:18px;
+  background:transparent;outline:none;cursor:pointer;padding:0;border:none;
+}
+.ierow input[type=range]::-webkit-slider-runnable-track{height:4px;background:var(--bg4);border-radius:2px}
+.ierow input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--bg2);cursor:grab;
+}
+.ierow input[type=range]::-moz-range-track{height:4px;background:var(--bg4);border-radius:2px}
+.ierow input[type=range]::-moz-range-thumb{
+  width:10px;height:10px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--bg2);cursor:grab;
+}
+.ierow input[type=range]:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent);outline-offset:2px}
+#disp-canvas.grabby{cursor:grab;touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
+#disp-canvas.grabby:active{cursor:grabbing}
+#ie-orig{touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
+.iehint{font-size:9px;color:var(--fg2);margin-top:5px;line-height:1.4}
+
 /* ── LUT cells ── */
 .lc{
   width:33px;padding:2px 3px;text-align:center;font-size:11px;
@@ -278,6 +302,21 @@ select{cursor:pointer}
 
   #disp-canvas,
   #anim-preview{width:100% !important;height:auto !important;max-width:296px}
+
+  /* Image editor on touch */
+  .ierow{gap:8px;margin-top:9px}
+  .ielbl{font-size:11px;width:64px}
+  .ieval{font-size:11px;width:46px}
+  .ierow input[type=range]{height:32px}
+  .ierow input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px}
+  .ierow input[type=range]::-webkit-slider-thumb{width:22px;height:22px;margin-top:-8px}
+  .ierow input[type=range]::-moz-range-track{height:6px;border-radius:3px}
+  .ierow input[type=range]::-moz-range-thumb{width:18px;height:18px}
+  .iebar{flex-wrap:wrap}
+  .iebar select{flex:1 1 100%}
+  .iebar .btn{flex:1 1 0}
+  .iehint{font-size:10px}
+
   .con{font-size:11px;min-height:120px}
 
   .dcrow{flex-wrap:wrap;gap:5px 7px}
@@ -347,25 +386,72 @@ select{cursor:pointer}
       </div>
 
       <div class="card">
-        <div class="ctitle">Загрузить изображение</div>
-        <div class="dropzone" id="img-drop" onclick="$('img-file').click()">
-          <div>PNG / JPG / BMP / GIF</div>
+        <div class="ctitle">Изображение — редактор</div>
+        <div class="dropzone" id="img-drop" onclick="$('img-file').click()" style="padding:11px 10px">
+          <div>PNG / JPG / BMP / GIF / WebP</div>
           <div style="font-size:10px;margin-top:3px">Клик или перетащи</div>
         </div>
         <input type="file" id="img-file" accept="image/*" style="display:none" onchange="loadImg(this.files[0])">
-        <div class="brow" style="margin-top:7px">
-          <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--fg2)">
-            <input type="checkbox" id="img-inv" style="accent-color:var(--accent)"> Инверт
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--fg2)">
-            <input type="checkbox" id="img-dith" style="accent-color:var(--accent)"> Дизер
-          </label>
-          <select id="img-thr" title="Threshold" style="font-size:10px">
-            <option value="96">Порог: 96</option>
-            <option value="127" selected>Порог: 127</option>
-            <option value="160">Порог: 160</option>
-          </select>
-          <button class="btn acc" onclick="sendCanvas()">Отправить</button>
+
+        <div id="img-ed" style="display:none;margin-top:7px">
+          <div class="ierow iebar">
+            <select id="ie-mode" onchange="ieSet()" style="flex:1" title="Режим размещения">
+              <option value="fit" selected>Fit — вписать</option>
+              <option value="fill">Fill — заполнить</option>
+              <option value="stretch">Stretch — растянуть</option>
+              <option value="orig">100% — оригинал</option>
+            </select>
+            <button class="btn" onclick="ieRot(-90)" title="Повернуть на −90°">⟲</button>
+            <button class="btn" onclick="ieRot(90)"  title="Повернуть на +90°">⟳</button>
+            <button class="btn" onclick="ieFlip('h')" title="Отразить по горизонтали">⇄</button>
+            <button class="btn" onclick="ieFlip('v')" title="Отразить по вертикали">⇅</button>
+            <button class="btn warn" onclick="ieReset()" title="Сбросить трансформации">⌂</button>
+          </div>
+          <div class="ierow"><span class="ielbl">Угол</span><input type="range" id="ie-rot" min="-180" max="180" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-rot">0°</span></div>
+          <div class="ierow"><span class="ielbl">Зум</span><input type="range" id="ie-zoom" min="5" max="400" value="100" step="1" oninput="ieSet()"><span class="ieval" id="iev-zoom">100%</span></div>
+          <div class="ierow"><span class="ielbl">Яркость</span><input type="range" id="ie-bri" min="-100" max="100" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-bri">0</span></div>
+          <div class="ierow"><span class="ielbl">Контраст</span><input type="range" id="ie-con" min="-100" max="100" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-con">0</span></div>
+          <div class="ierow"><span class="ielbl">Гамма</span><input type="range" id="ie-gam" min="20" max="300" value="100" step="5" oninput="ieSet()"><span class="ieval" id="iev-gam">1.00</span></div>
+          <div class="ierow">
+            <span class="ielbl">Дизер</span>
+            <select id="ie-dith" onchange="ieSet()" style="flex:1">
+              <option value="none">Нет — порог</option>
+              <option value="fs" selected>Floyd–Steinberg</option>
+              <option value="atkinson">Atkinson</option>
+              <option value="jjn">Jarvis–Judice–Ninke</option>
+              <option value="stucki">Stucki</option>
+              <option value="burkes">Burkes</option>
+              <option value="sierra">Sierra-3</option>
+              <option value="sierra2">Sierra-2</option>
+              <option value="sierralite">Sierra Lite</option>
+              <option value="bayer2">Bayer 2×2</option>
+              <option value="bayer4">Bayer 4×4</option>
+              <option value="bayer8">Bayer 8×8</option>
+              <option value="random">Случайный шум</option>
+            </select>
+          </div>
+          <div class="ierow"><span class="ielbl">Порог</span><input type="range" id="ie-thr" min="1" max="254" value="127" step="1" oninput="ieSet()"><span class="ieval" id="iev-thr">127</span></div>
+          <div class="brow" style="margin-top:6px">
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)">
+              <input type="checkbox" id="ie-inv" style="accent-color:var(--accent)" onchange="ieSet()"> Инверт
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Извлекать красные пиксели в красный слой BWR">
+              <input type="checkbox" id="ie-red" style="accent-color:var(--accent)" onchange="ieSet()"> Красный
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Сглаживание при масштабировании">
+              <input type="checkbox" id="ie-smooth" checked style="accent-color:var(--accent)" onchange="ieSet()"> Сглаж.
+            </label>
+            <select id="ie-bg" onchange="ieSet()" style="font-size:10px">
+              <option value="#ffffff" selected>Фон: белый</option>
+              <option value="#000000">Фон: чёрный</option>
+            </select>
+          </div>
+          <div class="brow" style="margin-top:5px">
+            <button class="btn" id="ie-orig" title="Удерживай, чтобы увидеть оригинал без обработки">👁 Оригинал</button>
+            <button class="btn" onclick="ieClose()" title="Закрыть редактор (превью останется)">✕ Закрыть</button>
+            <button class="btn acc" onclick="sendCanvas()" style="margin-left:auto">↑ Отправить</button>
+          </div>
+          <div class="iehint">Тяни превью — сдвиг/кроп · колесо или щипок — зум · двойной клик/тап — центрировать</div>
         </div>
       </div>
 
@@ -1027,75 +1113,292 @@ function tab(name) {
 //  Display canvas
 // ═══════════════════════════════════════════════════════════════════
 function clearCanvas() {
+  ieClose();
   const ctx = $('disp-canvas').getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, 296, 128);
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  Image editor — live preview pipeline
+//  compose (fit/fill/stretch/100% + rotate + flip + pan + zoom)
+//  → adjust (gamma / contrast / brightness)
+//  → dither (error-diffusion / ordered / threshold) + BWR red layer
+// ═══════════════════════════════════════════════════════════════════
+const IE = { img:null, rot:0, zoom:100, x:0, y:0, fh:false, fv:false, raw:false, oc:null };
+
+// Error-diffusion kernels: t = [dx, dy, weight], d = divisor
+const IE_KERNELS = {
+  fs:        { d:16, t:[[1,0,7],[-1,1,3],[0,1,5],[1,1,1]] },
+  atkinson:  { d:8,  t:[[1,0,1],[2,0,1],[-1,1,1],[0,1,1],[1,1,1],[0,2,1]] },
+  jjn:       { d:48, t:[[1,0,7],[2,0,5],[-2,1,3],[-1,1,5],[0,1,7],[1,1,5],[2,1,3],[-2,2,1],[-1,2,3],[0,2,5],[1,2,3],[2,2,1]] },
+  stucki:    { d:42, t:[[1,0,8],[2,0,4],[-2,1,2],[-1,1,4],[0,1,8],[1,1,4],[2,1,2],[-2,2,1],[-1,2,2],[0,2,4],[1,2,2],[2,2,1]] },
+  burkes:    { d:32, t:[[1,0,8],[2,0,4],[-2,1,2],[-1,1,4],[0,1,8],[1,1,4],[2,1,2]] },
+  sierra:    { d:32, t:[[1,0,5],[2,0,3],[-2,1,2],[-1,1,4],[0,1,5],[1,1,4],[2,1,2],[-1,2,2],[0,2,3],[1,2,2]] },
+  sierra2:   { d:16, t:[[1,0,4],[2,0,3],[-2,1,1],[-1,1,2],[0,1,3],[1,1,2],[2,1,1]] },
+  sierralite:{ d:4,  t:[[1,0,2],[-1,1,1],[0,1,1]] },
+};
+const IE_BAYER = {
+  bayer2: [[0,2],[3,1]],
+  bayer4: [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]],
+  bayer8: [[0,32,8,40,2,34,10,42],[48,16,56,24,50,18,58,26],[12,44,4,36,14,46,6,38],
+           [60,28,52,20,62,30,54,22],[3,35,11,43,1,33,9,41],[51,19,59,27,49,17,57,25],
+           [15,47,7,39,13,45,5,37],[63,31,55,23,61,29,53,21]],
+};
 
 function loadImg(file) {
   if (!file) return;
   const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
-    const ctx = $('disp-canvas').getContext('2d');
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,296,128);
-    const sc = Math.min(296/img.width, 128/img.height);
-    const w=img.width*sc, h=img.height*sc;
-    ctx.drawImage(img, (296-w)/2, (128-h)/2, w, h);
     URL.revokeObjectURL(url);
-    const dith  = $('img-dith').checked;
-    const inv   = $('img-inv').checked;
-    const thr   = parseInt($('img-thr').value);
-    threshold2d(ctx, 296, 128, thr, dith, inv);
+    IE.img = img;
+    ieReset(false);
+    $('img-ed').style.display = 'block';
+    $('disp-canvas').classList.add('grabby');
+    renderImg();
   };
+  img.onerror = () => { URL.revokeObjectURL(url); logE('Не удалось открыть изображение'); };
   img.src = url;
 }
 
-// Floyd-Steinberg or simple threshold on an RGBA ImageData in ctx
-function threshold2d(ctx, w, h, thr, dith, inv) {
-  const id = ctx.getImageData(0, 0, w, h);
-  const d = id.data;
-  const gray = new Float32Array(w * h);
-  for (let i=0; i<w*h; i++) gray[i] = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2];
-  if (dith) {
-    for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
-      const i=y*w+x, old=gray[i], nw=old<thr?0:255;
-      gray[i]=nw; const e=old-nw;
-      if(x+1<w) gray[i+1]+=e*7/16;
-      if(y+1<h){ if(x>0) gray[i+w-1]+=e*3/16; gray[i+w]+=e*5/16; if(x+1<w) gray[i+w+1]+=e/16; }
-    }
+function ieClose() {
+  IE.img = null;
+  $('img-ed').style.display = 'none';
+  $('disp-canvas').classList.remove('grabby');
+}
+
+function ieReset(render = true) {
+  IE.rot = 0; IE.zoom = 100; IE.x = 0; IE.y = 0; IE.fh = false; IE.fv = false;
+  $('ie-rot').value = 0; $('ie-zoom').value = 100;
+  $('ie-bri').value = 0; $('ie-con').value = 0; $('ie-gam').value = 100;
+  if (render) renderImg();
+}
+
+function ieRot(d) {
+  IE.rot = ((IE.rot + d + 540) % 360) - 180;
+  $('ie-rot').value = IE.rot;
+  renderImg();
+}
+
+function ieFlip(axis) {
+  if (axis === 'h') IE.fh = !IE.fh; else IE.fv = !IE.fv;
+  renderImg();
+}
+
+// Read all controls into state + refresh value labels, then re-render
+function ieSet() {
+  IE.rot  = +$('ie-rot').value;
+  IE.zoom = +$('ie-zoom').value;
+  $('iev-rot').textContent  = IE.rot + '°';
+  $('iev-zoom').textContent = IE.zoom + '%';
+  $('iev-bri').textContent  = $('ie-bri').value;
+  $('iev-con').textContent  = $('ie-con').value;
+  $('iev-gam').textContent  = (+$('ie-gam').value / 100).toFixed(2);
+  $('iev-thr').textContent  = $('ie-thr').value;
+  renderImg();
+}
+
+function renderImg() {
+  if (!IE.img) return;
+  const cv = $('disp-canvas'), ctx = cv.getContext('2d');
+  // 1) Compose on offscreen canvas
+  const oc = IE.oc || (IE.oc = document.createElement('canvas'));
+  oc.width = 296; oc.height = 128;
+  const o = oc.getContext('2d');
+  o.fillStyle = $('ie-bg').value;
+  o.fillRect(0, 0, 296, 128);
+  o.imageSmoothingEnabled = $('ie-smooth').checked;
+  o.imageSmoothingQuality = 'high';
+  const iw = IE.img.width, ih = IE.img.height;
+  let sx, sy;
+  switch ($('ie-mode').value) {
+    case 'fill':    sx = sy = Math.max(296/iw, 128/ih); break;
+    case 'stretch': sx = 296/iw; sy = 128/ih;           break;
+    case 'orig':    sx = sy = 1;                        break;
+    default:        sx = sy = Math.min(296/iw, 128/ih); // fit
   }
-  for (let i=0; i<w*h; i++) {
-    const v = (dith?gray[i]<128:gray[i]<thr) !== inv ? 0 : 255;
-    d[i*4]=d[i*4+1]=d[i*4+2]=v; d[i*4+3]=255;
-  }
+  const z = IE.zoom / 100; sx *= z; sy *= z;
+  o.save();
+  o.translate(148 + IE.x, 64 + IE.y);
+  o.rotate(IE.rot * Math.PI / 180);
+  o.scale(sx * (IE.fh ? -1 : 1), sy * (IE.fv ? -1 : 1));
+  o.drawImage(IE.img, -iw/2, -ih/2);
+  o.restore();
+  // "Оригинал" — показать без обработки
+  if (IE.raw) { ctx.drawImage(oc, 0, 0); return; }
+  // 2) Adjust + dither
+  const id = o.getImageData(0, 0, 296, 128);
+  ieProcess(id);
   ctx.putImageData(id, 0, 0);
 }
 
-// Convert 296×128 logical canvas → physical 128×296 1-bpp buffer (4736 bytes)
+function ieProcess(id) {
+  const w = 296, h = 128, d = id.data, n = w * h;
+  const bri = +$('ie-bri').value, con = +$('ie-con').value;
+  const gam = +$('ie-gam').value / 100;
+  const thr = +$('ie-thr').value;
+  const inv = $('ie-inv').checked, useRed = $('ie-red').checked;
+  const mode = $('ie-dith').value;
+  // LUT: gamma → contrast → brightness
+  const cf = (259 * (con * 2.55 + 255)) / (255 * (259 - con * 2.55));
+  const lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) {
+    let g = 255 * Math.pow(v / 255, 1 / gam);
+    lut[v] = cf * (g - 128) + 128 + bri * 1.27;
+  }
+  const gray = new Float32Array(n);
+  const red  = useRed ? new Uint8Array(n) : null;
+  for (let i = 0; i < n; i++) {
+    const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
+    if (useRed && r > 100 && r - g > 45 && r - b > 45) { red[i] = 1; gray[i] = 255; continue; }
+    gray[i] = lut[(0.299*r + 0.587*g + 0.114*b) | 0];
+  }
+  const out = new Uint8Array(n); // 1 = чёрный
+  if (mode === 'none') {
+    for (let i = 0; i < n; i++) out[i] = gray[i] < thr ? 1 : 0;
+  } else if (IE_BAYER[mode]) {
+    const m = IE_BAYER[mode], N = m.length, NN = N * N, bias = thr - 128;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const t = (m[y % N][x % N] + 0.5) * 255 / NN + bias;
+      out[y*w + x] = gray[y*w + x] < t ? 1 : 0;
+    }
+  } else if (mode === 'random') {
+    for (let i = 0; i < n; i++) out[i] = gray[i] < thr + (Math.random() - 0.5) * 160 ? 1 : 0;
+  } else {
+    // Error diffusion с серпантинным сканированием
+    const k = IE_KERNELS[mode] || IE_KERNELS.fs, kd = k.d, kt = k.t;
+    for (let y = 0; y < h; y++) {
+      const ltr = !(y & 1);
+      for (let xi = 0; xi < w; xi++) {
+        const x = ltr ? xi : w - 1 - xi, i = y*w + x;
+        const old = gray[i], nw = old < thr ? 0 : 255;
+        out[i] = nw ? 0 : 1;
+        const e = (old - nw) / kd;
+        for (let t = 0; t < kt.length; t++) {
+          const nx = x + (ltr ? kt[t][0] : -kt[t][0]), ny = y + kt[t][1];
+          if (nx >= 0 && nx < w && ny < h) gray[ny*w + nx] += e * kt[t][2];
+        }
+      }
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    if (red && red[i]) { d[i*4] = 200; d[i*4+1] = 0; d[i*4+2] = 0; d[i*4+3] = 255; continue; }
+    const v = (out[i] === 1) !== inv ? 0 : 255;
+    d[i*4] = d[i*4+1] = d[i*4+2] = v; d[i*4+3] = 255;
+  }
+}
+
+// ── Пан (1 палец/мышь), пинч-зум (2 пальца), колесо, double-tap ──
+(function ieBindCanvas() {
+  const cv = $('disp-canvas');
+  const ptrs = new Map();   // активные указатели
+  let pinch = null, lastTap = 0;
+
+  const toCanvas = (clX, clY) => {
+    const r = cv.getBoundingClientRect();
+    return { x: (clX - r.left) * 296 / r.width, y: (clY - r.top) * 128 / r.height };
+  };
+  const pinchState = () => {
+    const [a, b] = [...ptrs.values()];
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  };
+  // Зум к точке (в координатах канваса)
+  function zoomAt(cx, cy, factor) {
+    const nz = Math.max(5, Math.min(400, IE.zoom * factor));
+    const rk = nz / IE.zoom;
+    IE.x = (cx - 148) - ((cx - 148) - IE.x) * rk;
+    IE.y = (cy - 64)  - ((cy - 64)  - IE.y) * rk;
+    IE.zoom = nz;
+    $('ie-zoom').value = Math.round(nz);
+    $('iev-zoom').textContent = Math.round(nz) + '%';
+  }
+
+  cv.addEventListener('pointerdown', e => {
+    if (!IE.img) return;
+    cv.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) pinch = pinchState();
+    else if (ptrs.size === 1) {
+      const now = performance.now();              // double-tap → центрировать
+      if (now - lastTap < 320) { IE.x = 0; IE.y = 0; renderImg(); }
+      lastTap = now;
+    }
+    e.preventDefault();
+  });
+
+  cv.addEventListener('pointermove', e => {
+    if (!IE.img || !ptrs.has(e.pointerId)) return;
+    const prev = ptrs.get(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const r = cv.getBoundingClientRect();
+    if (ptrs.size === 2 && pinch) {
+      const np = pinchState();
+      if (pinch.dist > 8 && np.dist > 8) {
+        const mid = toCanvas(np.mx, np.my);
+        zoomAt(mid.x, mid.y, np.dist / pinch.dist);
+      }
+      IE.x += (np.mx - pinch.mx) * 296 / r.width;   // двухпальцевый пан
+      IE.y += (np.my - pinch.my) * 128 / r.height;
+      pinch = np;
+      renderImg();
+    } else if (ptrs.size === 1) {
+      IE.x += (e.clientX - prev.x) * 296 / r.width;
+      IE.y += (e.clientY - prev.y) * 128 / r.height;
+      renderImg();
+    }
+  });
+
+  ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, e => {
+    ptrs.delete(e.pointerId);
+    pinch = ptrs.size === 2 ? pinchState() : null;
+  }));
+
+  cv.addEventListener('wheel', e => {
+    if (!IE.img) return;
+    e.preventDefault();
+    const p = toCanvas(e.clientX, e.clientY);
+    zoomAt(p.x, p.y, e.deltaY < 0 ? 1.1 : 1 / 1.1);
+    renderImg();
+  }, { passive: false });
+
+  cv.addEventListener('dblclick', () => { if (IE.img) { IE.x = 0; IE.y = 0; renderImg(); } });
+  cv.addEventListener('contextmenu', e => { if (IE.img) e.preventDefault(); }); // long-press
+
+  const ob = $('ie-orig');
+  ob.addEventListener('pointerdown', e => { e.preventDefault(); IE.raw = true; renderImg(); });
+  ob.addEventListener('contextmenu', e => e.preventDefault());
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev =>
+    ob.addEventListener(ev, () => { if (IE.raw) { IE.raw = false; renderImg(); } }));
+})();
+
+// Convert 296×128 logical canvas → physical 128×296 buffers
+// BW: 1-bpp, 0 = чёрный; RED: 1-bpp, 1 = красный (4736 байт каждый)
 // Logical (lx, ly): lx∈[0,296), ly∈[0,128)
 // Physical: phx = 127-ly, phy = lx
 function canvasToPhys(ctx) {
   const id = ctx.getImageData(0, 0, 296, 128);
   const d  = id.data;
-  const bw = new Uint8Array(FB_SIZE).fill(0xFF); // all white
+  const bw  = new Uint8Array(FB_SIZE).fill(0xFF); // all white
+  const red = new Uint8Array(FB_SIZE);            // no red
   for (let ly=0; ly<DISP_W; ly++) {
     for (let lx=0; lx<DISP_H; lx++) {
       const pi  = (ly*296 + lx)*4;
-      const blk = (d[pi]+d[pi+1]+d[pi+2])/3 < 128;
-      if (!blk) continue;
+      const r=d[pi], g=d[pi+1], b=d[pi+2];
       const phx = DISP_W-1-ly, phy = lx;
-      const bi  = phy*16 + (phx>>3);
-      bw[bi] &= ~(1 << (7-(phx&7)));
+      const bi  = phy*16 + (phx>>3), msk = 1 << (7-(phx&7));
+      if (r > 120 && r-g > 60 && r-b > 60) { red[bi] |= msk; continue; } // красный слой
+      if ((r+g+b)/3 < 128) bw[bi] &= ~msk;
     }
   }
-  return bw;
+  return { bw, red };
 }
 
 async function sendCanvas() {
   if (!connected) { alert('Не подключено'); return; }
   const ctx = $('disp-canvas').getContext('2d');
-  await sendBWR(canvasToPhys(ctx), new Uint8Array(FB_SIZE), 'canvas');
+  const { bw, red } = canvasToPhys(ctx);
+  await sendBWR(bw, red, 'canvas');
 }
 
 async function sendBWR(bw, red, desc) {
