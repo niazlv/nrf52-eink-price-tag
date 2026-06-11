@@ -8,6 +8,7 @@
 
 static char date_str[40];
 static char stat_str[48];
+static char power_str[32];
 static life_world_t life_world;
 
 static const char *const wday_names[] = {
@@ -76,6 +77,10 @@ static const char *power_tag(const display_status_model_t *model)
 static void render_stats(const display_status_model_t *model, int x, int y)
 {
     char time_part[20] = {0};
+    uint32_t mah = model->energy_mah_x1000 / 1000U;
+    uint32_t mah_frac = model->energy_mah_x1000 % 1000U;
+    int current_ma_x10 = (model->estimated_current_ua + 50) / 100;
+
     format_uptime(model->uptime_sec, time_part, sizeof(time_part));
     snprintf(stat_str, sizeof(stat_str), "U:%s R:%d %s:%s A:%d %s",
              time_part,
@@ -85,6 +90,13 @@ static void render_stats(const display_status_model_t *model, int x, int y)
              model->maintenance_countdown,
              power_tag(model));
     graphics_draw_string(x, y, stat_str);
+
+    snprintf(power_str, sizeof(power_str), "mAh:%u.%03u I:%d.%dmA",
+             (unsigned int)mah,
+             (unsigned int)mah_frac,
+             current_ma_x10 / 10,
+             current_ma_x10 % 10);
+    graphics_draw_string(x, y + 10, power_str);
 }
 
 static void render_battery(const display_status_model_t *model, int x, int y)

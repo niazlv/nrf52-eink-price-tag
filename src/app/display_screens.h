@@ -11,6 +11,8 @@ typedef struct {
     int battery_percent;
     int32_t last_render_ms;
     int64_t uptime_sec;
+    uint32_t energy_mah_x1000;
+    int estimated_current_ua;
     int saver_mode;
     int partial_mode;
     int maintenance_countdown;

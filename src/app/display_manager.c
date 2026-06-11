@@ -36,6 +36,24 @@ static int static_saver_frame_count = 0;
 
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
+/* Rough current model for the on-screen mAh estimator. This is not a coulomb
+ * counter; tune these values after measuring the board with the actual panel,
+ * regulator, LEDs and BLE settings.
+ */
+#define POWER_BASE_SLEEP_UA             80
+#define POWER_BLE_ADV_IDLE_UA          120
+#define POWER_BLE_ADV_FAST_UA          900
+#define POWER_BLE_CONN_IDLE_UA         900
+#define POWER_BLE_STREAM_UA           4500
+#define POWER_DISPLAY_STANDBY_UA       400
+#define POWER_DISPLAY_HV_HOLD_UA      8000
+#define POWER_DISPLAY_PARTIAL_UA     25000
+#define POWER_DISPLAY_FULL_UA        32000
+
+static uint64_t power_estimate_uah_x1000 = 0;
+static int64_t power_estimate_last_ms = 0;
+static int power_estimate_current_ua = POWER_BASE_SLEEP_UA;
+
 /* When true, the device sends TELE: lines after every display update so the
  * host app can track actual frame timing without polling. */
 static bool tele_enabled = false;
@@ -54,12 +72,72 @@ static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
 
 K_MUTEX_DEFINE(display_lock);
 
+static bool should_power_down_after_update(void);
+
+static int power_estimate_idle_current_ua(void)
+{
+    int ua = POWER_BASE_SLEEP_UA;
+    bool ble_streaming = ble_service_get_streaming_mode();
+
+    if (ble_service_is_connected()) {
+        ua += ble_streaming ? POWER_BLE_STREAM_UA : POWER_BLE_CONN_IDLE_UA;
+    } else {
+        ua += ble_streaming ? POWER_BLE_ADV_FAST_UA : POWER_BLE_ADV_IDLE_UA;
+    }
+
+    if (streaming_active) {
+        ua += POWER_DISPLAY_HV_HOLD_UA;
+    } else if (keep_display_on) {
+        ua += POWER_DISPLAY_STANDBY_UA;
+    } else if (!should_power_down_after_update()) {
+        ua += POWER_DISPLAY_STANDBY_UA;
+    }
+
+    return ua;
+}
+
+static void power_estimate_account_now(void)
+{
+    int64_t now = k_uptime_get();
+
+    if (power_estimate_last_ms == 0) {
+        power_estimate_last_ms = now;
+        return;
+    }
+
+    int64_t dt_ms = now - power_estimate_last_ms;
+    if (dt_ms > 0) {
+        power_estimate_uah_x1000 +=
+            ((uint64_t)power_estimate_current_ua * (uint64_t)dt_ms) / 3600U;
+        power_estimate_last_ms = now;
+    }
+}
+
+static void power_estimate_set_current(int current_ua)
+{
+    power_estimate_account_now();
+    power_estimate_current_ua = current_ua;
+}
+
+static void power_estimate_resync_idle(void)
+{
+    power_estimate_set_current(power_estimate_idle_current_ua());
+}
+
+static uint32_t power_estimate_get_mah_x1000(void)
+{
+    power_estimate_account_now();
+    return (uint32_t)(power_estimate_uah_x1000 / 1000U);
+}
+
 static void stop_streaming_if_active(void) {
     if (streaming_active) {
+        power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_wait_busy();
         ssd1675a_end_streaming();
         ssd1675a_wait_busy();
         streaming_active = false;
+        power_estimate_resync_idle();
     }
 }
 
@@ -110,6 +188,7 @@ void display_manager_init(void) {
         LOG_ERR("GPIO_0 not found!");
         return;
     }
+    power_estimate_resync_idle();
 }
 
 static void perform_display_update(void) {
@@ -117,11 +196,13 @@ static void perform_display_update(void) {
 
     // k_mutex_lock(&display_lock, K_FOREVER);
 
+    power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init(gpio_dev_dm);
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
 
     power_down_after_idle_update();
+    power_estimate_resync_idle();
 
     // k_mutex_unlock(&display_lock);
 }
@@ -131,10 +212,12 @@ static void perform_display_update(void) {
 // to eliminate the reddish tint left by the "red fixation" phases of the main LUT.
 static void perform_display_update_flush_red(void) {
     if (!gpio_dev_dm) return;
+    power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init(gpio_dev_dm);
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display_flush_red();
     power_down_after_idle_update();
+    power_estimate_resync_idle();
 }
 
 static void display_manager_update_static_saver(bool full_refresh)
@@ -164,12 +247,15 @@ void display_manager_update_partial(void) {
         // to prevent particle polarization ghost burn-in.
         if (streaming_active && (stream_partial_count % STREAM_REFRESH_INTERVAL == 0)) {
             stop_streaming_if_active();
+            power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
             ssd1675a_init_partial(gpio_dev_dm);
             ssd1675a_display_buffer_fast(graphics_get_buffer());
             ssd1675a_update_partial();  // 0xC7: full HV cycle with current LUT
+            power_estimate_resync_idle();
             return;                     // streaming restarts on next call
         }
 
+        power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         if (!streaming_active) {
             ssd1675a_init_partial(gpio_dev_dm);
             ssd1675a_display_buffer_fast(graphics_get_buffer());
@@ -179,12 +265,15 @@ void display_manager_update_partial(void) {
             ssd1675a_display_buffer_fast(graphics_get_buffer());
         }
         ssd1675a_update_frame_stream();
+        power_estimate_resync_idle();
     } else {
         stop_streaming_if_active();
+        power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_init_partial(gpio_dev_dm);
         ssd1675a_display_buffer_fast(graphics_get_buffer());
         ssd1675a_update_partial();
         power_down_after_idle_update();
+        power_estimate_resync_idle();
     }
 }
 
@@ -205,12 +294,15 @@ void display_manager_update_partial_nowait(void) {
      * 0xC7 HV cycle. This one always blocks (caller's wait_busy already ran). */
     if (streaming_active && (stream_partial_count % STREAM_REFRESH_INTERVAL == 0)) {
         stop_streaming_if_active();
+        power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_init_partial(gpio_dev_dm);
         ssd1675a_display_buffer_fast(graphics_get_buffer());
         ssd1675a_update_partial();
+        power_estimate_resync_idle();
         return;
     }
 
+    power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     if (!streaming_active) {
         ssd1675a_init_partial(gpio_dev_dm);
         ssd1675a_display_buffer_fast(graphics_get_buffer());
@@ -241,17 +333,22 @@ void display_manager_set_partial_mode(int mode) {
 
 void display_manager_begin_streaming(void) {
     if (!streaming_active) {
+        power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_begin_streaming();
         streaming_active = true;
+        power_estimate_resync_idle();
     }
 }
 
 void display_manager_update_frame_stream(void) {
     if (!streaming_active) {
+        power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_begin_streaming();
         streaming_active = true;
     }
+    power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     ssd1675a_update_frame_stream();
+    power_estimate_resync_idle();
 }
 
 void display_manager_end_streaming(void) {
@@ -299,6 +396,7 @@ void display_manager_update_lut_test(void) {
 
     /* Write BOTH BW and Red buffers so the red track in the ghosting test
      * is visible. ssd1675a_display_buffer_fast() skips the red buffer. */
+    power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     if (!streaming_active) {
         ssd1675a_init_partial(gpio_dev_dm);
         ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
@@ -308,6 +406,7 @@ void display_manager_update_lut_test(void) {
         ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     }
     ssd1675a_update_frame_stream();
+    power_estimate_resync_idle();
 
     /* Send telemetry every frame once we have a valid measurement (frame >= 2). */
     if (tele_enabled && delta_ms > 0) {
@@ -339,6 +438,7 @@ void display_manager_set_screensaver_mode(int mode) {
         display_manager_set_keep_on(false);
         display_manager_set_partial_mode(STATIC_SAVER_PARTIAL_MODE);
     }
+    power_estimate_resync_idle();
 }
 
 void display_manager_update_status(void) {
@@ -366,6 +466,8 @@ void display_manager_update_status(void) {
         (screensaver_mode == SCREENSAVER_MODE_STATIC)
             ? maintenance_countdown(static_saver_frame_count, STATIC_SAVER_FULL_INTERVAL)
             : maintenance_countdown(stream_partial_count, STREAM_REFRESH_INTERVAL);
+    model.energy_mah_x1000 = power_estimate_get_mah_x1000();
+    model.estimated_current_ua = power_estimate_current_ua;
 
     if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
         display_screens_render_status_dynamic(&model);
@@ -452,6 +554,7 @@ void display_manager_clear(void) {
 void display_manager_enable_screensaver(bool enable) {
     bool prev = screensaver_enabled;
     screensaver_enabled = enable;
+    power_estimate_resync_idle();
     if (enable && !prev) {
         // Just switched on, force update
         static_saver_frame_count = 0;
@@ -519,4 +622,5 @@ void display_manager_set_keep_on(bool enable) {
     if (!enable) {
         power_down_after_idle_update();
     }
+    power_estimate_resync_idle();
 }

@@ -49,6 +49,11 @@ int ble_service_is_connected(void);
 void ble_service_set_streaming_mode(bool enable);
 
 /**
+ * @brief true when BLE is in high-throughput VSTREAM mode.
+ */
+bool ble_service_get_streaming_mode(void);
+
+/**
  * @brief Current runtime advertising/GAP name.
  */
 const char *ble_service_get_device_name(void);

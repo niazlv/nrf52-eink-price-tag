@@ -356,6 +356,11 @@ void ble_service_set_streaming_mode(bool enable)
 	}
 }
 
+bool ble_service_get_streaming_mode(void)
+{
+	return ble_streaming_mode;
+}
+
 const char *ble_service_get_device_name(void)
 {
 	return device_name;
