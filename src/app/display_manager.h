@@ -67,7 +67,8 @@ void display_manager_end_streaming(void);
 
 /**
  * @brief Set the partial update mode (0=Turbo, 1=Balanced, 2=Stable,
- *        3=Clean, 4=Tone dark, 5=Tone light)
+ *        3=Clean, 4=Tone dark, 5=Tone light, 6=Tone bidir fast,
+ *        7=Tone bidir)
  */
 void display_manager_set_partial_mode(int mode);
 

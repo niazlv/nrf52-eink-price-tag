@@ -65,6 +65,8 @@ static const char *partial_mode_tag(const display_status_model_t *model)
     case 3:  return "C";
     case 4:  return "TD";
     case 5:  return "TL";
+    case 6:  return "TF";
+    case 7:  return "TB";
     default: return "?";
     }
 }

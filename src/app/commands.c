@@ -372,10 +372,10 @@ void cmd_test(char *args)
 
 void cmd_mode(char *args)
 {
-    if (!args || !*args) { ble_printf("usage: MODE: 0-5\r\n"); return; }
+    if (!args || !*args) { ble_printf("usage: MODE: 0-7\r\n"); return; }
     int m = atoi(args);
     display_manager_set_partial_mode(m);
-    ble_printf("Mode Set: %d (0=T,1=B,2=S,3=C,4=ToneDark,5=ToneLight)\r\n", m);
+    ble_printf("Mode Set: %d (0=T,1=B,2=S,3=C,4=ToneDark,5=ToneLight,6=ToneBidirFast,7=ToneBidir)\r\n", m);
 }
 
 void cmd_text(char *args)
@@ -769,6 +769,12 @@ static int parse_partial_mode_name(const char *name)
              strncasecmp(name, "DARK", 4) == 0) return 4;
     else if (name[0] == '5' || strncasecmp(name, "TONE_LIGHT", 10) == 0 ||
              strncasecmp(name, "LIGHT", 5) == 0) return 5;
+    else if (name[0] == '6' || strcasecmp(name, "TONE_BIDIR_FAST") == 0 ||
+             strcasecmp(name, "BIDIR_FAST") == 0 ||
+             strcasecmp(name, "BIDIR2") == 0) return 6;
+    else if (name[0] == '7' || strcasecmp(name, "TONE_BIDIR") == 0 ||
+             strcasecmp(name, "BIDIR") == 0 ||
+             strcasecmp(name, "BIDIR4") == 0) return 7;
 
     return -1;
 }
@@ -776,7 +782,8 @@ static int parse_partial_mode_name(const char *name)
 static const char *partial_mode_name(int mode)
 {
     static const char *names[] = {
-        "TURBO", "BALANCED", "STABLE", "CLEAN", "TONE_DARK", "TONE_LIGHT"
+        "TURBO", "BALANCED", "STABLE", "CLEAN", "TONE_DARK", "TONE_LIGHT",
+        "TONE_BIDIR_FAST", "TONE_BIDIR"
     };
 
     return (mode >= 0 && mode < (int)ARRAY_SIZE(names)) ? names[mode] : "?";
@@ -784,11 +791,11 @@ static const char *partial_mode_name(int mode)
 
 /* LUTSET:<name|n> — select built-in preset by name/index and disable custom LUT.
  * Accepted: TURBO/0, BALANCED/1, STABLE/2, CLEAN/3, TONE_DARK/4,
- * TONE_LIGHT/5 (case-insensitive). */
+ * TONE_LIGHT/5, TONE_BIDIR_FAST/6, TONE_BIDIR/7 (case-insensitive). */
 void cmd_lutset(char *args)
 {
     if (!args || !*args) {
-        ble_printf("LUTSET: usage: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT (0-5)\r\n");
+        ble_printf("LUTSET: usage: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR (0-7)\r\n");
         return;
     }
     int mode = parse_partial_mode_name(args);
@@ -806,7 +813,7 @@ void cmd_lutset(char *args)
 void cmd_vstream(char *args)
 {
     if (!args || !*args) {
-        ble_printf("VSTREAM:usage start[:TURBO|...|TONE_DARK]|stop\r\n");
+        ble_printf("VSTREAM:usage start[:TURBO|...|TONE_BIDIR_FAST]|stop\r\n");
         return;
     }
     if (args[0] == '0' || strncmp(args, "stop", 4) == 0) {
@@ -845,7 +852,7 @@ void cmd_vstream(char *args)
         vs_reset_frame();
         vstream_active = true;
         k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
-        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD\r\n",
+        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD/CCDE\r\n",
                    partial_mode_name(mode));
         return;
     }
@@ -879,7 +886,7 @@ const struct shell_cmd commands[] = {
     {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
     {"FAST",        cmd_fast,       "Fast/partial update"},
     {"FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display"},
-    {"MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight"},
+    {"MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight 6=ToneBidirFast 7=ToneBidir"},
     {"PALTEST",     cmd_paltest,    "Render B/W/R palette and spatial dither test"},
     {"TONETEST",    cmd_tonetest,   "Render physical gray accumulation test"},
     {"TEXT:",       cmd_text,       "Draw text on display"},
@@ -892,7 +899,7 @@ const struct shell_cmd commands[] = {
     {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
     {"L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
     {"LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1"},
-    {"LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT"},
+    {"LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR"},
     {"LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
     {"LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
     {"HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},

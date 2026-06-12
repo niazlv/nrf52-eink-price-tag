@@ -330,6 +330,10 @@ void display_manager_set_partial_mode(int mode) {
         ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_DARK);
     } else if (mode == 5) {
         ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_LIGHT);
+    } else if (mode == 6) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST);
+    } else if (mode == 7) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_BIDIR);
     } else {
         return;
     }

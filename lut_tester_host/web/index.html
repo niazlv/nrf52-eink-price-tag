@@ -683,6 +683,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <option value="3">3 — Clean</option>
             <option value="4">4 — Tone Dark</option>
             <option value="5">5 — Tone Light</option>
+            <option value="6">6 — Tone Bidir Fast</option>
+            <option value="7">7 — Tone Bidir</option>
           </select>
           <span class="blbl" style="margin-left:10px">Поворот:</span>
           <select id="rot-sel" onchange="send('ROT: '+this.value+'\n')">
@@ -712,6 +714,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
           <button class="btn pur" onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
           <button class="btn ylw" onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
+          <button class="btn pur" onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
+          <button class="btn ylw" onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
         </div>
       </div>
 
@@ -767,6 +771,13 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
         <div class="ctitle">Параметры стриминга</div>
         <div class="brow" style="gap:10px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Рендер:</span>
+            <select id="enc-render" onchange="setAnimRenderMode(this.value)">
+              <option value="mono" selected>1bpp / dither/threshold</option>
+              <option value="tone">Тона temporal</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
             <span class="blbl">Кодирование:</span>
             <select id="enc-type">
               <option value="2" selected>DRLE (рекомендуется)</option>
@@ -795,7 +806,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <option value="stretch">Stretch (растяжение)</option>
             </select>
           </div>
-          <div style="display:flex;align-items:center;gap:5px">
+          <div id="enc-lut-box" style="display:flex;align-items:center;gap:5px">
             <span class="blbl">LUT:</span>
             <select id="enc-lut">
               <option value="TURBO" selected>TURBO</option>
@@ -804,6 +815,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <option value="CLEAN">CLEAN</option>
               <option value="TONE_DARK">TONE_DARK</option>
               <option value="TONE_LIGHT">TONE_LIGHT</option>
+              <option value="TONE_BIDIR_FAST">TONE_BIDIR_FAST</option>
+              <option value="TONE_BIDIR">TONE_BIDIR</option>
             </select>
           </div>
           <div style="display:flex;align-items:center;gap:5px">
@@ -814,8 +827,25 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             </select>
           </div>
         </div>
+        <div class="brow" id="enc-tone-row" style="gap:10px;flex-wrap:wrap;margin-top:6px;display:none">
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Tone LUT:</span>
+            <select id="enc-tone-lut">
+              <option value="TONE_BIDIR_FAST" selected>TONE_BIDIR_FAST</option>
+              <option value="TONE_BIDIR">TONE_BIDIR</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Блок:</span>
+            <select id="enc-tone-cell">
+              <option value="1">1×1 деталь</option>
+              <option value="2" selected>2×2 баланс</option>
+              <option value="4">4×4 быстрее BLE</option>
+            </select>
+          </div>
+        </div>
         <div class="brow" style="gap:12px;margin-top:6px">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
+          <label id="enc-dith-label" style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
             <input type="checkbox" id="enc-dith" style="accent-color:var(--accent)"> Дизер
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
@@ -897,6 +927,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
           <button class="btn pur"  onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
           <button class="btn ylw"  onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
+          <button class="btn pur"  onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
+          <button class="btn ylw"  onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
         </div>
       </div>
 
@@ -1570,6 +1602,19 @@ function setOutputMode(mode, rerender=true) {
   if (rerender && IE.img) renderImg();
 }
 
+function currentAnimRenderMode() {
+  const el = $('enc-render');
+  return el && el.value === 'tone' ? 'tone' : 'mono';
+}
+
+function setAnimRenderMode(mode) {
+  const tone = mode === 'tone';
+  if ($('enc-render')) $('enc-render').value = tone ? 'tone' : 'mono';
+  showEl('enc-tone-row', tone, 'flex');
+  showEl('enc-lut-box', !tone, 'flex');
+  showEl('enc-dith-label', !tone, 'flex');
+}
+
 // Read all controls into state + refresh value labels, then re-render
 function ieSet() {
   IE.rot  = +$('ie-rot').value;
@@ -2188,16 +2233,20 @@ async function startStream() {
 
   const encType  = parseInt($('enc-type').value);
   const fps      = parseFloat($('enc-fps').value)||12;
-  const dith     = $('enc-dith').checked;
+  const renderMode = currentAnimRenderMode();
+  const toneVideo = renderMode === 'tone';
+  const toneCell = toneVideo ? (parseInt($('enc-tone-cell')?.value) || 2) : 1;
+  const dith     = !toneVideo && $('enc-dith').checked;
   const inv      = $('enc-inv').checked;
   const land     = $('enc-land').checked;
   const loop     = $('enc-loop').checked;
   const rot      = parseInt($('enc-rot').value)||0;
   const scale    = $('enc-scale').value;
   const syncMode = $('enc-sync').value;
-  const lut      = $('enc-lut').value;
+  const lut      = toneVideo ? $('enc-tone-lut').value : $('enc-lut').value;
   const tw       = land ? DISP_H : DISP_W;
   const th       = land ? DISP_W : DISP_H;
+  const toneState = toneVideo ? createToneVideoState(tw, th, toneCell) : null;
 
   const oc  = new OffscreenCanvas(tw, th);
   const oct = oc.getContext('2d', {willReadFrequently:true});
@@ -2207,12 +2256,15 @@ async function startStream() {
   if (animFileType === 'video') {
     animPreEncoded = null;
     let waitingForBuffer = true;
+    const encodeFrame = toneState
+      ? frameCtx => canvasToToneVideoFrame(frameCtx, tw, th, land, toneState, inv)
+      : null;
     animFrameProducer = startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, s => {
       if (!waitingForBuffer || streamStop) return;
       const need = Math.max(1, s.startBuffer);
       $('stream-prog').style.width = (Math.min(s.ready, need)/need*100).toFixed(0)+'%';
       $('stream-st').textContent = `Буфер ${Math.min(s.ready, need)}/${need}`;
-    });
+    }, encodeFrame, !toneVideo);
     if (animFrameProducer) {
       const s0 = animFrameProducer.stats();
       animLog(`⏳ Буферизую ${s0.startBuffer} кадров, дальше кодирование пойдёт в фоне`);
@@ -2248,7 +2300,10 @@ async function startStream() {
   // charge, ~1s) — don't blast frames into an unprimed controller.
   if (!await vsWaitReady(10000))
     animLog('⚠ нет VSTREAM:ready за 10с — старая прошивка? продолжаю');
-  animLog(`▶ VSTREAM:start:${lut} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
+  const renderInfo = toneVideo
+    ? `tone temporal cell=${toneState.cell} lut=${lut}`
+    : `1bpp ${dith ? 'dither' : 'threshold'} lut=${lut}`;
+  animLog(`▶ VSTREAM:start:${lut} | ${renderInfo} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
 
   let prev=null, loop_n=0;
   const t0 = performance.now();
@@ -2301,7 +2356,7 @@ async function startStream() {
       let lastSentMs = performance.now();
       const KEEPALIVE_MS = 5000; // re-send prev frame if stalled to beat device watchdog (30s)
       while (!streamStop) {
-        const fr = await getAnimFrame(0, 1, fps, oct, tw, th, dith, inv, land, rot, scale);
+        const fr = await getAnimFrame(0, 1, fps, oct, tw, th, dith, inv, land, rot, scale, toneState);
         if (!fr) {
           if (prev && performance.now() - lastSentMs > KEEPALIVE_MS) {
             if (await sendFrame(prev) === null) break;
@@ -2335,7 +2390,7 @@ async function startStream() {
             const ahead = deadline - performance.now();
             if (ahead > 5) await sleep(ahead);
           }
-          const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale);
+          const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale, toneState);
           if (!fr) { i++; continue; }
           const pktLen = await sendFrame(fr);
           if (pktLen === null) break outer;
@@ -2379,7 +2434,7 @@ async function startStream() {
   }
 }
 
-async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, scale='fit') {
+async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, scale='fit', toneState=null) {
   // Streaming video path: frames are produced sequentially in the background.
   if (animFrameProducer) {
     const buf = await animFrameProducer.get(i);
@@ -2394,7 +2449,7 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, 
   }
 
   // Fast path: use pre-encoded cache if available (video only)
-  if (animPreEncoded && animPreEncoded[i]) {
+  if (!toneState && animPreEncoded && animPreEncoded[i]) {
     const buf = animPreEncoded[i];
     updateAnimPreview(buf);
     return buf;
@@ -2422,12 +2477,14 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, 
     drawScaledRotated(ctx, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot, scale);
   } else return null;
 
-  const buf = canvasTo1bpp(ctx, tw, th, dith, inv, land);
+  const buf = toneState
+    ? canvasToToneVideoFrame(ctx, tw, th, land, toneState, inv)
+    : canvasTo1bpp(ctx, tw, th, dith, inv, land);
   updateAnimPreview(buf);
   return buf;
 }
 
-function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onProgress) {
+function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onProgress, encodeFrame=null, cacheFrames=true) {
   if (animFileType !== 'video' || !animVideoEl) return null;
   if (!('requestVideoFrameCallback' in animVideoEl)) return null;
 
@@ -2502,7 +2559,7 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
     pausedForBuffer = false;
     try { video.pause(); video.playbackRate = 1; } catch {}
     video.removeEventListener('ended', complete);
-    if (ready === total) animPreEncoded = frames.slice();
+    if (cacheFrames && ready === total) animPreEncoded = frames.slice();
 
     indexWaiters.forEach((waiters, idx) => {
       const frame = frames[idx] || lastFrame || null;
@@ -2550,8 +2607,18 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
       oct.fillStyle = 'white';
       oct.fillRect(0, 0, tw, th);
       drawScaledRotated(oct, video, video.videoWidth, video.videoHeight, tw, th, rot, scale);
-      const frame = canvasTo1bpp(oct, tw, th, dith, inv, land);
-      for (let i = lastTarget + 1; i <= targetIdx; i++) publish(i, frame);
+      let frame = null;
+      if (encodeFrame) {
+        // Temporal tone masks depend on frame order, even when the decoded
+        // source image is unchanged, so each output slot gets its own pulse map.
+        for (let i = lastTarget + 1; i <= targetIdx; i++) {
+          frame = encodeFrame(oct);
+          publish(i, frame);
+        }
+      } else {
+        frame = canvasTo1bpp(oct, tw, th, dith, inv, land);
+        for (let i = lastTarget + 1; i <= targetIdx; i++) publish(i, frame);
+      }
       lastTarget = targetIdx;
       lastFrame = frame;
       if (produced % 10 === 0 || targetIdx === total - 1) updateAnimPreview(frame);
@@ -2698,7 +2765,8 @@ function updateAnimPreview(buf) {
     }
   }
   pctx.putImageData(id, 0, 0);
-  $('anim-prev-info').textContent = new Date().toTimeString().slice(0,8)+' — обновлено';
+  $('anim-prev-info').textContent = new Date().toTimeString().slice(0,8) +
+    (currentAnimRenderMode() === 'tone' ? ' — tone temporal mask' : ' — обновлено');
 }
 
 async function previewFrame0() {
@@ -2708,12 +2776,68 @@ async function previewFrame0() {
   const th = land ? DISP_W : DISP_H;
   const rot   = parseInt($('enc-rot').value)||0;
   const scale = $('enc-scale').value;
-  const dith  = $('enc-dith').checked;
+  const toneVideo = currentAnimRenderMode() === 'tone';
+  const dith  = !toneVideo && $('enc-dith').checked;
   const inv   = $('enc-inv').checked;
+  const toneState = toneVideo
+    ? createToneVideoState(tw, th, parseInt($('enc-tone-cell')?.value) || 2)
+    : null;
   const oc    = new OffscreenCanvas(tw, th);
   const oct   = oc.getContext('2d', {willReadFrequently:true});
-  const buf   = await getAnimFrame(0, Math.max(animTotalFrames,1), 12, oct, tw, th, dith, inv, land, rot, scale);
+  const buf   = await getAnimFrame(0, Math.max(animTotalFrames,1), 12, oct, tw, th, dith, inv, land, rot, scale, toneState);
   if (buf) animLog('Превью кадра 0 обновлено');
+}
+
+function createToneVideoState(tw, th, cell) {
+  cell = clamp(Math.round(cell) || 2, 1, 8);
+  const cw = Math.ceil(tw / cell);
+  const ch = Math.ceil(th / cell);
+  const acc = new Float32Array(cw * ch);
+  for (let y=0; y<ch; y++) for (let x=0; x<cw; x++) {
+    // Seed spreads the first temporal decisions spatially instead of flashing
+    // the whole picture in phase.
+    acc[y*cw+x] = ((x * 13 + y * 7) & 15) / 16;
+  }
+  return {tw, th, cell, cw, ch, acc};
+}
+
+function canvasToToneVideoFrame(ctx, tw, th, land, state, inv) {
+  const id = ctx.getImageData(0, 0, tw, th);
+  const d = id.data;
+  const buf = new Uint8Array(FB_SIZE).fill(0xFF);
+
+  for (let cy=0; cy<state.ch; cy++) {
+    const y0 = cy * state.cell;
+    const y1 = Math.min(th, y0 + state.cell);
+    for (let cx=0; cx<state.cw; cx++) {
+      const x0 = cx * state.cell;
+      const x1 = Math.min(tw, x0 + state.cell);
+      let sum = 0, count = 0;
+
+      for (let ly=y0; ly<y1; ly++) for (let lx=x0; lx<x1; lx++) {
+        const p = (ly * tw + lx) * 4;
+        sum += 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
+        count++;
+      }
+
+      const gray = count ? sum / count : 255;
+      const dark = inv ? gray / 255 : (255 - gray) / 255;
+      const si = cy * state.cw + cx;
+      let a = state.acc[si] + dark;
+      const blackPulse = a >= 1;
+      if (blackPulse) a -= 1;
+      state.acc[si] = a;
+
+      if (!blackPulse) continue;
+      for (let ly=y0; ly<y1; ly++) for (let lx=x0; lx<x1; lx++) {
+        const phx = land ? DISP_W - 1 - ly : lx;
+        const phy = land ? lx : ly;
+        buf[phy*16+(phx>>3)] &= ~(1<<(7-(phx&7)));
+      }
+    }
+  }
+
+  return buf;
 }
 
 function canvasTo1bpp(ctx, tw, th, dith, inv, land) {
@@ -3049,6 +3173,7 @@ function exportLut(){
 document.addEventListener('DOMContentLoaded', ()=>{
   clearCanvas();
   setOutputMode('dither', false);
+  setAnimRenderMode('mono');
   buildLUTEditor();
   lutToUI(); renderTele(); renderTicks();
   const ro=new ResizeObserver(()=>drawWf());
