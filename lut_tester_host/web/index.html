@@ -1196,6 +1196,11 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn ok" onclick="dfuConfirm()">✓✓ Confirm</button>
           <button class="btn bad" onclick="dfuReset()">⟳ Reset</button>
         </div>
+        <div class="brow" style="margin-top:6px">
+          <button class="btn" onclick="dfuVerify()" title="Диагностика: image list + hash + raw CBOR">🔍 Verify</button>
+          <button class="btn bad" onclick="dfuErase()" title="Явно стереть slot 1 перед загрузкой">🗑 Erase</button>
+          <button class="btn" onclick="dfuToggleVerbose()" title="Показывать raw CBOR байты каждого SMP-ответа">🐛 Verbose</button>
+        </div>
         <div id="dfu-slots" style="margin-top:8px;font-size:10px;font-family:var(--mono);color:var(--fg2)"></div>
         <p style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
           <b>Test</b> — помечает новый образ для пробной загрузки (откат если не подтвердить).<br>
@@ -4138,8 +4143,8 @@ let smpPendingResolve = null;
 let smpReassembly = null;
 let smpExpectedLen = 0;
 
-// Minimal CBOR for SMP
-const CBOR={encode(o){const p=[];function e(v){if(v===null||v===undefined){p.push(0xf6);return}if(v===true){p.push(0xf5);return}if(v===false){p.push(0xf4);return}if(typeof v==='number'){if(Number.isInteger(v)&&v>=0){u(0,v);return}if(Number.isInteger(v)&&v<0){u(1,-1-v);return}const fb=new ArrayBuffer(8);new DataView(fb).setFloat64(0,v);p.push(0xfb,...new Uint8Array(fb));return}if(typeof v==='string'){const b=new TextEncoder().encode(v);u(3,b.length);p.push(...b);return}if(v instanceof Uint8Array||v instanceof ArrayBuffer){const b=v instanceof ArrayBuffer?new Uint8Array(v):v;u(2,b.length);p.push(...b);return}if(Array.isArray(v)){u(4,v.length);v.forEach(e);return}const k=Object.keys(v);u(5,k.length);k.forEach(x=>{e(x);e(v[x])})}function u(m,n){const M=m<<5;if(n<24)p.push(M|n);else if(n<256)p.push(M|24,n);else if(n<65536)p.push(M|25,n>>8,n&0xff);else if(n<0x100000000)p.push(M|26,(n>>24)&0xff,(n>>16)&0xff,(n>>8)&0xff,n&0xff);else{const h=Math.floor(n/0x100000000),l=n>>>0;p.push(M|27,(h>>24)&0xff,(h>>16)&0xff,(h>>8)&0xff,h&0xff,(l>>24)&0xff,(l>>16)&0xff,(l>>8)&0xff,l&0xff)}}e(o);return new Uint8Array(p)},decode(d){let pos=0;const dv=d instanceof DataView?d:new DataView(d.buffer||d,d.byteOffset||0,d.byteLength||d.length);function r(){const b=dv.getUint8(pos++),mj=b>>5,inf=b&0x1f;let v=ru(inf);switch(mj){case 0:return v;case 1:return-1-v;case 2:{const x=new Uint8Array(dv.buffer,dv.byteOffset+pos,v);pos+=v;return x}case 3:{const x=new TextDecoder().decode(new Uint8Array(dv.buffer,dv.byteOffset+pos,v));pos+=v;return x}case 4:{const a=[];for(let i=0;i<v;i++)a.push(r());return a}case 5:{const o={};for(let i=0;i<v;i++){const k=r();o[k]=r()}return o}case 7:if(inf===20)return false;if(inf===21)return true;if(inf===22)return null;if(inf===27){const f=dv.getFloat64(pos);pos+=8;return f}if(inf===26){const f=dv.getFloat32(pos);pos+=4;return f}return undefined}}function ru(inf){if(inf<24)return inf;if(inf===24)return dv.getUint8(pos++);if(inf===25){const v=dv.getUint16(pos);pos+=2;return v}if(inf===26){const v=dv.getUint32(pos);pos+=4;return v}if(inf===27){const h=dv.getUint32(pos);pos+=4;const l=dv.getUint32(pos);pos+=4;return h*0x100000000+l}return 0}return r()}};
+// CBOR codec for SMP (supports indefinite-length arrays/maps — zcbor default when ZCBOR_CANONICAL=n)
+const CBOR={encode(o){const p=[];function e(v){if(v===null||v===undefined){p.push(0xf6);return}if(v===true){p.push(0xf5);return}if(v===false){p.push(0xf4);return}if(typeof v==='number'){if(Number.isInteger(v)&&v>=0){u(0,v);return}if(Number.isInteger(v)&&v<0){u(1,-1-v);return}const fb=new ArrayBuffer(8);new DataView(fb).setFloat64(0,v);p.push(0xfb,...new Uint8Array(fb));return}if(typeof v==='string'){const b=new TextEncoder().encode(v);u(3,b.length);p.push(...b);return}if(v instanceof Uint8Array||v instanceof ArrayBuffer){const b=v instanceof ArrayBuffer?new Uint8Array(v):v;u(2,b.length);p.push(...b);return}if(Array.isArray(v)){u(4,v.length);v.forEach(e);return}const k=Object.keys(v);u(5,k.length);k.forEach(x=>{e(x);e(v[x])})}function u(m,n){const M=m<<5;if(n<24)p.push(M|n);else if(n<256)p.push(M|24,n);else if(n<65536)p.push(M|25,n>>8,n&0xff);else if(n<0x100000000)p.push(M|26,(n>>24)&0xff,(n>>16)&0xff,(n>>8)&0xff,n&0xff);else{const h=Math.floor(n/0x100000000),l=n>>>0;p.push(M|27,(h>>24)&0xff,(h>>16)&0xff,(h>>8)&0xff,h&0xff,(l>>24)&0xff,(l>>16)&0xff,(l>>8)&0xff,l&0xff)}}e(o);return new Uint8Array(p)},decode(d){let pos=0;const dv=d instanceof DataView?d:new DataView(d.buffer||d,d.byteOffset||0,d.byteLength||d.length);function r(){const b=dv.getUint8(pos++),mj=b>>5,inf=b&0x1f;if(mj===4){if(inf===31){const a=[];while(dv.getUint8(pos)!==0xff)a.push(r());pos++;return a}const v=ru(inf);const a=[];for(let i=0;i<v;i++)a.push(r());return a}if(mj===5){if(inf===31){const o={};while(dv.getUint8(pos)!==0xff){const k=r();o[k]=r();}pos++;return o}const v=ru(inf);const o={};for(let i=0;i<v;i++){const k=r();o[k]=r();}return o}let v=ru(inf);switch(mj){case 0:return v;case 1:return-1-v;case 2:{const x=new Uint8Array(dv.buffer,dv.byteOffset+pos,v);pos+=v;return x}case 3:{const x=new TextDecoder().decode(new Uint8Array(dv.buffer,dv.byteOffset+pos,v));pos+=v;return x}case 7:if(inf===20)return false;if(inf===21)return true;if(inf===22)return null;if(inf===31)return undefined;if(inf===27){const f=dv.getFloat64(pos);pos+=8;return f}if(inf===26){const f=dv.getFloat32(pos);pos+=4;return f}return undefined}}function ru(inf){if(inf<24)return inf;if(inf===24)return dv.getUint8(pos++);if(inf===25){const v=dv.getUint16(pos);pos+=2;return v}if(inf===26){const v=dv.getUint32(pos);pos+=4;return v}if(inf===27){const h=dv.getUint32(pos);pos+=4;const l=dv.getUint32(pos);pos+=4;return h*0x100000000+l}return 0}return r()}};
 
 async function dfuEnsureSmp() {
   if (smpChar) return true;
@@ -4147,22 +4152,58 @@ async function dfuEnsureSmp() {
     dfuLog('Нужно подключение к устройству', 'err');
     return false;
   }
-  try {
-    dfuLog('Подключение к SMP сервису…', 'inf');
-    const server = bleDevice.gatt;
-    const svc = await server.getPrimaryService(SMP_SVC_UUID);
-    smpChar = await svc.getCharacteristic(SMP_CHAR_UUID);
-    await smpChar.startNotifications();
-    smpChar.addEventListener('characteristicvaluechanged', onSmpNotify);
-    dfuLog('SMP сервис подключён', 'ok');
-    return true;
-  } catch (e) {
-    dfuLog('SMP сервис недоступен: ' + e.message, 'err');
-    dfuLog('Убедись, что прошивка собрана с CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y', 'wrn');
-    smpChar = null;
-    return false;
+  // 2 попытки: discovery часто падает с "GATT operation failed", если в этот
+  // момент идёт параллельная NUS-операция (SYSINFO/BATT) — Chrome не умеет
+  // одновременные GATT-запросы.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      dfuLog('Подключение к SMP сервису…', 'inf');
+      const server = bleDevice.gatt;
+      const svc = await server.getPrimaryService(SMP_SVC_UUID);
+      smpChar = await svc.getCharacteristic(SMP_CHAR_UUID);
+      await smpChar.startNotifications();
+      smpChar.addEventListener('characteristicvaluechanged', onSmpNotify);
+      dfuLog('SMP сервис подключён', 'ok');
+      return true;
+    } catch (e) {
+      smpChar = null;
+      if (attempt < 2) { await sleep(800); continue; }
+      dfuLog('SMP сервис недоступен: ' + e.message, 'err');
+      dfuLog('Убедись, что прошивка собрана с CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y', 'wrn');
+    }
   }
+  return false;
 }
+
+// Достаёт SHA256-хеш образа (TLV 0x10) из подписанного MCUboot-бинаря.
+// Это тот же hash, который устройство отдаёт в image list — позволяет
+// пометить slot 1 для test boot, даже когда list не работает (старые
+// прошивки с NETBUF=256 отвечают rc=8 на двухслотовый список).
+function mcubootImageHash(bin) {
+  if (!bin || bin.length < 32) return null;
+  const dv = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
+  if (dv.getUint32(0, true) !== 0x96f3b83d) return null;   // IMAGE_MAGIC
+  const hdrSize = dv.getUint16(8, true);
+  const imgSize = dv.getUint32(12, true);
+  let off = hdrSize + imgSize;
+  if (off + 4 > bin.length) return null;
+  if (dv.getUint16(off, true) === 0x6908) {                // protected TLVs
+    off += dv.getUint16(off + 2, true);
+    if (off + 4 > bin.length) return null;
+  }
+  if (dv.getUint16(off, true) !== 0x6907) return null;     // TLV_INFO_MAGIC
+  const end = Math.min(off + dv.getUint16(off + 2, true), bin.length);
+  off += 4;
+  while (off + 4 <= end) {
+    const type = dv.getUint16(off, true);
+    const len = dv.getUint16(off + 2, true);
+    if (type === 0x10 && len === 32) return bin.slice(off + 4, off + 36); // IMAGE_TLV_SHA256
+    off += 4 + len;
+  }
+  return null;
+}
+
+let smpVerbose = false;  // enable via dfuToggleVerbose()
 
 function onSmpNotify(ev) {
   const chunk = new Uint8Array(ev.target.value.buffer);
@@ -4176,20 +4217,32 @@ function onSmpNotify(ev) {
     smpReassembly._written = copyLen;
   } else {
     const w = smpReassembly._written || 0;
-    smpReassembly.set(chunk, w);
-    smpReassembly._written = w + chunk.length;
+    const remaining = smpExpectedLen - w;
+    smpReassembly.set(chunk.slice(0, remaining), w);
+    smpReassembly._written = w + Math.min(chunk.length, remaining);
   }
   if ((smpReassembly._written || 0) >= smpExpectedLen) {
     const payload = smpReassembly.slice(8, smpExpectedLen);
     smpReassembly = null;
     smpExpectedLen = 0;
+    if (smpVerbose) {
+      dfuLog('SMP raw (' + payload.length + 'B): ' +
+        Array.from(payload).map(b=>b.toString(16).padStart(2,'0')).join(' '), 'inf');
+    }
     try {
       const decoded = CBOR.decode(payload);
       if (smpPendingResolve) { smpPendingResolve(decoded); smpPendingResolve = null; }
     } catch (e) {
+      dfuLog('CBOR decode error: ' + e.message + ' raw: ' +
+        Array.from(payload.slice(0, 64)).map(b=>b.toString(16).padStart(2,'0')).join(' '), 'err');
       if (smpPendingResolve) { smpPendingResolve({ rc: -1 }); smpPendingResolve = null; }
     }
   }
+}
+
+function dfuToggleVerbose() {
+  smpVerbose = !smpVerbose;
+  dfuLog('SMP verbose logging: ' + (smpVerbose ? 'ВКЛ' : 'ВЫКЛ'), 'inf');
 }
 
 function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
@@ -4235,6 +4288,22 @@ async function dfuStartUpload() {
   const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', dfuFirmwareData));
 
   try {
+    // Erase secondary slot before upload — clears leftover MCUboot trailer data
+    // (sector 56 = 0x7D000–0x7E000 is NOT erased by progressive erase since the
+    //  image only spans sectors 0–55; stale BOOT_MAGIC from prior attempts stays
+    //  and confuses boot_set_next / MCUboot validation).
+    dfuLog('Стираю slot 1 (очистка трейлера)…', 'inf');
+    try {
+      const erResp = await smpRequest(2, 1, 5, {}, 30000);
+      if ((erResp.rc || 0) !== 0) {
+        dfuLog(`Предупреждение: erase slot 1 вернул rc=${erResp.rc}`, 'wrn');
+      } else {
+        dfuLog('✓ Slot 1 очищен', 'ok');
+      }
+    } catch (e) {
+      dfuLog('Erase slot 1 не прошёл: ' + e.message + ' — продолжаем без очистки', 'wrn');
+    }
+
     // Notify firmware to show DFU screen
     if (connected && rxChar) {
       try { await sendBytes(new TextEncoder().encode('DFU:START\n')); } catch {}
@@ -4266,8 +4335,9 @@ async function dfuStartUpload() {
       try { await sendBytes(new TextEncoder().encode('DFU:DONE\n')); } catch {}
     }
 
-    // Auto-test new image
-    await sleep(300);
+    // Auto-test new image. Пауза: после DFU:DONE устройство несколько секунд
+    // занято полной перерисовкой e-ink; dfuTest дополнительно ретраит.
+    await sleep(1500);
     await dfuTest();
   } catch (e) {
     dfuLog('✕ ' + e.message, 'err');
@@ -4288,6 +4358,11 @@ async function dfuQueryState() {
   if (!await dfuEnsureSmp()) return;
   try {
     const resp = await smpRequest(0, 1, 0, {});
+    if (resp.rc) {
+      dfuLog(`Ошибка чтения слотов: rc=${resp.rc}` +
+        (resp.rc === 8 ? ' — EMSGSIZE: ответ не влез в MCUMGR_TRANSPORT_NETBUF_SIZE (прошивка ≤3.0.3, буфер 256Б). Образ в slot 1 скорее всего ЕСТЬ — жми «Test».' : ''), 'err');
+      return;
+    }
     const images = resp.images || [];
     let html = '';
     images.forEach(img => {
@@ -4307,19 +4382,135 @@ async function dfuQueryState() {
 async function dfuTest() {
   if (!await dfuEnsureSmp()) return;
   try {
-    const state = await smpRequest(0, 1, 0, {});
+    // До 3 попыток: после DFU:DONE устройство ~8 c занято полной перерисовкой
+    // e-ink и GATT-операции в это время могут падать.
+    let state = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try { state = await smpRequest(0, 1, 0, {}); break; }
+      catch (e) {
+        if (attempt === 3) throw e;
+        dfuLog(`Устройство занято (${e.message}), повтор через 3с…`, 'wrn');
+        await sleep(3000);
+      }
+    }
+    if (state.rc) {
+      dfuLog(`Чтение слотов: rc=${state.rc}` +
+        (state.rc === 8 ? ' (EMSGSIZE — старая прошивка с NETBUF=256, список из 2 слотов не влезает в ответ)' : ''), 'wrn');
+    }
     const images = state.images || [];
+    let hash = null, verNote = '';
     if (images.length > 1) {
-      const hash = images[1].hash;
-      const resp = await smpRequest(2, 1, 0, { hash, confirm: false });
-      if ((resp.rc || 0) === 0) {
-        dfuLog(`✓ Slot 1 (v${images[1].version}) помечен для test boot`, 'ok');
+      hash = images[1].hash;
+      verNote = ` (v${images[1].version})`;
+    } else if (dfuFirmwareData) {
+      // Список слотов недоступен/пуст — берём ожидаемый hash прямо из
+      // скачанного app_update.bin (TLV SHA256). Если образ в slot 1 есть,
+      // устройство найдёт его по hash; если нет — вернёт ошибку.
+      hash = mcubootImageHash(dfuFirmwareData);
+      if (hash) dfuLog('Список слотов пуст — использую hash из app_update.bin', 'inf');
+    }
+    if (!hash) {
+      dfuLog('Нет образа в slot 1. Сначала скачай и загрузи прошивку.', 'wrn');
+      return;
+    }
+    const resp = await smpRequest(2, 1, 0, { hash, confirm: true });
+    const rc = resp.rc || 0;
+    if (rc === 0) {
+      dfuLog(`✓ Slot 1${verNote} помечен для постоянного обновления — жми Reboot`, 'ok');
+    } else if (rc === 8) {
+      // EMSGSIZE: устройство пометило слот ДО кодирования ответа (см.
+      // img_mgmt_state_write), не влез только сам ответ. Помечено успешно.
+      dfuLog('✓ Slot 1 помечен для постоянного обновления (ответ не влез в буфер — норма для прошивки ≤3.0.3). Жми Reboot.', 'ok');
+    } else if (rc === 5 || rc === 3) {
+      dfuLog(`Ошибка test: rc=${rc} — образ с таким hash не найден в slot 1. Загрузи прошивку заново.`, 'err');
+    } else if (rc !== 0) {
+      dfuLog(`Ошибка test: rc=${rc}`, 'err');
+    }
+  } catch (e) { dfuLog('Ошибка: ' + e.message, 'err'); }
+}
+
+// Verify: диагностика — image list + hash comparison + raw CBOR dump
+async function dfuVerify() {
+  if (!await dfuEnsureSmp()) return;
+  dfuLog('─── Verify: диагностика ───', 'inf');
+
+  // Temporarily enable verbose to capture raw bytes for this request
+  const wasVerbose = smpVerbose;
+  smpVerbose = true;
+  try {
+    const resp = await smpRequest(0, 1, 0, {});
+    smpVerbose = wasVerbose;
+
+    const rc = resp.rc ?? 0;
+    const images = resp.images || [];
+    dfuLog(`Image list: rc=${rc}, images=${images.length}`, rc === 0 && images.length > 0 ? 'ok' : 'wrn');
+
+    if (rc === 8) {
+      dfuLog('rc=8 = EMSGSIZE — ответ не влез в NETBUF. ' +
+        'Прошивка собрана с NETBUF=256 (нужно 1024). ' +
+        'Пересобери с CONFIG_MCUMGR_TRANSPORT_NETBUF_SIZE=1024 и перепрошей по проводу.', 'err');
+    } else if (rc !== 0) {
+      dfuLog(`img_mgmt ошибка rc=${rc}`, 'err');
+    }
+
+    images.forEach((img, i) => {
+      const hashHex = img.hash instanceof Uint8Array
+        ? Array.from(img.hash).map(b=>b.toString(16).padStart(2,'0')).join('')
+        : '(no hash)';
+      const flags = ['slot'+img.slot, 'v'+(img.version||'?')];
+      if (img.active)    flags.push('ACTIVE');
+      if (img.confirmed) flags.push('CONFIRMED');
+      if (img.pending)   flags.push('PENDING');
+      dfuLog(`  [${i}] ${flags.join(' ')} hash:${hashHex}`, 'inf');
+    });
+
+    if (images.length === 0 && rc === 0) {
+      dfuLog('⚠ images[] пуст при rc=0 — img_mgmt_read_info упал для ВСЕХ слотов. ' +
+        'Возможные причины: (1) неверный FLASH_AREA_ID в pm_config.h, ' +
+        '(2) IMAGE_MAGIC не найден по 0xC000, (3) flash_area_open вернул ошибку. ' +
+        'Посмотри raw CBOR выше и пересобери прошивку по проводу.', 'err');
+    }
+
+    // Compare slot-1 hash with locally downloaded binary
+    if (dfuFirmwareData) {
+      const localHash = mcubootImageHash(dfuFirmwareData);
+      const localHashHex = localHash
+        ? Array.from(localHash).map(b=>b.toString(16).padStart(2,'0')).join('') : null;
+      if (localHashHex) {
+        dfuLog('Hash из app_update.bin: ' + localHashHex, 'inf');
+        if (images.length > 1 && images[1].hash instanceof Uint8Array) {
+          const devHashHex = Array.from(images[1].hash).map(b=>b.toString(16).padStart(2,'0')).join('');
+          if (devHashHex === localHashHex) {
+            dfuLog('✓ Hash slot 1 = app_update.bin — образ записан корректно', 'ok');
+          } else {
+            dfuLog('✗ Hash НЕ совпадает! Образ в slot 1 повреждён или это другая версия.', 'err');
+            dfuLog('  device: ' + devHashHex, 'err');
+            dfuLog('  local:  ' + localHashHex, 'err');
+          }
+        } else if (images.length <= 1) {
+          dfuLog('Slot 1 не виден — загрузи прошивку заново (или нажми Erase + Upload)', 'wrn');
+        }
       } else {
-        dfuLog(`Ошибка test: rc=${resp.rc}`, 'err');
+        dfuLog('⚠ Не удалось извлечь hash из app_update.bin — проверь формат файла (нужен подписанный MCUboot binary)', 'wrn');
       }
     } else {
-      dfuLog('Нет образа в slot 1', 'wrn');
+      dfuLog('app_update.bin не загружен — скачай прошивку для сравнения hash', 'wrn');
     }
+  } catch (e) {
+    smpVerbose = wasVerbose;
+    dfuLog('Ошибка: ' + e.message, 'err');
+  }
+  dfuLog('─── Verify завершён ───', 'inf');
+}
+
+async function dfuErase() {
+  if (!await dfuEnsureSmp()) return;
+  dfuLog('Стираю slot 1…', 'inf');
+  try {
+    const resp = await smpRequest(2, 1, 5, {}, 30000);
+    const rc = resp.rc || 0;
+    if (rc === 0) dfuLog('✓ Slot 1 стёрт', 'ok');
+    else dfuLog(`Erase вернул rc=${rc}`, 'err');
   } catch (e) { dfuLog('Ошибка: ' + e.message, 'err'); }
 }
 
@@ -4327,15 +4518,32 @@ async function dfuConfirm() {
   if (!await dfuEnsureSmp()) return;
   try {
     const resp = await smpRequest(2, 1, 0, { confirm: true });
-    if ((resp.rc || 0) === 0) dfuLog('✓ Образ подтверждён', 'ok');
-    else dfuLog(`Ошибка: rc=${resp.rc}`, 'err');
+    const rc = resp.rc || 0;
+    if (rc === 0) dfuLog('✓ Образ подтверждён', 'ok');
+    else if (rc === 8) dfuLog('✓ Образ подтверждён (ответ не влез в буфер — норма для прошивки ≤3.0.3)', 'ok');
+    else dfuLog(`Ошибка: rc=${rc}`, 'err');
   } catch (e) { dfuLog('Ошибка: ' + e.message, 'err'); }
 }
 
 async function dfuReset() {
+  // SMP OS-reset (group 0) отключён в прошивке (CONFIG_MCUMGR_GRP_OS=n),
+  // поэтому перезагружаем через NUS-команду REBOOT.
+  if (connected && rxChar) {
+    try {
+      await sendBytes(new TextEncoder().encode('REBOOT\n'));
+      dfuLog('⟳ REBOOT отправлен', 'ok');
+      return;
+    } catch (e) {
+      dfuLog('REBOOT через NUS не прошёл: ' + e.message, 'wrn');
+    }
+  }
   if (!await dfuEnsureSmp()) return;
-  try { await smpRequest(2, 0, 5, {}, 3000); } catch {}
-  dfuLog('⟳ Reset отправлен', 'ok');
+  try {
+    await smpRequest(2, 0, 5, {}, 3000);
+    dfuLog('⟳ Reset отправлен (SMP)', 'ok');
+  } catch (e) {
+    dfuLog('Reset не отправлен: ' + e.message, 'err');
+  }
 }
 
 function dfuLog(msg, cls = 'inf') {

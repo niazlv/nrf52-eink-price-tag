@@ -5,6 +5,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/gpio.h>
+#ifdef CONFIG_MCUBOOT_IMG_MANAGER
+#include <zephyr/dfu/mcuboot.h>
+#endif
 #include "app/display_manager.h"
 #include "app/battery.h"
 #include "app/commands.h"
@@ -25,6 +28,19 @@ static void configure_gpio(void)
 int main(void)
 {
     LOG_INF("Starting Application...");
+
+#ifdef CONFIG_MCUBOOT_IMG_MANAGER
+    /* Confirm the running image FIRST, before any other init.
+     * Moving this here prevents revert if later init is slow or fails. */
+    if (!boot_is_img_confirmed()) {
+        int confirm_rc = boot_write_img_confirmed();
+        if (confirm_rc) {
+            LOG_ERR("Early OTA confirm failed: %d", confirm_rc);
+        } else {
+            LOG_INF("OTA image confirmed (early)");
+        }
+    }
+#endif
 
     // 1. Init Base Peripherals
     configure_gpio();
@@ -48,7 +64,7 @@ int main(void)
 
     // 4. Thread will handle initial screen
     display_manager_update_status();
-    
+
     LOG_INF("System Initialized & Ready - Auto Starting TEST");
     
     // Auto-start TEST
