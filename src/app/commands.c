@@ -26,7 +26,7 @@ extern const struct shell_cmd commands[];
  * BLE NUS delivers raw chunks; we buffer until '\n' to guarantee whole commands
  * even when LUTW (148+ chars) spans multiple MTU packets.
  */
-#define RX_BUF_SIZE 320
+#define RX_BUF_SIZE 256
 static char rx_buf[RX_BUF_SIZE];
 static int  rx_len;
 

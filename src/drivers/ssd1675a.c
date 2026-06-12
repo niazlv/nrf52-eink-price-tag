@@ -390,15 +390,6 @@ static const uint8_t lut_tone_bidir[] = {
 
 // lut_anim and lut_clean removed — TURBO covers fast animation, CLEAN uses lut_data_default.
 
-static uint8_t lut_fast[70];
-
-void ssd1675a_init_fast_lut(void) {
-    memcpy(lut_fast, lut_data, sizeof(lut_fast));
-    lut_fast[57] = 0x00;
-    lut_fast[58] = 0x00;
-    lut_fast[59] = 0x00;
-}
-
 static ssd1675a_partial_mode_t current_partial_mode = SSD1675A_PARTIAL_MODE_BALANCED;
 
 void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode) {

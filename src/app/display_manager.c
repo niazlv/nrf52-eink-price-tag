@@ -671,7 +671,7 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
     }
 }
 
-K_THREAD_DEFINE(screensaver_tid, 2048, screensaver_thread, NULL, NULL, NULL, 7, 0, 0);
+K_THREAD_DEFINE(screensaver_tid, 1536, screensaver_thread, NULL, NULL, NULL, 7, 0, 0);
 
 void display_manager_force_update(void) {
     if (screensaver_enabled) {
