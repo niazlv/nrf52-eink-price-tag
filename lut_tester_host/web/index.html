@@ -486,6 +486,11 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none !important;transition:none !important}
 }
+
+/* ── System / DFU tab ── */
+#tp-sys .card{transition:border-color .3s}
+#dfu-banner{animation:tfade .3s ease}
+#sys-batt-bar{transition:width .5s ease}
 </style>
 </head>
 <body>
@@ -525,6 +530,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
   <div class="tab on" onclick="tab('tag')">🏷 Ценник</div>
   <div class="tab"    onclick="tab('anim')">🎬 Анимация</div>
   <div class="tab"    onclick="tab('lut')">⚙ LUT</div>
+  <div class="tab"    onclick="tab('sys')">📡 Система</div>
 </div>
 
 <div class="content">
@@ -1067,6 +1073,146 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
   </div>
 </div>
 
+</div>
+
+<!-- ══ TAB: SYSTEM / DFU ══ -->
+<div class="tp" id="tp-sys">
+  <div class="prow">
+
+    <!-- Left: System Info -->
+    <div class="pcol pscroll" style="flex:1;min-width:0">
+
+      <!-- Update banner (hidden until update available) -->
+      <div class="card" id="dfu-banner" style="display:none;border-color:#2a4a80;background:linear-gradient(180deg,#101830,#0c1220)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:22px">🆕</span>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:700;color:var(--accent)">Доступно обновление</div>
+            <div style="font-size:11px;color:var(--fg2);margin-top:2px">
+              <span id="dfu-banner-ver"></span> · <span id="dfu-banner-size"></span>
+            </div>
+            <div style="font-size:10px;color:var(--fg2);margin-top:2px" id="dfu-banner-notes"></div>
+          </div>
+          <button class="btn acc big" onclick="startOtaUpdate()">⬆ Обновить</button>
+          <button class="btn" onclick="$('dfu-banner').style.display='none'" style="padding:4px 8px">✕</button>
+        </div>
+      </div>
+
+      <!-- Device info -->
+      <div class="card">
+        <div class="ctitle">Устройство</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;align-items:center">
+          <span style="color:var(--fg2)">Прошивка:</span>
+          <span id="sys-fw-ver" style="color:var(--yellow);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Сборка:</span>
+          <span id="sys-build" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Uptime:</span>
+          <span id="sys-uptime" style="color:var(--green);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Батарея:</span>
+          <span id="sys-batt" style="font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Потрачено:</span>
+          <span id="sys-mah" style="color:var(--orange);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Ток:</span>
+          <span id="sys-cur" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Остаток:</span>
+          <span id="sys-remain" style="color:var(--green);font-family:var(--mono)">—</span>
+        </div>
+        <div class="brow" style="margin-top:10px">
+          <button class="btn" onclick="requestSysinfo()">🔄 Обновить</button>
+          <button class="btn bad" onclick="send('REBOOT\n')">⟳ Reboot</button>
+          <span style="font-size:10px;color:var(--fg2)" id="sys-last-update"></span>
+        </div>
+      </div>
+
+      <!-- Battery estimation -->
+      <div class="card">
+        <div class="ctitle">Батарея · оценка ресурса</div>
+        <div style="position:relative;height:28px;background:var(--bg3);border-radius:6px;overflow:hidden;margin-bottom:8px">
+          <div id="sys-batt-bar" style="position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,var(--red),var(--orange) 30%,var(--green) 70%);border-radius:6px;transition:width .5s"></div>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--fg);text-shadow:0 1px 2px #000" id="sys-batt-pct">—%</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:10px;text-align:center">
+          <div>
+            <div style="color:var(--fg2)">Ёмкость</div>
+            <div style="color:var(--yellow);font-family:var(--mono);font-size:12px" id="sys-cap">350 mAh</div>
+          </div>
+          <div>
+            <div style="color:var(--fg2)">Израсходовано</div>
+            <div style="color:var(--orange);font-family:var(--mono);font-size:12px" id="sys-used">— mAh</div>
+          </div>
+          <div>
+            <div style="color:var(--fg2)">Осталось (ожид.)</div>
+            <div style="color:var(--green);font-family:var(--mono);font-size:12px" id="sys-eta">—</div>
+          </div>
+        </div>
+        <div style="font-size:9px;color:var(--fg2);margin-top:8px;line-height:1.4">
+          Оценка: Li-Po 3.7V/350mAh (заряд 4.2V→разряд 3.0V). Ток рассчитывается прошивкой на основе модели потребления (BLE, дисплей, сон).
+        </div>
+      </div>
+
+      <!-- Firmware manifest & server -->
+      <div class="card">
+        <div class="ctitle">Сервер обновлений</div>
+        <div class="brow" style="gap:6px">
+          <input type="text" id="dfu-server-url" placeholder="https://example.com/firmware/" style="flex:1;font-size:11px"
+                 value="https://pwa.price-tag.sorewa.ru/firmware">
+          <button class="btn acc" onclick="checkForUpdate()">Проверить</button>
+        </div>
+        <div style="font-size:10px;color:var(--fg2);margin-top:6px" id="dfu-server-status">
+          Укажи URL, где лежит manifest.json и app_update.bin
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: OTA DFU -->
+    <div class="pcol pscroll" style="width:360px;flex-shrink:0">
+
+      <div class="card">
+        <div class="ctitle">OTA обновление (DFU)</div>
+        <div class="dropzone" id="dfu-drop" onclick="$('dfu-file').click()" style="padding:14px">
+          <div style="font-size:13px">📦 app_update.bin</div>
+          <div style="font-size:10px;margin-top:3px">Клик или перетащи файл · или загрузится с сервера</div>
+        </div>
+        <input type="file" id="dfu-file" accept=".bin" style="display:none" onchange="dfuLoadFile(this.files[0])">
+        <div id="dfu-file-info" style="font-size:10px;color:var(--yellow);font-family:var(--mono);margin-top:6px"></div>
+
+        <!-- Progress -->
+        <div style="margin-top:10px">
+          <div class="pbar" style="height:6px"><div class="pfill" id="dfu-prog" style="width:0%"></div></div>
+          <div style="font-size:10px;color:var(--fg2);font-family:var(--mono);margin-top:4px" id="dfu-prog-text"></div>
+        </div>
+
+        <div class="brow" style="margin-top:10px">
+          <button class="btn ok big" id="dfu-btn-upload" onclick="dfuStartUpload()" disabled>⬆ Загрузить</button>
+          <button class="btn bad" id="dfu-btn-abort" onclick="dfuAbort()" disabled>✕ Стоп</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Управление образами</div>
+        <div class="brow">
+          <button class="btn" onclick="dfuQueryState()">📋 Слоты</button>
+          <button class="btn acc" onclick="dfuTest()">✓ Test</button>
+          <button class="btn ok" onclick="dfuConfirm()">✓✓ Confirm</button>
+          <button class="btn bad" onclick="dfuReset()">⟳ Reset</button>
+        </div>
+        <div id="dfu-slots" style="margin-top:8px;font-size:10px;font-family:var(--mono);color:var(--fg2)"></div>
+        <p style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
+          <b>Test</b> — помечает новый образ для пробной загрузки (откат если не подтвердить).<br>
+          <b>Confirm</b> — подтверждает текущий образ.<br>
+          <b>Reset</b> — перезагрузка → загрузит помеченный образ.
+        </p>
+      </div>
+
+      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:100px">
+        <div class="ctitle">Лог DFU</div>
+        <div class="con" id="dfu-log" style="flex:1"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 </div><!-- /content -->
 
 <!-- BOTTOM CONSOLE -->
@@ -1310,7 +1456,7 @@ async function bleConnect() {
   try {
     bleDevice = await navigator.bluetooth.requestDevice({
       filters: [nameFilter, {services: [NUS_SVC]}],
-      optionalServices: [NUS_SVC],
+      optionalServices: [NUS_SVC, SMP_SVC_UUID],
     });
     bleDevice.addEventListener('gattserverdisconnected', onBleDisc);
     const server  = await gattConnectRetry(bleDevice);
@@ -1327,6 +1473,7 @@ async function bleConnect() {
     logI(`Connected to ${bleDevice.name}`);
     await sleep(400);
     sendRaw_('HOST:1');
+    onSysConnect();
   } catch(e) {
     setStatus('Ошибка: ' + e.message, false);
     logE(e.message);
@@ -1347,6 +1494,7 @@ window.addEventListener('pagehide', () => {
 
 function onBleDisc() {
   connected = false;
+  smpChar = null;
   setStatus('Не подключено', false);
   $('btn-conn').textContent = 'Подключить';
   logI('Disconnected');
@@ -1362,6 +1510,7 @@ function onNotify(ev) {
     logR(line);
     wakeLineWaiters(line);
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
+    if (line.startsWith('SYSINFO:')) parseSysinfo(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
     if (line.startsWith('TELE:vs')) vsOnAck(line);
     if (line.startsWith('VSTREAM:')) {
@@ -1572,12 +1721,13 @@ function sendRaw() {
 //  Tab switching
 // ═══════════════════════════════════════════════════════════════════
 function tab(name) {
-  const names = ['tag','anim','lut'];
+  const names = ['tag','anim','lut','sys'];
   document.querySelectorAll('.tab').forEach((el,i) =>
     el.classList.toggle('on', names[i] === name));
   document.querySelectorAll('.tp').forEach(el =>
     el.classList.toggle('on', el.id === 'tp-'+name));
   if (name === 'lut') setTimeout(drawWf, 60);
+  if (name === 'sys') requestSysinfo();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3726,6 +3876,475 @@ async function vlutDefineAndActivate(slot, base, patches, activate = true) {
     await sendBytes(new TextEncoder().encode(`VLUT:${slot}\n`));
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  System Info & OTA DFU
+// ═══════════════════════════════════════════════════════════════════
+
+// --- Sysinfo state ---
+const sysState = {
+  fwVersion: null,  // "3.0.1"
+  buildDate: null,  // "2025-06-12_14:30:00"
+  uptimeSec: 0,
+  battMv: 0,
+  mahUsed: 0,       // mAh × 1000
+  curUa: 0,
+  lastUpdate: null,
+};
+
+const BATT_CAPACITY_MAH = 350;
+const BATT_V_FULL = 4200;
+const BATT_V_EMPTY = 3000;
+
+function requestSysinfo() {
+  if (!connected) return;
+  send('SYSINFO\n');
+  send('BATT\n');
+}
+
+function parseSysinfo(line) {
+  // SYSINFO:fw=3.0.1 build=2024-06-12_14:30:00 uptime=12345 bat=3850 mah=1.234 cur_ua=900
+  const data = line.slice('SYSINFO:'.length);
+  const fwM = data.match(/fw=([\d.]+)/);
+  const buildM = data.match(/build=([\d\-_:]+)/);
+  const upM = data.match(/uptime=(\d+)/);
+  const batM = data.match(/bat=(\d+)/);
+  const mahM = data.match(/mah=(\d+)\.(\d+)/);
+  const curM = data.match(/cur_ua=(\d+)/);
+
+  if (fwM) sysState.fwVersion = fwM[1];
+  if (buildM) sysState.buildDate = buildM[1];
+  if (upM) sysState.uptimeSec = +upM[1];
+  if (batM) sysState.battMv = +batM[1];
+  if (mahM) sysState.mahUsed = +mahM[1] * 1000 + +mahM[2];
+  if (curM) sysState.curUa = +curM[1];
+  sysState.lastUpdate = new Date();
+
+  updateSysUI();
+  checkVersionMismatch();
+}
+
+function updateSysUI() {
+  const s = sysState;
+  $('sys-fw-ver').textContent = s.fwVersion || '—';
+  $('sys-build').textContent = s.buildDate ? s.buildDate.replace('_', ' ') : '—';
+
+  // Uptime formatting
+  if (s.uptimeSec > 0) {
+    const d = Math.floor(s.uptimeSec / 86400);
+    const h = Math.floor((s.uptimeSec % 86400) / 3600);
+    const m = Math.floor((s.uptimeSec % 3600) / 60);
+    const sec = s.uptimeSec % 60;
+    $('sys-uptime').textContent = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${sec}s`;
+  }
+
+  // Battery
+  if (s.battMv > 0) {
+    const pct = Math.max(0, Math.min(100, Math.round((s.battMv - BATT_V_EMPTY) / (BATT_V_FULL - BATT_V_EMPTY) * 100)));
+    const color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--orange)' : 'var(--red)';
+    $('sys-batt').innerHTML = `<span style="color:${color}">${s.battMv} mV (${pct}%)</span>`;
+    $('sys-batt-bar').style.width = pct + '%';
+    $('sys-batt-pct').textContent = pct + '%';
+  }
+
+  // Energy
+  const mahUsedReal = s.mahUsed / 1000;
+  $('sys-mah').textContent = mahUsedReal.toFixed(3) + ' mAh';
+  $('sys-used').textContent = mahUsedReal.toFixed(2) + ' mAh';
+  $('sys-cur').textContent = s.curUa > 0 ? (s.curUa / 1000).toFixed(2) + ' mA' : '—';
+
+  // Remaining estimate
+  const mahRemain = Math.max(0, BATT_CAPACITY_MAH - mahUsedReal);
+  $('sys-cap').textContent = BATT_CAPACITY_MAH + ' mAh';
+  if (s.curUa > 0) {
+    const hoursRemain = mahRemain / (s.curUa / 1000);
+    const daysRemain = hoursRemain / 24;
+    const etaStr = daysRemain >= 1
+      ? `~${daysRemain.toFixed(1)} дней`
+      : `~${hoursRemain.toFixed(1)} часов`;
+    $('sys-remain').textContent = `${mahRemain.toFixed(1)} mAh · ${etaStr}`;
+    $('sys-eta').textContent = etaStr;
+
+    // mWh calculation (V_avg ≈ 3.7V)
+    const mwhUsed = mahUsedReal * 3.7;
+    $('sys-mah').textContent = `${mahUsedReal.toFixed(3)} mAh (${mwhUsed.toFixed(1)} mWh)`;
+  } else {
+    $('sys-remain').textContent = `${mahRemain.toFixed(1)} mAh`;
+    $('sys-eta').textContent = '—';
+  }
+
+  if (s.lastUpdate) {
+    $('sys-last-update').textContent = 'Обновлено ' + s.lastUpdate.toLocaleTimeString();
+  }
+}
+
+// --- Firmware update server ---
+let serverManifest = null;  // {version, file, size, notes, sha256}
+let dfuFirmwareData = null;
+let dfuFileName = '';
+
+// Manifest format expected at <server_url>/manifest.json:
+// {
+//   "version": "3.1.0",
+//   "file": "app_update.bin",
+//   "size": 225000,
+//   "sha256": "abcdef...",
+//   "notes": "Исправлен баг со сном",
+//   "date": "2025-06-12"
+// }
+
+async function checkForUpdate() {
+  const baseUrl = $('dfu-server-url').value.trim().replace(/\/+$/, '');
+  if (!baseUrl) {
+    $('dfu-server-status').innerHTML = '<span style="color:var(--red)">Укажи URL сервера</span>';
+    return;
+  }
+
+  $('dfu-server-status').innerHTML = '<span style="color:var(--fg2)">Проверка…</span>';
+
+  try {
+    const resp = await fetch(baseUrl + '/manifest.json', { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    serverManifest = await resp.json();
+    serverManifest._baseUrl = baseUrl;
+
+    const sizeKb = serverManifest.size ? (serverManifest.size / 1024).toFixed(1) + ' KB' : '?';
+    $('dfu-server-status').innerHTML = `<span style="color:var(--green)">✓ Сервер: v${serverManifest.version} · ${sizeKb}</span>` +
+      (serverManifest.notes ? `<br><span style="color:var(--fg2)">${esc(serverManifest.notes)}</span>` : '');
+
+    // Save URL for next time
+    try { localStorage.setItem('dfu-server-url', baseUrl); } catch {}
+
+    checkVersionMismatch();
+  } catch (e) {
+    $('dfu-server-status').innerHTML = `<span style="color:var(--red)">Ошибка: ${esc(e.message)}</span>`;
+    serverManifest = null;
+  }
+}
+
+function checkVersionMismatch() {
+  if (!serverManifest || !sysState.fwVersion) return;
+  const remote = serverManifest.version;
+  const local = sysState.fwVersion;
+  if (versionCompare(remote, local) > 0) {
+    showUpdateBanner(remote, serverManifest.size, serverManifest.notes);
+  } else {
+    $('dfu-banner').style.display = 'none';
+  }
+}
+
+function versionCompare(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0, nb = pb[i] || 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
+
+function showUpdateBanner(version, size, notes) {
+  $('dfu-banner').style.display = '';
+  $('dfu-banner-ver').textContent = `v${version}`;
+  $('dfu-banner-size').textContent = size ? (size / 1024).toFixed(1) + ' KB' : '';
+  $('dfu-banner-notes').textContent = notes || '';
+}
+
+async function startOtaUpdate() {
+  if (!serverManifest) return;
+  tab('sys');
+  // Download firmware from server
+  const url = serverManifest._baseUrl + '/' + serverManifest.file;
+  dfuLog('Скачивание с сервера: ' + url, 'inf');
+  $('dfu-prog-text').textContent = 'Скачивание…';
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    dfuFirmwareData = new Uint8Array(await blob.arrayBuffer());
+    dfuFileName = serverManifest.file;
+    $('dfu-file-info').textContent = `${dfuFileName} — ${dfuFirmwareData.length} B (${(dfuFirmwareData.length/1024).toFixed(1)} KB) · с сервера`;
+    dfuLog(`✓ Скачано: ${dfuFirmwareData.length} байт`, 'ok');
+    $('dfu-btn-upload').disabled = !connected;
+
+    // Auto-start upload if connected
+    if (connected) {
+      await sleep(200);
+      dfuStartUpload();
+    }
+  } catch (e) {
+    dfuLog('Ошибка скачивания: ' + e.message, 'err');
+    $('dfu-prog-text').textContent = 'Ошибка';
+  }
+}
+
+// --- DFU via SMP (inline in NUS or standalone SMP) ---
+// For simplicity and compatibility, DFU uses the standalone SMP BLE service.
+// The user needs to connect via the DFU page for actual SMP transfer.
+// Here we provide the UI for file selection + link to dedicated DFU page.
+
+function dfuLoadFile(file) {
+  if (!file) return;
+  dfuFileName = file.name;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    dfuFirmwareData = new Uint8Array(e.target.result);
+    $('dfu-file-info').textContent = `${dfuFileName} — ${dfuFirmwareData.length} B (${(dfuFirmwareData.length/1024).toFixed(1)} KB)`;
+    dfuLog(`Файл: ${dfuFileName}, ${dfuFirmwareData.length} B`, 'inf');
+    $('dfu-btn-upload').disabled = !connected;
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// DFU drop zone
+{
+  const dz = $('dfu-drop');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); dfuLoadFile(e.dataTransfer.files[0]); });
+}
+
+// --- SMP DFU over BLE (uses separate SMP service) ---
+const SMP_SVC_UUID  = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
+const SMP_CHAR_UUID = 'da2e7828-fbce-4e01-ae9e-261174997c48';
+
+let smpChar = null;
+let dfuUploading = false;
+let dfuAbortFlag = false;
+let smpSeq = 0;
+let smpPendingResolve = null;
+let smpReassembly = null;
+let smpExpectedLen = 0;
+
+// Minimal CBOR for SMP
+const CBOR={encode(o){const p=[];function e(v){if(v===null||v===undefined){p.push(0xf6);return}if(v===true){p.push(0xf5);return}if(v===false){p.push(0xf4);return}if(typeof v==='number'){if(Number.isInteger(v)&&v>=0){u(0,v);return}if(Number.isInteger(v)&&v<0){u(1,-1-v);return}const fb=new ArrayBuffer(8);new DataView(fb).setFloat64(0,v);p.push(0xfb,...new Uint8Array(fb));return}if(typeof v==='string'){const b=new TextEncoder().encode(v);u(3,b.length);p.push(...b);return}if(v instanceof Uint8Array||v instanceof ArrayBuffer){const b=v instanceof ArrayBuffer?new Uint8Array(v):v;u(2,b.length);p.push(...b);return}if(Array.isArray(v)){u(4,v.length);v.forEach(e);return}const k=Object.keys(v);u(5,k.length);k.forEach(x=>{e(x);e(v[x])})}function u(m,n){const M=m<<5;if(n<24)p.push(M|n);else if(n<256)p.push(M|24,n);else if(n<65536)p.push(M|25,n>>8,n&0xff);else if(n<0x100000000)p.push(M|26,(n>>24)&0xff,(n>>16)&0xff,(n>>8)&0xff,n&0xff);else{const h=Math.floor(n/0x100000000),l=n>>>0;p.push(M|27,(h>>24)&0xff,(h>>16)&0xff,(h>>8)&0xff,h&0xff,(l>>24)&0xff,(l>>16)&0xff,(l>>8)&0xff,l&0xff)}}e(o);return new Uint8Array(p)},decode(d){let pos=0;const dv=d instanceof DataView?d:new DataView(d.buffer||d,d.byteOffset||0,d.byteLength||d.length);function r(){const b=dv.getUint8(pos++),mj=b>>5,inf=b&0x1f;let v=ru(inf);switch(mj){case 0:return v;case 1:return-1-v;case 2:{const x=new Uint8Array(dv.buffer,dv.byteOffset+pos,v);pos+=v;return x}case 3:{const x=new TextDecoder().decode(new Uint8Array(dv.buffer,dv.byteOffset+pos,v));pos+=v;return x}case 4:{const a=[];for(let i=0;i<v;i++)a.push(r());return a}case 5:{const o={};for(let i=0;i<v;i++){const k=r();o[k]=r()}return o}case 7:if(inf===20)return false;if(inf===21)return true;if(inf===22)return null;if(inf===27){const f=dv.getFloat64(pos);pos+=8;return f}if(inf===26){const f=dv.getFloat32(pos);pos+=4;return f}return undefined}}function ru(inf){if(inf<24)return inf;if(inf===24)return dv.getUint8(pos++);if(inf===25){const v=dv.getUint16(pos);pos+=2;return v}if(inf===26){const v=dv.getUint32(pos);pos+=4;return v}if(inf===27){const h=dv.getUint32(pos);pos+=4;const l=dv.getUint32(pos);pos+=4;return h*0x100000000+l}return 0}return r()}};
+
+async function dfuEnsureSmp() {
+  if (smpChar) return true;
+  if (!bleDevice || !bleDevice.gatt.connected) {
+    dfuLog('Нужно подключение к устройству', 'err');
+    return false;
+  }
+  try {
+    dfuLog('Подключение к SMP сервису…', 'inf');
+    const server = bleDevice.gatt;
+    const svc = await server.getPrimaryService(SMP_SVC_UUID);
+    smpChar = await svc.getCharacteristic(SMP_CHAR_UUID);
+    await smpChar.startNotifications();
+    smpChar.addEventListener('characteristicvaluechanged', onSmpNotify);
+    dfuLog('SMP сервис подключён', 'ok');
+    return true;
+  } catch (e) {
+    dfuLog('SMP сервис недоступен: ' + e.message, 'err');
+    dfuLog('Убедись, что прошивка собрана с CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y', 'wrn');
+    smpChar = null;
+    return false;
+  }
+}
+
+function onSmpNotify(ev) {
+  const chunk = new Uint8Array(ev.target.value.buffer);
+  if (!smpReassembly) {
+    if (chunk.length < 8) return;
+    const payloadLen = (chunk[2] << 8) | chunk[3];
+    smpExpectedLen = 8 + payloadLen;
+    smpReassembly = new Uint8Array(smpExpectedLen);
+    const copyLen = Math.min(chunk.length, smpExpectedLen);
+    smpReassembly.set(chunk.slice(0, copyLen));
+    smpReassembly._written = copyLen;
+  } else {
+    const w = smpReassembly._written || 0;
+    smpReassembly.set(chunk, w);
+    smpReassembly._written = w + chunk.length;
+  }
+  if ((smpReassembly._written || 0) >= smpExpectedLen) {
+    const payload = smpReassembly.slice(8, smpExpectedLen);
+    smpReassembly = null;
+    smpExpectedLen = 0;
+    try {
+      const decoded = CBOR.decode(payload);
+      if (smpPendingResolve) { smpPendingResolve(decoded); smpPendingResolve = null; }
+    } catch (e) {
+      if (smpPendingResolve) { smpPendingResolve({ rc: -1 }); smpPendingResolve = null; }
+    }
+  }
+}
+
+function smpRequest(op, group, cmdId, payload, timeoutMs = 15000) {
+  return new Promise(async (resolve, reject) => {
+    const cborData = CBOR.encode(payload);
+    const hdr = new Uint8Array(8);
+    const dv = new DataView(hdr.buffer);
+    dv.setUint8(0, op); dv.setUint8(1, 0);
+    dv.setUint16(2, cborData.length);
+    dv.setUint16(4, group);
+    dv.setUint8(6, smpSeq++ & 0xFF);
+    dv.setUint8(7, cmdId);
+    const msg = new Uint8Array(8 + cborData.length);
+    msg.set(hdr); msg.set(cborData, 8);
+
+    const timer = setTimeout(() => { smpPendingResolve = null; reject(new Error('SMP timeout')); }, timeoutMs);
+    smpPendingResolve = (data) => { clearTimeout(timer); resolve(data); };
+    smpReassembly = null; smpExpectedLen = 0;
+
+    try {
+      const chunkSz = 240;
+      for (let i = 0; i < msg.length; i += chunkSz) {
+        await smpChar.writeValueWithoutResponse(msg.slice(i, i + chunkSz));
+      }
+    } catch (e) { clearTimeout(timer); smpPendingResolve = null; reject(e); }
+  });
+}
+
+async function dfuStartUpload() {
+  if (!dfuFirmwareData || dfuUploading) return;
+  if (!await dfuEnsureSmp()) return;
+
+  dfuUploading = true;
+  dfuAbortFlag = false;
+  $('dfu-btn-upload').disabled = true;
+  $('dfu-btn-abort').disabled = false;
+  dfuLog('Начало загрузки…', 'inf');
+
+  const total = dfuFirmwareData.length;
+  let offset = 0;
+  const chunkSize = 192;
+  const t0 = performance.now();
+  const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', dfuFirmwareData));
+
+  try {
+    while (offset < total) {
+      if (dfuAbortFlag) throw new Error('Отменено');
+      const end = Math.min(offset + chunkSize, total);
+      const chunk = dfuFirmwareData.slice(offset, end);
+      const payload = { data: chunk, off: offset };
+      if (offset === 0) { payload.len = total; payload.sha = sha; }
+
+      const resp = await smpRequest(2, 1, 1, payload, 30000);
+      if (resp.rc !== undefined && resp.rc !== 0) throw new Error(`rc=${resp.rc}`);
+      offset = resp.off !== undefined ? resp.off : end;
+
+      const pct = Math.round(offset / total * 100);
+      const elapsed = (performance.now() - t0) / 1000;
+      const speed = offset / elapsed / 1024;
+      const eta = elapsed / offset * (total - offset);
+      $('dfu-prog').style.width = pct + '%';
+      $('dfu-prog-text').textContent = `${pct}% · ${(offset/1024).toFixed(1)}/${(total/1024).toFixed(1)} KB · ${speed.toFixed(1)} KB/s · ETA ${eta.toFixed(0)}s`;
+    }
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    dfuLog(`✓ Загрузка завершена за ${elapsed}s`, 'ok');
+    $('dfu-prog-text').textContent = `✓ Готово (${elapsed}s)`;
+
+    // Auto-test new image
+    await sleep(300);
+    await dfuTest();
+  } catch (e) {
+    dfuLog('✕ ' + e.message, 'err');
+    $('dfu-prog-text').textContent = 'Ошибка: ' + e.message;
+  } finally {
+    dfuUploading = false;
+    $('dfu-btn-upload').disabled = false;
+    $('dfu-btn-abort').disabled = true;
+  }
+}
+
+function dfuAbort() {
+  dfuAbortFlag = true;
+  dfuLog('Отмена…', 'wrn');
+}
+
+async function dfuQueryState() {
+  if (!await dfuEnsureSmp()) return;
+  try {
+    const resp = await smpRequest(0, 1, 0, {});
+    const images = resp.images || [];
+    let html = '';
+    images.forEach(img => {
+      const flags = [];
+      if (img.active) flags.push('<span style="color:var(--green)">ACTIVE</span>');
+      if (img.confirmed) flags.push('<span style="color:var(--accent)">CONFIRMED</span>');
+      if (img.pending) flags.push('<span style="color:var(--orange)">PENDING</span>');
+      html += `<div style="margin:4px 0">Slot ${img.slot}: <span style="color:var(--yellow)">v${img.version}</span> ${flags.join(' ')}</div>`;
+    });
+    $('dfu-slots').innerHTML = html || '<span style="color:var(--fg2)">Нет данных</span>';
+    dfuLog(`Слоты: ${images.map(i => `slot${i.slot}=v${i.version}`).join(', ')}`, 'inf');
+  } catch (e) {
+    dfuLog('Ошибка: ' + e.message, 'err');
+  }
+}
+
+async function dfuTest() {
+  if (!await dfuEnsureSmp()) return;
+  try {
+    const state = await smpRequest(0, 1, 0, {});
+    const images = state.images || [];
+    if (images.length > 1) {
+      const hash = images[1].hash;
+      const resp = await smpRequest(2, 1, 0, { hash, confirm: false });
+      if ((resp.rc || 0) === 0) {
+        dfuLog(`✓ Slot 1 (v${images[1].version}) помечен для test boot`, 'ok');
+      } else {
+        dfuLog(`Ошибка test: rc=${resp.rc}`, 'err');
+      }
+    } else {
+      dfuLog('Нет образа в slot 1', 'wrn');
+    }
+  } catch (e) { dfuLog('Ошибка: ' + e.message, 'err'); }
+}
+
+async function dfuConfirm() {
+  if (!await dfuEnsureSmp()) return;
+  try {
+    const resp = await smpRequest(2, 1, 0, { confirm: true });
+    if ((resp.rc || 0) === 0) dfuLog('✓ Образ подтверждён', 'ok');
+    else dfuLog(`Ошибка: rc=${resp.rc}`, 'err');
+  } catch (e) { dfuLog('Ошибка: ' + e.message, 'err'); }
+}
+
+async function dfuReset() {
+  if (!await dfuEnsureSmp()) return;
+  try { await smpRequest(2, 0, 5, {}, 3000); } catch {}
+  dfuLog('⟳ Reset отправлен', 'ok');
+}
+
+function dfuLog(msg, cls = 'inf') {
+  const el = $('dfu-log');
+  if (!el) return;
+  const ts = new Date().toLocaleTimeString();
+  el.innerHTML += `<div class="${cls}"><span class="ts">${ts}</span> ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// Auto-request sysinfo on connect
+const _origSetStatus = typeof setStatus !== 'undefined' ? setStatus : null;
+// We'll hook into the connection callback instead — look for connected=true
+(function hookConnect() {
+  const origOnNotify = onNotify;
+  // Already hooked via parseSysinfo in the line parser
+})();
+
+// On connect, auto-request sysinfo after a short delay
+function onSysConnect() {
+  setTimeout(() => {
+    if (connected) {
+      requestSysinfo();
+      // Also try SMP for slot info
+      dfuEnsureSmp().then(ok => { if (ok) dfuQueryState(); });
+    }
+  }, 1500);
+}
+
+// Load saved server URL
+try {
+  const savedUrl = localStorage.getItem('dfu-server-url');
+  if (savedUrl) {
+    $('dfu-server-url').value = savedUrl;
+    // Auto-check on load
+    setTimeout(checkForUpdate, 3000);
+  }
+} catch {}
 </script>
 
 <!-- Тост обновления PWA -->

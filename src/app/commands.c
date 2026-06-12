@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/sys/reboot.h>
+#include <app_version.h>
 
 typedef void (*cmd_handler_t)(char *args);
 struct shell_cmd {
@@ -1000,6 +1001,29 @@ static void cmd_reboot(char *args)
     sys_reboot(SYS_REBOOT_COLD);
 }
 
+/* SYSINFO — detailed system information for the host app (DFU page, etc.)
+ * Reports: firmware version, build date, uptime, battery, energy consumed,
+ * estimated current, MCUboot image version (from VERSION file). */
+static void cmd_sysinfo(char *args)
+{
+    (void)args;
+    int mv = battery_read_mv();
+    int64_t uptime_s = k_uptime_get() / 1000;
+    uint32_t mah_x1000 = display_manager_get_energy_mah_x1000();
+    int cur_ua = display_manager_get_estimated_current_ua();
+
+    ble_printf("SYSINFO:fw=%d.%d.%d",
+               APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_PATCHLEVEL);
+#if defined(APP_BUILD_YEAR)
+    ble_printf(" build=%04d-%02d-%02d_%02d:%02d:%02d",
+               APP_BUILD_YEAR, APP_BUILD_MONTH, APP_BUILD_DAY,
+               APP_BUILD_HOUR, APP_BUILD_MIN, APP_BUILD_SEC);
+#endif
+    ble_printf(" uptime=%lld bat=%d mah=%u.%03u cur_ua=%d\r\n",
+               (long long)uptime_s, mv,
+               mah_x1000 / 1000, mah_x1000 % 1000, cur_ua);
+}
+
 /* ── Command table ───────────────────────────────────────────────────────── */
 
 const struct shell_cmd commands[] = {
@@ -1043,6 +1067,7 @@ const struct shell_cmd commands[] = {
     {"RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.."},
     /* System */
     {"REBOOT",      cmd_reboot,     "Cold reboot the device"},
+    {"SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy"},
     /* Debug */
     {"VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
     {"DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (legacy)"},

@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>DFU · nRF52 OTA Update</title>
+<meta name="color-scheme" content="dark">
+<style>
+:root {
+  --bg:     #0a0b10;
+  --bg2:    #10121a;
+  --bg3:    #171a26;
+  --bg4:    #1f2333;
+  --border: #262b3d;
+  --fg:     #e7e9f2;
+  --fg2:    #8b91ab;
+  --accent: #6aa3ff;
+  --green:  #46d39a;
+  --red:    #f25555;
+  --orange: #f0964f;
+  --yellow: #e3c860;
+  --r:      10px;
+  --r-s:    7px;
+  --sans:   ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono:   ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:var(--sans);background:var(--bg);color:var(--fg);
+  min-height:100vh;padding:20px;font-size:13px;
+  background:radial-gradient(120% 60% at 50% -12%, #151a2c 0%, transparent 62%),var(--bg);
+}
+.container{max-width:640px;margin:0 auto}
+h1{font-size:20px;font-weight:800;color:var(--accent);margin-bottom:4px}
+.subtitle{color:var(--fg2);font-size:12px;margin-bottom:20px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:14px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 10px 26px -22px rgba(0,0,0,.9)}
+.ctitle{font-size:10px;font-weight:700;color:var(--fg2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.btn{
+  background:linear-gradient(180deg,#1b1f2d,var(--bg3));color:var(--fg2);
+  border:1px solid var(--border);padding:8px 16px;border-radius:var(--r-s);
+  cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;
+  transition:all .12s;white-space:nowrap;
+}
+.btn:hover{background:var(--bg4);color:var(--fg);border-color:var(--accent)}
+.btn:active{transform:translateY(1px) scale(.985)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.acc{background:#162340;color:var(--accent);border-color:#2a4a80}
+.btn.ok{background:#162a22;color:var(--green);border-color:#1e4030}
+.btn.bad{background:#2a1414;color:var(--red);border-color:#4a2020}
+.btn.big{padding:10px 20px;font-size:14px;font-weight:700;border-radius:9px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--red);display:inline-block;transition:background .3s}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+.status{font-size:11px;color:var(--fg2)}
+.dropzone{
+  border:2px dashed var(--border);border-radius:8px;padding:24px;text-align:center;
+  color:var(--fg2);cursor:pointer;transition:all .15s;
+}
+.dropzone:hover,.dropzone.over{border-color:var(--accent);color:var(--fg);background:#141422}
+.file-info{font-size:11px;color:var(--yellow);margin-top:8px;font-family:var(--mono)}
+.progress-wrap{margin-top:12px}
+.pbar{height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.pfill{height:100%;background:var(--accent);border-radius:4px;transition:width .15s;width:0%}
+.ptext{font-size:11px;color:var(--fg2);margin-top:4px;font-family:var(--mono)}
+.log{
+  background:#07080d;border:1px solid #14161f;border-radius:6px;
+  padding:8px;font-family:var(--mono);font-size:10px;line-height:1.6;
+  max-height:200px;overflow-y:auto;margin-top:10px;
+}
+.log .ok{color:var(--green)}.log .err{color:var(--red)}.log .inf{color:var(--fg2)}.log .wrn{color:var(--orange)}
+.steps{display:flex;gap:4px;margin-bottom:14px}
+.step{flex:1;height:4px;background:var(--bg4);border-radius:2px;transition:background .3s}
+.step.done{background:var(--green)}.step.active{background:var(--accent)}
+.step.fail{background:var(--red)}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⬆ OTA DFU · nRF52</h1>
+  <p class="subtitle">Обновление прошивки по BLE через mcumgr SMP протокол</p>
+
+  <!-- Steps indicator -->
+  <div class="steps">
+    <div class="step" id="s1"></div>
+    <div class="step" id="s2"></div>
+    <div class="step" id="s3"></div>
+    <div class="step" id="s4"></div>
+  </div>
+
+  <!-- Connection -->
+  <div class="card">
+    <div class="ctitle">1. Подключение</div>
+    <div class="row">
+      <button class="btn acc big" id="btn-conn" onclick="doConnect()">Подключить</button>
+      <span class="dot" id="dot"></span>
+      <span class="status" id="conn-status">Не подключено</span>
+    </div>
+  </div>
+
+  <!-- Firmware file -->
+  <div class="card">
+    <div class="ctitle">2. Файл прошивки</div>
+    <div class="dropzone" id="fw-drop" onclick="document.getElementById('fw-file').click()">
+      <div style="font-size:14px">📦 app_update.bin</div>
+      <div style="font-size:11px;margin-top:4px">Клик или перетащи файл</div>
+    </div>
+    <input type="file" id="fw-file" accept=".bin" style="display:none" onchange="loadFirmware(this.files[0])">
+    <div class="file-info" id="fw-info"></div>
+  </div>
+
+  <!-- Upload -->
+  <div class="card">
+    <div class="ctitle">3. Загрузка</div>
+    <div class="row">
+      <button class="btn ok big" id="btn-upload" onclick="doUpload()" disabled>⬆ Загрузить</button>
+      <button class="btn bad" id="btn-abort" onclick="doAbort()" disabled>✕ Отмена</button>
+      <span class="status" id="upload-status"></span>
+    </div>
+    <div class="progress-wrap">
+      <div class="pbar"><div class="pfill" id="prog-fill"></div></div>
+      <div class="ptext" id="prog-text"></div>
+    </div>
+  </div>
+
+  <!-- Confirm & Reset -->
+  <div class="card">
+    <div class="ctitle">4. Подтверждение и перезагрузка</div>
+    <div class="row">
+      <button class="btn acc" id="btn-test" onclick="doTest()" disabled>✓ Test</button>
+      <button class="btn ok" id="btn-confirm" onclick="doConfirm()" disabled>✓✓ Confirm</button>
+      <button class="btn bad" id="btn-reset" onclick="doReset()" disabled>⟳ Reset</button>
+    </div>
+    <p style="font-size:10px;color:var(--fg2);margin-top:8px">
+      <b>Test</b> — помечает образ для тестовой загрузки (откат после ребута, если не подтвердить).<br>
+      <b>Confirm</b> — подтверждает текущий образ как постоянный.<br>
+      <b>Reset</b> — перезагрузка устройства (применяет загруженный образ).
+    </p>
+  </div>
+
+  <!-- Log -->
+  <div class="card">
+    <div class="ctitle">Лог</div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <p style="text-align:center;margin-top:14px">
+    <a href="index.html">← Назад к основному интерфейсу</a>
+  </p>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  SMP over BLE — mcumgr protocol implementation
+//  Reference: github.com/apache/mynewt-mcumgr (CBOR over SMP)
+// ═══════════════════════════════════════════════════════════════════
+
+// SMP BLE Service & Characteristic (standard mcumgr)
+const SMP_SVC  = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
+const SMP_CHAR = 'da2e7828-fbce-4e01-ae9e-261174997c48';
+
+// SMP Header constants
+const SMP_OP_READ     = 0;
+const SMP_OP_READ_RSP = 1;
+const SMP_OP_WRITE    = 2;
+const SMP_OP_WRITE_RSP= 3;
+
+// SMP Groups
+const SMP_GRP_OS    = 0;
+const SMP_GRP_IMG   = 1;
+
+// Image mgmt commands
+const IMG_CMD_STATE   = 0;
+const IMG_CMD_UPLOAD  = 1;
+
+// OS mgmt commands
+const OS_CMD_ECHO  = 0;
+const OS_CMD_RESET = 5;
+
+// ═══════════════════════════════════════════════════════════════════
+//  Minimal CBOR encoder/decoder (subset needed for SMP)
+// ═══════════════════════════════════════════════════════════════════
+const CBOR = {
+  encode(obj) {
+    const parts = [];
+    function enc(v) {
+      if (v === null || v === undefined) { parts.push(0xf6); return; }
+      if (v === true) { parts.push(0xf5); return; }
+      if (v === false) { parts.push(0xf4); return; }
+      if (typeof v === 'number') {
+        if (Number.isInteger(v) && v >= 0) { encUint(0, v); return; }
+        if (Number.isInteger(v) && v < 0) { encUint(1, -1 - v); return; }
+        // float64
+        const fb = new ArrayBuffer(8);
+        new DataView(fb).setFloat64(0, v);
+        parts.push(0xfb);
+        parts.push(...new Uint8Array(fb));
+        return;
+      }
+      if (typeof v === 'string') {
+        const utf8 = new TextEncoder().encode(v);
+        encUint(3, utf8.length);
+        parts.push(...utf8);
+        return;
+      }
+      if (v instanceof Uint8Array || v instanceof ArrayBuffer) {
+        const b = v instanceof ArrayBuffer ? new Uint8Array(v) : v;
+        encUint(2, b.length);
+        parts.push(...b);
+        return;
+      }
+      if (Array.isArray(v)) {
+        encUint(4, v.length);
+        v.forEach(enc);
+        return;
+      }
+      // map
+      const keys = Object.keys(v);
+      encUint(5, keys.length);
+      keys.forEach(k => { enc(k); enc(v[k]); });
+    }
+    function encUint(major, n) {
+      const m = major << 5;
+      if (n < 24) { parts.push(m | n); }
+      else if (n < 256) { parts.push(m | 24, n); }
+      else if (n < 65536) { parts.push(m | 25, n >> 8, n & 0xff); }
+      else if (n < 0x100000000) { parts.push(m | 26, (n>>24)&0xff,(n>>16)&0xff,(n>>8)&0xff,n&0xff); }
+      else {
+        // uint64 as two 32-bit
+        const hi = Math.floor(n / 0x100000000);
+        const lo = n >>> 0;
+        parts.push(m | 27, (hi>>24)&0xff,(hi>>16)&0xff,(hi>>8)&0xff,hi&0xff,
+                           (lo>>24)&0xff,(lo>>16)&0xff,(lo>>8)&0xff,lo&0xff);
+      }
+    }
+    enc(obj);
+    return new Uint8Array(parts);
+  },
+
+  decode(data) {
+    let pos = 0;
+    const view = data instanceof DataView ? data : new DataView(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength ?? data.length);
+    function read() {
+      const b = view.getUint8(pos++);
+      const major = b >> 5;
+      const info = b & 0x1f;
+      let val = readUint(info);
+      switch (major) {
+        case 0: return val;                   // uint
+        case 1: return -1 - val;              // negint
+        case 2: { const r = new Uint8Array(view.buffer, view.byteOffset + pos, val); pos += val; return r; } // bytes
+        case 3: { const r = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + pos, val)); pos += val; return r; } // string
+        case 4: { const arr=[]; for(let i=0;i<val;i++) arr.push(read()); return arr; } // array
+        case 5: { const obj={}; for(let i=0;i<val;i++){const k=read();obj[k]=read();} return obj; } // map
+        case 7: {
+          if (info === 20) return false;
+          if (info === 21) return true;
+          if (info === 22) return null;
+          if (info === 27) { const f = view.getFloat64(pos); pos += 8; return f; }
+          if (info === 26) { const f = view.getFloat32(pos); pos += 4; return f; }
+          if (info === 25) { /* float16 — approximate */ pos += 2; return 0; }
+          return undefined;
+        }
+      }
+    }
+    function readUint(info) {
+      if (info < 24) return info;
+      if (info === 24) return view.getUint8(pos++);
+      if (info === 25) { const v = view.getUint16(pos); pos += 2; return v; }
+      if (info === 26) { const v = view.getUint32(pos); pos += 4; return v; }
+      if (info === 27) {
+        const hi = view.getUint32(pos); pos += 4;
+        const lo = view.getUint32(pos); pos += 4;
+        return hi * 0x100000000 + lo;
+      }
+      return 0;
+    }
+    return read();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════════════════════
+let device = null, smpChar = null, connected = false;
+let fwData = null, fwName = '';
+let uploading = false, abortUpload = false;
+let seq = 0;
+let pendingResolve = null;
+let reassemblyBuf = null;
+let expectedLen = 0;
+
+// ═══════════════════════════════════════════════════════════════════
+//  UI Helpers
+// ═══════════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+function log(msg, cls='inf') {
+  const el = $('log');
+  el.innerHTML += `<div class="${cls}">${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+function setStep(n, state='done') {
+  for (let i = 1; i <= 4; i++) {
+    const el = $('s'+i);
+    el.className = 'step';
+    if (i < n) el.classList.add('done');
+    else if (i === n) el.classList.add(state);
+  }
+}
+function setProgress(pct, text='') {
+  $('prog-fill').style.width = pct + '%';
+  $('prog-text').textContent = text;
+}
+function setConnStatus(text, ok) {
+  $('conn-status').textContent = text;
+  $('dot').classList.toggle('on', ok);
+  $('btn-conn').textContent = ok ? 'Отключить' : 'Подключить';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  BLE Connection (SMP service)
+// ═══════════════════════════════════════════════════════════════════
+async function doConnect() {
+  if (connected) { device?.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth не поддерживается. Откройте в Chrome.');
+    return;
+  }
+  try {
+    log('Сканирование…');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SMP_SVC] }],
+      optionalServices: [SMP_SVC],
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+    setConnStatus('Подключение…', false);
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SMP_SVC);
+    smpChar = await svc.getCharacteristic(SMP_CHAR);
+    await smpChar.startNotifications();
+    smpChar.addEventListener('characteristicvaluechanged', onSmpNotify);
+    connected = true;
+    setConnStatus(device.name || 'Connected', true);
+    setStep(1, 'done');
+    log(`<span class="ok">Подключено: ${device.name || 'device'}</span>`, 'ok');
+    $('btn-upload').disabled = !fwData;
+    $('btn-test').disabled = false;
+    $('btn-confirm').disabled = false;
+    $('btn-reset').disabled = false;
+  } catch (e) {
+    log(`<span class="err">Ошибка: ${e.message}</span>`, 'err');
+    setConnStatus('Ошибка', false);
+  }
+}
+
+function onDisconnect() {
+  connected = false;
+  smpChar = null;
+  setConnStatus('Отключено', false);
+  log('Устройство отключилось', 'wrn');
+  $('btn-upload').disabled = true;
+  $('btn-test').disabled = true;
+  $('btn-confirm').disabled = true;
+  $('btn-reset').disabled = true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SMP transport: build header + send + wait response
+// ═══════════════════════════════════════════════════════════════════
+function buildSmpMsg(op, group, id, payload) {
+  const cborData = CBOR.encode(payload);
+  const hdr = new Uint8Array(8);
+  const dv = new DataView(hdr.buffer);
+  dv.setUint8(0, op);           // op
+  dv.setUint8(1, 0);            // flags
+  dv.setUint16(2, cborData.length); // len
+  dv.setUint16(4, group);       // group
+  dv.setUint8(6, seq++);        // seq
+  dv.setUint8(7, id);           // id (command)
+  const msg = new Uint8Array(8 + cborData.length);
+  msg.set(hdr);
+  msg.set(cborData, 8);
+  return msg;
+}
+
+async function smpSend(msg) {
+  if (!smpChar) throw new Error('Нет подключения');
+  // BLE MTU chunk size (SMP over BLE uses write-without-response typically)
+  const chunkSz = 240; // conservative; most nRF52 negotiate higher
+  for (let i = 0; i < msg.length; i += chunkSz) {
+    const chunk = msg.slice(i, i + chunkSz);
+    await smpChar.writeValueWithoutResponse(chunk);
+  }
+}
+
+function smpRequest(op, group, id, payload, timeoutMs = 15000) {
+  return new Promise(async (resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingResolve = null;
+      reject(new Error('SMP timeout'));
+    }, timeoutMs);
+    pendingResolve = (data) => {
+      clearTimeout(timer);
+      pendingResolve = null;
+      resolve(data);
+    };
+    reassemblyBuf = null;
+    expectedLen = 0;
+    try {
+      const msg = buildSmpMsg(op, group, id, payload);
+      await smpSend(msg);
+    } catch (e) {
+      clearTimeout(timer);
+      pendingResolve = null;
+      reject(e);
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SMP notification handler (reassembly)
+// ═══════════════════════════════════════════════════════════════════
+function onSmpNotify(ev) {
+  const chunk = new Uint8Array(ev.target.value.buffer);
+
+  if (!reassemblyBuf) {
+    // First fragment — contains 8-byte SMP header
+    if (chunk.length < 8) return;
+    const dv = new DataView(chunk.buffer, chunk.byteOffset);
+    const payloadLen = dv.getUint16(2);
+    expectedLen = 8 + payloadLen;
+    reassemblyBuf = new Uint8Array(expectedLen);
+    reassemblyBuf.set(chunk.slice(0, Math.min(chunk.length, expectedLen)));
+    if (chunk.length >= expectedLen) {
+      deliverResponse();
+    }
+  } else {
+    // Continuation fragment
+    const currentLen = reassemblyBuf.findIndex((_, i) => i > 0 && reassemblyBuf.slice(i).every(b => b === 0)) || reassemblyBuf.length;
+    // Simple append tracking
+    const filled = reassemblyBuf._filled || reassemblyBuf.length;
+    // Use a simpler approach: accumulate into an array
+    if (!reassemblyBuf._parts) {
+      reassemblyBuf._parts = [reassemblyBuf.slice(0, reassemblyBuf._written || chunk.length)];
+      reassemblyBuf._total = reassemblyBuf._written || 0;
+    }
+    reassemblyBuf._parts.push(chunk);
+    reassemblyBuf._total += chunk.length;
+    if (reassemblyBuf._total >= expectedLen) {
+      // Reassemble
+      const full = new Uint8Array(reassemblyBuf._total);
+      let off = 0;
+      for (const p of reassemblyBuf._parts) { full.set(p, off); off += p.length; }
+      reassemblyBuf = full;
+      deliverResponse();
+    }
+  }
+}
+
+function deliverResponse() {
+  if (!reassemblyBuf || reassemblyBuf.length < 8) return;
+  const payload = reassemblyBuf.slice(8, expectedLen);
+  reassemblyBuf = null;
+  expectedLen = 0;
+  try {
+    const decoded = CBOR.decode(payload);
+    if (pendingResolve) pendingResolve(decoded);
+  } catch (e) {
+    log(`CBOR decode error: ${e.message}`, 'err');
+    if (pendingResolve) pendingResolve({ rc: -1, error: e.message });
+  }
+}
+
+// Fix reassembly: track written bytes properly
+const _origOnSmpNotify = onSmpNotify;
+// Replace with cleaner version:
+function onSmpNotifyClean(ev) {
+  const chunk = new Uint8Array(ev.target.value.buffer);
+
+  if (!reassemblyBuf) {
+    if (chunk.length < 8) return;
+    const dv = new DataView(chunk.buffer, chunk.byteOffset, chunk.length);
+    const payloadLen = dv.getUint16(2);
+    expectedLen = 8 + payloadLen;
+
+    if (chunk.length >= expectedLen) {
+      reassemblyBuf = chunk.slice(0, expectedLen);
+      deliverResponse();
+    } else {
+      reassemblyBuf = new Uint8Array(expectedLen);
+      reassemblyBuf.set(chunk);
+      reassemblyBuf._written = chunk.length;
+    }
+  } else {
+    const written = reassemblyBuf._written || 0;
+    reassemblyBuf.set(chunk, written);
+    reassemblyBuf._written = written + chunk.length;
+    if (reassemblyBuf._written >= expectedLen) {
+      deliverResponse();
+    }
+  }
+}
+// Use the clean version
+onSmpNotify = onSmpNotifyClean;
+
+// Re-bind after defining clean version
+// (the addEventListener uses the function reference at call time, which is fine
+//  since we reassign onSmpNotify before connecting)
+
+// ═══════════════════════════════════════════════════════════════════
+//  Firmware file loading
+// ═══════════════════════════════════════════════════════════════════
+function loadFirmware(file) {
+  if (!file) return;
+  fwName = file.name;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    fwData = new Uint8Array(e.target.result);
+    $('fw-info').textContent = `${fwName} — ${fwData.length} байт (${(fwData.length/1024).toFixed(1)} KB)`;
+    log(`Файл загружен: ${fwName}, ${fwData.length} B`);
+    setStep(2, 'done');
+    $('btn-upload').disabled = !connected;
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// Drag & drop
+const dropEl = $('fw-drop');
+dropEl.addEventListener('dragover', e => { e.preventDefault(); dropEl.classList.add('over'); });
+dropEl.addEventListener('dragleave', () => dropEl.classList.remove('over'));
+dropEl.addEventListener('drop', e => { e.preventDefault(); dropEl.classList.remove('over'); loadFirmware(e.dataTransfer.files[0]); });
+
+// ═══════════════════════════════════════════════════════════════════
+//  Image Upload (IMG_CMD_UPLOAD)
+// ═══════════════════════════════════════════════════════════════════
+async function doUpload() {
+  if (!fwData || !connected) return;
+  uploading = true;
+  abortUpload = false;
+  $('btn-upload').disabled = true;
+  $('btn-abort').disabled = false;
+  $('upload-status').textContent = 'Загрузка…';
+  setStep(3, 'active');
+  log('Начало загрузки…');
+
+  const total = fwData.length;
+  let offset = 0;
+  const chunkSize = 192; // payload data per SMP packet (conservative for 240-byte BLE MTU)
+  const startTime = performance.now();
+
+  try {
+    while (offset < total) {
+      if (abortUpload) throw new Error('Отменено пользователем');
+
+      const end = Math.min(offset + chunkSize, total);
+      const chunk = fwData.slice(offset, end);
+
+      const payload = { data: chunk, off: offset };
+      if (offset === 0) {
+        payload.len = total;
+        payload.sha = await sha256(fwData);
+      }
+
+      const resp = await smpRequest(SMP_OP_WRITE, SMP_GRP_IMG, IMG_CMD_UPLOAD, payload, 30000);
+
+      if (resp.rc !== undefined && resp.rc !== 0) {
+        throw new Error(`Устройство вернуло ошибку rc=${resp.rc}`);
+      }
+
+      // Device may report next expected offset
+      if (resp.off !== undefined) {
+        offset = resp.off;
+      } else {
+        offset = end;
+      }
+
+      const pct = Math.round(offset / total * 100);
+      const elapsed = (performance.now() - startTime) / 1000;
+      const speed = offset / elapsed / 1024;
+      const eta = elapsed / offset * (total - offset);
+      setProgress(pct, `${pct}% · ${(offset/1024).toFixed(1)}/${(total/1024).toFixed(1)} KB · ${speed.toFixed(1)} KB/s · ETA ${eta.toFixed(0)}s`);
+    }
+
+    const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+    log(`<span class="ok">✓ Загрузка завершена за ${elapsed}s</span>`, 'ok');
+    $('upload-status').textContent = `Готово (${elapsed}s)`;
+    setStep(3, 'done');
+    setStep(4, 'active');
+  } catch (e) {
+    log(`<span class="err">✕ ${e.message}</span>`, 'err');
+    $('upload-status').textContent = 'Ошибка: ' + e.message;
+    setStep(3, 'fail');
+  } finally {
+    uploading = false;
+    $('btn-upload').disabled = false;
+    $('btn-abort').disabled = true;
+  }
+}
+
+function doAbort() {
+  abortUpload = true;
+  log('Отмена загрузки…', 'wrn');
+}
+
+// SHA-256 for image verification
+async function sha256(data) {
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(hash);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Image State (test/confirm)
+// ═══════════════════════════════════════════════════════════════════
+async function doTest() {
+  if (!connected) return;
+  try {
+    log('Запрос списка образов…');
+    const resp = await smpRequest(SMP_OP_READ, SMP_GRP_IMG, IMG_CMD_STATE, {});
+    log(`Images: ${JSON.stringify(resp.images?.map(i => ({slot:i.slot, ver:i.version, pending:i.pending, confirmed:i.confirmed, active:i.active})))}`, 'inf');
+
+    if (resp.images && resp.images.length > 1) {
+      const img1 = resp.images[1];
+      log(`Помечаю slot 1 (${img1.version}) для тестовой загрузки…`);
+      const hash = img1.hash;
+      const testResp = await smpRequest(SMP_OP_WRITE, SMP_GRP_IMG, IMG_CMD_STATE, { hash, confirm: false });
+      if (testResp.rc === 0 || testResp.rc === undefined) {
+        log('<span class="ok">✓ Образ помечен для test boot</span>', 'ok');
+      } else {
+        log(`<span class="err">Ошибка: rc=${testResp.rc}</span>`, 'err');
+      }
+    } else {
+      log('Нет второго образа в slot 1. Сначала загрузи прошивку.', 'wrn');
+    }
+  } catch (e) {
+    log(`<span class="err">Ошибка: ${e.message}</span>`, 'err');
+  }
+}
+
+async function doConfirm() {
+  if (!connected) return;
+  try {
+    log('Подтверждение текущего образа…');
+    const resp = await smpRequest(SMP_OP_WRITE, SMP_GRP_IMG, IMG_CMD_STATE, { confirm: true });
+    if (resp.rc === 0 || resp.rc === undefined) {
+      log('<span class="ok">✓ Образ подтверждён (permanent)</span>', 'ok');
+      setStep(4, 'done');
+    } else {
+      log(`<span class="err">Ошибка: rc=${resp.rc}</span>`, 'err');
+    }
+  } catch (e) {
+    log(`<span class="err">Ошибка: ${e.message}</span>`, 'err');
+  }
+}
+
+async function doReset() {
+  if (!connected) return;
+  try {
+    log('Отправка команды перезагрузки…');
+    await smpRequest(SMP_OP_WRITE, SMP_GRP_OS, OS_CMD_RESET, {}, 5000).catch(() => {});
+    log('<span class="ok">⟳ Reset отправлен. Устройство перезагрузится.</span>', 'ok');
+  } catch (e) {
+    // Reset usually disconnects before response arrives — that's fine
+    log('<span class="ok">⟳ Reset отправлен</span>', 'ok');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════════════════
+log('Готов. Подключи устройство и выбери файл app_update.bin.');
+</script>
+</body>
+</html>

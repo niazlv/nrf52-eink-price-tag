@@ -63,6 +63,19 @@ static bool tele_enabled = false;
 void display_manager_set_tele_enabled(bool en) { tele_enabled = en; }
 bool display_manager_get_tele_enabled(void)     { return tele_enabled; }
 
+/* Forward declarations for public wrappers defined below static helpers */
+static uint32_t power_estimate_get_mah_x1000(void);
+
+uint32_t display_manager_get_energy_mah_x1000(void)
+{
+    return power_estimate_get_mah_x1000();
+}
+
+int display_manager_get_estimated_current_ua(void)
+{
+    return power_estimate_current_ua;
+}
+
 static int32_t lut_test_frame    = 0;
 static int64_t lut_test_last_ms  = 0;
 static int32_t lut_test_cur_ms   = 0;

@@ -133,4 +133,14 @@ void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
 void display_manager_set_tele_enabled(bool en);
 bool display_manager_get_tele_enabled(void);
 
+/**
+ * @brief Get cumulative energy consumed since boot (mAh × 1000)
+ */
+uint32_t display_manager_get_energy_mah_x1000(void);
+
+/**
+ * @brief Get current estimated power draw (µA)
+ */
+int display_manager_get_estimated_current_ua(void);
+
 #endif // APP_DISPLAY_MANAGER_H

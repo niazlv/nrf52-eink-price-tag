@@ -1,9 +1,10 @@
 /* E·INK controller — service worker */
-const CACHE = 'eink-v2.14';
+const CACHE = 'eink-v3.0.2';
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
+  './version.json',
   './icon-192.png',
   './icon-512.png',
   './icon-512-maskable.png',

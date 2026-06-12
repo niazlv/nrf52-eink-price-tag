@@ -11,3 +11,8 @@ build_*/
 __pycache__/
 videos/
 *.ebf
+
+lut_tester_host/web/firmware/*.bin
+lut_tester_host/web/firmware/history/*.bin
+lut_tester_host/web/firmware/manifest.json
+lut_tester_host/web/version.json
