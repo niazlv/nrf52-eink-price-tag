@@ -774,7 +774,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <span class="blbl">Рендер:</span>
             <select id="enc-render" onchange="setAnimRenderMode(this.value)">
               <option value="mono" selected>1bpp / dither/threshold</option>
-              <option value="tone">Тона temporal</option>
+              <option value="tone-servo">Тона servo 2-plane</option>
+              <option value="tone-temporal">Тона temporal old</option>
             </select>
           </div>
           <div style="display:flex;align-items:center;gap:5px">
@@ -842,6 +843,12 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <option value="2" selected>2×2 баланс</option>
               <option value="4">4×4 быстрее BLE</option>
             </select>
+          </div>
+          <div id="enc-tone-servo-box" style="display:flex;align-items:center;gap:5px">
+            <span class="blbl">Шаг:</span>
+            <input type="number" id="enc-tone-step" value="0.16" min="0.03" max="0.5" step="0.01" style="width:58px">
+            <span class="blbl">Smooth:</span>
+            <input type="number" id="enc-tone-smooth" value="0.35" min="0.05" max="1" step="0.05" style="width:58px">
           </div>
         </div>
         <div class="brow" style="gap:12px;margin-top:6px">
@@ -1039,6 +1046,13 @@ const FB_SIZE = DISP_W * DISP_H / 8; // 4736
 // the final photo on screen with the screensaver disabled.
 const VS_STOP_VIDEO = new Uint8Array([0xCC, 0xDD]);
 const VS_STOP_PHOTO = new Uint8Array([0xCC, 0xDE]);
+
+const VS_TYPE_RAW  = 0;
+const VS_TYPE_RLE  = 1;
+const VS_TYPE_DRLE = 2;
+const VS_TYPE_RAW2  = 3;
+const VS_TYPE_RLE2  = 4;
+const VS_TYPE_DRLE2 = 5;
 
 const LUT_SZ   = 70;
 const N_GROUPS = 5;
@@ -1604,15 +1618,21 @@ function setOutputMode(mode, rerender=true) {
 
 function currentAnimRenderMode() {
   const el = $('enc-render');
-  return el && el.value === 'tone' ? 'tone' : 'mono';
+  const v = el ? el.value : 'mono';
+  return (v === 'tone-servo' || v === 'tone-temporal') ? v : 'mono';
 }
 
 function setAnimRenderMode(mode) {
-  const tone = mode === 'tone';
-  if ($('enc-render')) $('enc-render').value = tone ? 'tone' : 'mono';
+  const m = (mode === 'tone-servo' || mode === 'tone-temporal') ? mode : 'mono';
+  const tone = m !== 'mono';
+  if ($('enc-render')) $('enc-render').value = m;
   showEl('enc-tone-row', tone, 'flex');
   showEl('enc-lut-box', !tone, 'flex');
   showEl('enc-dith-label', !tone, 'flex');
+  showEl('enc-tone-servo-box', m === 'tone-servo', 'flex');
+  if (tone && $('enc-tone-lut')) {
+    $('enc-tone-lut').value = $('enc-tone-lut').value || 'TONE_BIDIR_FAST';
+  }
 }
 
 // Read all controls into state + refresh value labels, then re-render
@@ -2234,7 +2254,8 @@ async function startStream() {
   const encType  = parseInt($('enc-type').value);
   const fps      = parseFloat($('enc-fps').value)||12;
   const renderMode = currentAnimRenderMode();
-  const toneVideo = renderMode === 'tone';
+  const toneVideo = renderMode !== 'mono';
+  const toneServo = renderMode === 'tone-servo';
   const toneCell = toneVideo ? (parseInt($('enc-tone-cell')?.value) || 2) : 1;
   const dith     = !toneVideo && $('enc-dith').checked;
   const inv      = $('enc-inv').checked;
@@ -2246,7 +2267,11 @@ async function startStream() {
   const lut      = toneVideo ? $('enc-tone-lut').value : $('enc-lut').value;
   const tw       = land ? DISP_H : DISP_W;
   const th       = land ? DISP_W : DISP_H;
-  const toneState = toneVideo ? createToneVideoState(tw, th, toneCell) : null;
+  const toneState = toneVideo ? createToneVideoState(tw, th, toneCell, {
+    kind: toneServo ? 'servo' : 'temporal',
+    step: parseFloat($('enc-tone-step')?.value) || 0.16,
+    smooth: parseFloat($('enc-tone-smooth')?.value) || 0.35,
+  }) : null;
 
   const oc  = new OffscreenCanvas(tw, th);
   const oct = oc.getContext('2d', {willReadFrequently:true});
@@ -2257,14 +2282,17 @@ async function startStream() {
     animPreEncoded = null;
     let waitingForBuffer = true;
     const encodeFrame = toneState
-      ? frameCtx => canvasToToneVideoFrame(frameCtx, tw, th, land, toneState, inv)
+      ? frameCtx => encodeToneVideoFrame(frameCtx, tw, th, land, toneState, inv)
+      : null;
+    const previewFrame = toneServo
+      ? () => updateToneEstimatePreview(toneState)
       : null;
     animFrameProducer = startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, s => {
       if (!waitingForBuffer || streamStop) return;
       const need = Math.max(1, s.startBuffer);
       $('stream-prog').style.width = (Math.min(s.ready, need)/need*100).toFixed(0)+'%';
       $('stream-st').textContent = `Буфер ${Math.min(s.ready, need)}/${need}`;
-    }, encodeFrame, !toneVideo);
+    }, encodeFrame, !toneVideo, previewFrame);
     if (animFrameProducer) {
       const s0 = animFrameProducer.stats();
       animLog(`⏳ Буферизую ${s0.startBuffer} кадров, дальше кодирование пойдёт в фоне`);
@@ -2301,7 +2329,7 @@ async function startStream() {
   if (!await vsWaitReady(10000))
     animLog('⚠ нет VSTREAM:ready за 10с — старая прошивка? продолжаю');
   const renderInfo = toneVideo
-    ? `tone temporal cell=${toneState.cell} lut=${lut}`
+    ? `tone ${toneState.kind} cell=${toneState.cell} lut=${lut}${toneServo ? ` step=${toneState.step.toFixed(2)} smooth=${toneState.smooth.toFixed(2)}` : ''}`
     : `1bpp ${dith ? 'dither' : 'threshold'} lut=${lut}`;
   animLog(`▶ VSTREAM:start:${lut} | ${renderInfo} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
 
@@ -2439,7 +2467,8 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, 
   if (animFrameProducer) {
     const buf = await animFrameProducer.get(i);
     if (buf) {
-      updateAnimPreview(buf);
+      if (toneState?.kind === 'servo') updateToneEstimatePreview(toneState);
+      else updateAnimPreview(buf);
       return buf;
     }
     if (streamStop) return null;
@@ -2478,13 +2507,14 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, 
   } else return null;
 
   const buf = toneState
-    ? canvasToToneVideoFrame(ctx, tw, th, land, toneState, inv)
+    ? encodeToneVideoFrame(ctx, tw, th, land, toneState, inv)
     : canvasTo1bpp(ctx, tw, th, dith, inv, land);
-  updateAnimPreview(buf);
+  if (toneState?.kind === 'servo') updateToneEstimatePreview(toneState);
+  else updateAnimPreview(buf);
   return buf;
 }
 
-function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onProgress, encodeFrame=null, cacheFrames=true) {
+function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onProgress, encodeFrame=null, cacheFrames=true, previewFrame=null) {
   if (animFileType !== 'video' || !animVideoEl) return null;
   if (!('requestVideoFrameCallback' in animVideoEl)) return null;
 
@@ -2621,7 +2651,10 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
       }
       lastTarget = targetIdx;
       lastFrame = frame;
-      if (produced % 10 === 0 || targetIdx === total - 1) updateAnimPreview(frame);
+      if (produced % 10 === 0 || targetIdx === total - 1) {
+        if (previewFrame) previewFrame(frame);
+        else updateAnimPreview(frame);
+      }
     }
 
     if (lastTarget >= total - 1) complete();
@@ -2766,7 +2799,29 @@ function updateAnimPreview(buf) {
   }
   pctx.putImageData(id, 0, 0);
   $('anim-prev-info').textContent = new Date().toTimeString().slice(0,8) +
-    (currentAnimRenderMode() === 'tone' ? ' — tone temporal mask' : ' — обновлено');
+    (currentAnimRenderMode() === 'tone-temporal' ? ' — tone temporal mask' : ' — обновлено');
+}
+
+function updateToneEstimatePreview(state) {
+  const canvas = $('anim-preview');
+  if (!canvas || !state) return;
+  const pctx = canvas.getContext('2d');
+  const id = pctx.createImageData(296, 128);
+  const data = id.data;
+
+  for (let cy=0; cy<128; cy++) for (let cx=0; cx<296; cx++) {
+    const lx = state.tw === 296 ? cx : 127 - cy;
+    const ly = state.tw === 296 ? cy : cx;
+    const sx = clamp(Math.floor(lx / state.cell), 0, state.cw - 1);
+    const sy = clamp(Math.floor(ly / state.cell), 0, state.ch - 1);
+    const dark = state.cur[sy * state.cw + sx] || 0;
+    const v = 255 - Math.round(dark * 255);
+    const pi = (cy*296+cx)*4;
+    data[pi]=data[pi+1]=data[pi+2]=v; data[pi+3]=255;
+  }
+
+  pctx.putImageData(id, 0, 0);
+  $('anim-prev-info').textContent = new Date().toTimeString().slice(0,8)+' — tone servo estimate';
 }
 
 async function previewFrame0() {
@@ -2776,11 +2831,16 @@ async function previewFrame0() {
   const th = land ? DISP_W : DISP_H;
   const rot   = parseInt($('enc-rot').value)||0;
   const scale = $('enc-scale').value;
-  const toneVideo = currentAnimRenderMode() === 'tone';
+  const renderMode = currentAnimRenderMode();
+  const toneVideo = renderMode !== 'mono';
   const dith  = !toneVideo && $('enc-dith').checked;
   const inv   = $('enc-inv').checked;
   const toneState = toneVideo
-    ? createToneVideoState(tw, th, parseInt($('enc-tone-cell')?.value) || 2)
+    ? createToneVideoState(tw, th, parseInt($('enc-tone-cell')?.value) || 2, {
+      kind: renderMode === 'tone-servo' ? 'servo' : 'temporal',
+      step: parseFloat($('enc-tone-step')?.value) || 0.16,
+      smooth: parseFloat($('enc-tone-smooth')?.value) || 0.35,
+    })
     : null;
   const oc    = new OffscreenCanvas(tw, th);
   const oct   = oc.getContext('2d', {willReadFrequently:true});
@@ -2788,20 +2848,30 @@ async function previewFrame0() {
   if (buf) animLog('Превью кадра 0 обновлено');
 }
 
-function createToneVideoState(tw, th, cell) {
+function createToneVideoState(tw, th, cell, opts={}) {
   cell = clamp(Math.round(cell) || 2, 1, 8);
   const cw = Math.ceil(tw / cell);
   const ch = Math.ceil(th / cell);
   const acc = new Float32Array(cw * ch);
+  const cur = new Float32Array(cw * ch);
+  const target = new Float32Array(cw * ch);
+  const step = clamp(Number(opts.step) || 0.16, 0.01, 0.8);
+  const smooth = clamp(Number(opts.smooth) || 0.35, 0.01, 1);
   for (let y=0; y<ch; y++) for (let x=0; x<cw; x++) {
     // Seed spreads the first temporal decisions spatially instead of flashing
     // the whole picture in phase.
     acc[y*cw+x] = ((x * 13 + y * 7) & 15) / 16;
   }
-  return {tw, th, cell, cw, ch, acc};
+  return {kind: opts.kind === 'servo' ? 'servo' : 'temporal', tw, th, cell, cw, ch, acc, cur, target, step, smooth};
 }
 
-function canvasToToneVideoFrame(ctx, tw, th, land, state, inv) {
+function encodeToneVideoFrame(ctx, tw, th, land, state, inv) {
+  return state.kind === 'servo'
+    ? canvasToToneServoFrame(ctx, tw, th, land, state, inv)
+    : canvasToToneTemporalFrame(ctx, tw, th, land, state, inv);
+}
+
+function canvasToToneTemporalFrame(ctx, tw, th, land, state, inv) {
   const id = ctx.getImageData(0, 0, tw, th);
   const d = id.data;
   const buf = new Uint8Array(FB_SIZE).fill(0xFF);
@@ -2833,6 +2903,65 @@ function canvasToToneVideoFrame(ctx, tw, th, land, state, inv) {
         const phx = land ? DISP_W - 1 - ly : lx;
         const phy = land ? lx : ly;
         buf[phy*16+(phx>>3)] &= ~(1<<(7-(phx&7)));
+      }
+    }
+  }
+
+  return buf;
+}
+
+function canvasToToneServoFrame(ctx, tw, th, land, state, inv) {
+  const id = ctx.getImageData(0, 0, tw, th);
+  const d = id.data;
+  const buf = new Uint8Array(FB_SIZE * 2).fill(0xFF);
+  const bw = buf.subarray(0, FB_SIZE);
+  const red = buf.subarray(FB_SIZE);
+  const dead = state.step * 0.55;
+
+  for (let cy=0; cy<state.ch; cy++) {
+    const y0 = cy * state.cell;
+    const y1 = Math.min(th, y0 + state.cell);
+    for (let cx=0; cx<state.cw; cx++) {
+      const x0 = cx * state.cell;
+      const x1 = Math.min(tw, x0 + state.cell);
+      let sum = 0, count = 0;
+
+      for (let ly=y0; ly<y1; ly++) for (let lx=x0; lx<x1; lx++) {
+        const p = (ly * tw + lx) * 4;
+        sum += 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
+        count++;
+      }
+
+      const gray = count ? sum / count : 255;
+      const desired = inv ? gray / 255 : (255 - gray) / 255;
+      const si = cy * state.cw + cx;
+      const tgt = state.target[si] + (desired - state.target[si]) * state.smooth;
+      state.target[si] = tgt;
+
+      const diff = tgt - state.cur[si];
+      let action = 0; // 0=hold/no-op (11), 1=darken (00), -1=lighten (01)
+      if (diff > dead) {
+        action = 1;
+        state.cur[si] = Math.min(1, state.cur[si] + state.step);
+      } else if (diff < -dead) {
+        action = -1;
+        state.cur[si] = Math.max(0, state.cur[si] - state.step);
+      }
+      if (!action) continue;
+
+      for (let ly=y0; ly<y1; ly++) for (let lx=x0; lx<x1; lx++) {
+        const phx = land ? DISP_W - 1 - ly : lx;
+        const phy = land ? lx : ly;
+        const off = phy*16+(phx>>3);
+        const bit = 1<<(7-(phx&7));
+        if (action > 0) {
+          // 00 selects LUT0: darken pulse.
+          bw[off] &= ~bit;
+          red[off] &= ~bit;
+        } else {
+          // 01 selects LUT1: lighten pulse. 11 stays hold/no-op via LUT3.
+          red[off] &= ~bit;
+        }
       }
     }
   }
@@ -2892,15 +3021,16 @@ function packBits(data) {
 
 function makeVSPkt(frame, enc, prev) {
   let payload, type;
+  const dual = frame.length === FB_SIZE * 2;
   if (enc===2) { // DRLE
-    if (!prev) { payload=packBits(frame); type=1; }
+    if (!prev) { payload=packBits(frame); type=dual ? VS_TYPE_RLE2 : VS_TYPE_RLE; }
     else {
       const d=new Uint8Array(frame.length);
       for(let i=0;i<frame.length;i++) d[i]=frame[i]^prev[i];
-      payload=packBits(d); type=2;
+      payload=packBits(d); type=dual ? VS_TYPE_DRLE2 : VS_TYPE_DRLE;
     }
-  } else if (enc===1) { payload=packBits(frame); type=1; }
-  else { payload=frame; type=0; }
+  } else if (enc===1) { payload=packBits(frame); type=dual ? VS_TYPE_RLE2 : VS_TYPE_RLE; }
+  else { payload=frame; type=dual ? VS_TYPE_RAW2 : VS_TYPE_RAW; }
   const ln=payload.length;
   const pkt=new Uint8Array(6+ln);
   pkt[0]=0xAA; pkt[1]=0x55; pkt[2]=type;

@@ -66,6 +66,12 @@ void display_manager_update_frame_stream(void);
 void display_manager_end_streaming(void);
 
 /**
+ * @brief When enabled, streaming partial updates write both BW and red RAM.
+ *        Used by tone-servo video, where red RAM is repurposed as a hold bit.
+ */
+void display_manager_set_stream_write_red_plane(bool enable);
+
+/**
  * @brief Set the partial update mode (0=Turbo, 1=Balanced, 2=Stable,
  *        3=Clean, 4=Tone dark, 5=Tone light, 6=Tone bidir fast,
  *        7=Tone bidir)

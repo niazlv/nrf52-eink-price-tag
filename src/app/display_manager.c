@@ -17,6 +17,7 @@ static const struct device *gpio_dev_dm;
 static bool screensaver_enabled = true;
 static bool keep_display_on = false;
 static bool streaming_active = false;
+static bool stream_write_red_plane = false;
 static int partial_mode_current = 1;
 
 // DC-balance maintenance: after this many streaming partial frames, force one
@@ -74,6 +75,20 @@ static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
 K_MUTEX_DEFINE(display_lock);
 
 static bool should_power_down_after_update(void);
+
+static void write_partial_stream_buffers(void)
+{
+    if (stream_write_red_plane) {
+        ssd1675a_display_buffers_fast(graphics_get_buffer(), graphics_get_red_buffer());
+    } else {
+        ssd1675a_display_buffer_fast(graphics_get_buffer());
+    }
+}
+
+void display_manager_set_stream_write_red_plane(bool enable)
+{
+    stream_write_red_plane = enable;
+}
 
 static int power_estimate_idle_current_ua(void)
 {
@@ -135,11 +150,15 @@ static void stop_streaming_if_active(void) {
     if (streaming_active) {
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_wait_busy();
+        if (stream_write_red_plane) {
+            ssd1675a_clear_red_ram();
+        }
         ssd1675a_end_streaming();
         ssd1675a_wait_busy();
         streaming_active = false;
         power_estimate_resync_idle();
     }
+    stream_write_red_plane = false;
 }
 
 static bool should_power_down_after_update(void)
@@ -250,7 +269,7 @@ void display_manager_update_partial(void) {
             stop_streaming_if_active();
             power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
             ssd1675a_init_partial(gpio_dev_dm);
-            ssd1675a_display_buffer_fast(graphics_get_buffer());
+            write_partial_stream_buffers();
             ssd1675a_update_partial();  // 0xC7: full HV cycle with current LUT
             power_estimate_resync_idle();
             return;                     // streaming restarts on next call
@@ -259,11 +278,11 @@ void display_manager_update_partial(void) {
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         if (!streaming_active) {
             ssd1675a_init_partial(gpio_dev_dm);
-            ssd1675a_display_buffer_fast(graphics_get_buffer());
+            write_partial_stream_buffers();
             ssd1675a_begin_streaming();
             streaming_active = true;
         } else {
-            ssd1675a_display_buffer_fast(graphics_get_buffer());
+            write_partial_stream_buffers();
         }
         ssd1675a_update_frame_stream();
         power_estimate_resync_idle();
@@ -271,7 +290,7 @@ void display_manager_update_partial(void) {
         stop_streaming_if_active();
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_init_partial(gpio_dev_dm);
-        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        write_partial_stream_buffers();
         ssd1675a_update_partial();
         power_down_after_idle_update();
         power_estimate_resync_idle();
@@ -297,7 +316,7 @@ void display_manager_update_partial_nowait(void) {
         stop_streaming_if_active();
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_init_partial(gpio_dev_dm);
-        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        write_partial_stream_buffers();
         ssd1675a_update_partial();
         power_estimate_resync_idle();
         return;
@@ -306,11 +325,11 @@ void display_manager_update_partial_nowait(void) {
     power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     if (!streaming_active) {
         ssd1675a_init_partial(gpio_dev_dm);
-        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        write_partial_stream_buffers();
         ssd1675a_begin_streaming();
         streaming_active = true;
     } else {
-        ssd1675a_display_buffer_fast(graphics_get_buffer());
+        write_partial_stream_buffers();
     }
     /* Trigger display refresh but return immediately — display runs in background. */
     ssd1675a_trigger_frame_stream_nowait();

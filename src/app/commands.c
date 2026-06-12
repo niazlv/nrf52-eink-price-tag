@@ -44,6 +44,9 @@ static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
  *     0x00 RAW  — 4736 bytes uncompressed 1-bpp B&W
  *     0x01 RLE  — PackBits full frame
  *     0x02 DRLE — PackBits XOR-delta (current FB = prev frame, XOR in-place)
+ *     0x03 RAW2 — BW plane then red/control plane (9472 bytes decoded)
+ *     0x04 RLE2 — PackBits over both planes
+ *     0x05 DRLE2— PackBits XOR-delta over both planes
  *   ACK   : "TELE:vs f=N ms=M\r\n" after every flush (host flow-control)
  *   Stop  : [0xCC][0xDD] binary escape for video/animation streams.
  *           This restores the screensaver after shutting down HV/fast BLE.
@@ -64,6 +67,9 @@ static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
 #define VS_TYPE_RAW  0x00u
 #define VS_TYPE_RLE  0x01u
 #define VS_TYPE_DRLE 0x02u
+#define VS_TYPE_RAW2  0x03u
+#define VS_TYPE_RLE2  0x04u
+#define VS_TYPE_DRLE2 0x05u
 
 typedef enum {
     VS_IDLE, VS_HDR2_WAIT, VS_TYPE_RD, VS_LEN_HI, VS_LEN_LO,
@@ -95,6 +101,7 @@ static void vs_exit_streaming(bool restore_screensaver) {
      * powering down HV rails. Safe to call even when no refresh is active. */
     ssd1675a_wait_busy();
     ble_service_set_streaming_mode(false);
+    display_manager_set_stream_write_red_plane(false);
     k_work_cancel_delayable(&vs_watchdog_work);
     if (vstream_active) {
         vs_state       = VS_IDLE;
@@ -108,6 +115,21 @@ static void vs_exit_streaming(bool restore_screensaver) {
     if (restore_screensaver) {
         display_manager_enable_screensaver(true);
     }
+}
+
+static bool vs_type_is_dual(uint8_t type)
+{
+    return type == VS_TYPE_RAW2 || type == VS_TYPE_RLE2 || type == VS_TYPE_DRLE2;
+}
+
+static bool vs_type_is_raw(uint8_t type)
+{
+    return type == VS_TYPE_RAW || type == VS_TYPE_RAW2;
+}
+
+static bool vs_type_is_delta(uint8_t type)
+{
+    return type == VS_TYPE_DRLE || type == VS_TYPE_DRLE2;
 }
 
 static void vs_watchdog_handler(struct k_work *work) {
@@ -155,9 +177,20 @@ static void vs_reset_frame(void) {
 }
 
 static inline void vs_write_byte(uint8_t b) {
-    if (vs_dec >= FB_SIZE) return;
-    uint8_t *fb = fb_bw();
-    fb[vs_dec] = (vs_type == VS_TYPE_DRLE) ? (fb[vs_dec] ^ b) : b;
+    const bool dual = vs_type_is_dual(vs_type);
+    const uint16_t max_dec = dual ? (FB_SIZE * 2) : FB_SIZE;
+    if (vs_dec >= max_dec) return;
+
+    uint8_t *fb;
+    uint16_t off = vs_dec;
+    if (dual && off >= FB_SIZE) {
+        fb = fb_red();
+        off -= FB_SIZE;
+    } else {
+        fb = fb_bw();
+    }
+
+    fb[off] = vs_type_is_delta(vs_type) ? (fb[off] ^ b) : b;
     vs_dec++;
 }
 
@@ -189,9 +222,12 @@ static void vs_rle_feed(uint8_t b) {
 }
 
 static void vs_flush_frame(void) {
+    const bool dual = vs_type_is_dual(vs_type);
+    const uint16_t max_dec = dual ? (FB_SIZE * 2) : FB_SIZE;
+
     /* Flush any trailing run bytes that arrived at end of compressed stream. */
-    if (vs_type != VS_TYPE_RAW) {
-        while (vs_rle.mode == 3 && vs_dec < FB_SIZE) {
+    if (!vs_type_is_raw(vs_type)) {
+        while (vs_rle.mode == 3 && vs_dec < max_dec) {
             vs_write_byte(vs_rle.val);
             if (--vs_rle.count == 0) { vs_rle.mode = 0; break; }
         }
@@ -201,6 +237,10 @@ static void vs_flush_frame(void) {
     const uint8_t *fb = fb_bw();
     uint8_t crc = 0;
     for (int i = 0; i < FB_SIZE; i++) crc ^= fb[i];
+    if (dual) {
+        const uint8_t *fr = fb_red();
+        for (int i = 0; i < FB_SIZE; i++) crc ^= fr[i];
+    }
 
     /* Pipeline: wait for the PREVIOUS frame's display refresh to finish before
      * writing new SPI data. The previous trigger was sent without blocking, so
@@ -209,6 +249,7 @@ static void vs_flush_frame(void) {
     int64_t t0 = k_uptime_get();
     ssd1675a_wait_busy();
     display_manager_set_keep_on(true);
+    display_manager_set_stream_write_red_plane(dual);
     display_manager_update_partial_nowait();
     int32_t ms = (int32_t)(k_uptime_get() - t0);
 
@@ -232,7 +273,7 @@ static void vs_process_byte(uint8_t b) {
         break;
     case VS_TYPE_RD:
         vs_type  = b;
-        vs_state = VS_LEN_HI;
+        vs_state = (b <= VS_TYPE_DRLE2) ? VS_LEN_HI : VS_IDLE;
         break;
     case VS_LEN_HI:
         vs_plen  = (uint16_t)b << 8;
@@ -245,8 +286,8 @@ static void vs_process_byte(uint8_t b) {
         break;
     case VS_DATA:
         vs_prx++;
-        if (vs_type == VS_TYPE_RAW) vs_write_byte(b);
-        else                        vs_rle_feed(b);
+        if (vs_type_is_raw(vs_type)) vs_write_byte(b);
+        else                         vs_rle_feed(b);
         if (vs_prx >= vs_plen) vs_state = VS_FLUSH_WAIT;
         break;
     case VS_FLUSH_WAIT:
@@ -838,6 +879,7 @@ void cmd_vstream(char *args)
         k_msleep(50);  /* let screensaver thread finish any in-progress update */
         graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
         display_manager_set_keep_on(true);
+        display_manager_set_stream_write_red_plane(false);
         ssd1675a_set_use_custom_lut(false);
         display_manager_set_partial_mode(mode);
         /* Prime the display before replying ready: wakes the controller from
@@ -852,7 +894,7 @@ void cmd_vstream(char *args)
         vs_reset_frame();
         vstream_active = true;
         k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
-        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD/CCDE\r\n",
+        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE/RAW2/RLE2/DRLE2 fmt=AA55 tt LL LL [payload] BB stop=CCDD/CCDE\r\n",
                    partial_mode_name(mode));
         return;
     }

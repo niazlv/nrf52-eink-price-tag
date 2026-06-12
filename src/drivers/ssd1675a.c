@@ -550,3 +550,28 @@ void ssd1675a_display_buffer_fast(const uint8_t *bw_buffer) {
         send_data(bw_buffer[i]); 
     }
 }
+
+void ssd1675a_display_buffers_fast(const uint8_t *bw_buffer, const uint8_t *red_buffer) {
+    // Write both RAM planes without a full display update. Tone-servo video
+    // repurposes the red plane as a second control bit:
+    //   00 = darken, 01 = lighten, 10/11 = hold/no-op via LUT2/LUT3.
+    set_ram_pointer(0, 0);
+    send_cmd(0x24);
+    for (int i = 0; i < 4736; i++) {
+        send_data(bw_buffer[i]);
+    }
+
+    set_ram_pointer(0, 0);
+    send_cmd(0x26);
+    for (int i = 0; i < 4736; i++) {
+        send_data(red_buffer ? red_buffer[i] : 0x00);
+    }
+}
+
+void ssd1675a_clear_red_ram(void) {
+    set_ram_pointer(0, 0);
+    send_cmd(0x26);
+    for (int i = 0; i < 4736; i++) {
+        send_data(0x00);
+    }
+}

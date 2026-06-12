@@ -21,6 +21,8 @@ void ssd1675a_power_on(void);
 void ssd1675a_power_off(void);
 void ssd1675a_display_buffer(const uint8_t *bw_buffer, const uint8_t *red_buffer);
 void ssd1675a_display_buffer_fast(const uint8_t *bw_buffer);
+void ssd1675a_display_buffers_fast(const uint8_t *bw_buffer, const uint8_t *red_buffer);
+void ssd1675a_clear_red_ram(void);
 void ssd1675a_update_display(void);
 void ssd1675a_sleep(void);
 void ssd1675a_set_vcom_register(uint8_t val);
