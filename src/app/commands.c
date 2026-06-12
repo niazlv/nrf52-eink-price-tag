@@ -762,6 +762,12 @@ void cmd_vstream(char *args)
         graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
         display_manager_set_keep_on(true);
         display_manager_set_partial_mode(0);  /* TURBO for max fps */
+        /* Prime the display before replying ready: wakes the controller from
+         * deep sleep (where BUSY idles high and vs_flush_frame's wait_busy
+         * would spin its full 8 s timeout on the first frame), charges the HV
+         * rails and enters streaming mode. After this every frame only waits
+         * for the previous LUT wave. */
+        display_manager_update_partial();
         ble_service_set_streaming_mode(true);
         vs_state       = VS_IDLE;
         vs_frame_count = 0;

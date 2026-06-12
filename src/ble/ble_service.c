@@ -43,8 +43,11 @@ static const struct bt_le_adv_param adv_param_fast =
 static const struct bt_le_adv_param adv_param_idle =
 	BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONN, ADV_IDLE_INT_MIN, ADV_IDLE_INT_MAX, NULL);
 
+/* Apple accessory guidelines: Interval Min >= 15 ms and
+ * Interval Max >= Interval Min + 15 ms, otherwise macOS/iOS rejects the
+ * request and the connection stays at the (slow) default interval. */
 static const struct bt_le_conn_param conn_param_fast =
-	BT_LE_CONN_PARAM_INIT(6, 12, 0, 400);      /* 7.5-15 ms, VSTREAM */
+	BT_LE_CONN_PARAM_INIT(12, 24, 0, 400);     /* 15-30 ms, VSTREAM */
 static const struct bt_le_conn_param conn_param_idle =
 	BT_LE_CONN_PARAM_INIT(80, 160, 4, 400);    /* 100-200 ms + latency, saver */
 
@@ -167,6 +170,19 @@ static void adv_work_handler(struct k_work *work)
 	LOG_INF("Advertising %s as %s", ble_streaming_mode ? "fast" : "idle", device_name);
 }
 
+static void request_phy_2m(struct bt_conn *conn)
+{
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	int err = bt_conn_le_phy_update(conn, BT_CONN_LE_PHY_PARAM_2M);
+
+	if (err) {
+		LOG_WRN("2M PHY request failed (err %d)", err);
+	}
+#else
+	ARG_UNUSED(conn);
+#endif
+}
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -181,8 +197,30 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		adv_running = false;
 		advertising_allowed = false;
 		apply_connection_params();
+		request_phy_2m(conn);
 	}
 }
+
+static void le_param_updated(struct bt_conn *conn, uint16_t interval,
+			     uint16_t latency, uint16_t timeout)
+{
+	/* interval is in 1.25 ms units. Surface the granted values to the host
+	 * so vstream can tell whether the central honored the fast params. */
+	LOG_INF("Conn params: int=%u.%02ums lat=%u to=%ums",
+		(interval * 125) / 100, (interval * 125) % 100, latency, timeout * 10);
+	ble_printf("TELE:conn int=%u.%02ums lat=%u to=%ums\r\n",
+		   (interval * 125) / 100, (interval * 125) % 100, latency, timeout * 10);
+}
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *param)
+{
+	LOG_INF("PHY: tx=%u rx=%u", param->tx_phy, param->rx_phy);
+	ble_printf("TELE:phy tx=%uM rx=%uM\r\n",
+		   param->tx_phy == BT_GAP_LE_PHY_2M ? 2 : 1,
+		   param->rx_phy == BT_GAP_LE_PHY_2M ? 2 : 1);
+}
+#endif
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
@@ -223,6 +261,10 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected        = connected,
 	.disconnected     = disconnected,
 	.recycled         = recycled_cb,
+	.le_param_updated = le_param_updated,
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated   = le_phy_updated,
+#endif
 #ifdef CONFIG_BT_NUS_SECURITY_ENABLED
 	.security_changed = security_changed,
 #endif

@@ -25,6 +25,7 @@ DEPS
 """
 
 import argparse, asyncio, mmap, os, struct, subprocess, sys, time
+from collections import deque
 from pathlib import Path
 
 # ── optional imports ──────────────────────────────────────────────────────────
@@ -67,22 +68,98 @@ VS_DRLE = 0x02
 
 ENC_NAMES = {'raw': VS_RAW, 'rle': VS_RLE, 'drle': VS_DRLE}
 
+# ── video LUT (uploaded via LUTW: before streaming) ──────────────────────────
+# Same drive scheme as the built-in TURBO (black=VSH1, white=VSL, selected by
+# NEW pixel state) but Ph0 TA=8/TB=0 → 8 subframes = ~64ms wave instead of
+# TURBO's 14 = 112ms. Matches the old ANIM LUT that was confirmed working.
+LUT_VIDEO = bytes(
+    [0x55, 0, 0, 0, 0, 0, 0,     # LUT0 black: Ph0=VSH1
+     0xAA, 0, 0, 0, 0, 0, 0]     # LUT1 white: Ph0=VSL
+    + [0] * 21                   # LUT2/3/4: no red, VCOM=0
+    + [0x08, 0, 0, 0, 0]         # Ph0: TA=8, TB=0, RP=0 → 8 frames ≈ 64ms
+    + [0] * 30                   # Ph1..Ph6 unused
+)
+assert len(LUT_VIDEO) == 70
+
 def adv_has_nus(adv) -> bool:
     return NUS_SERVICE in [u.lower() for u in (getattr(adv, "service_uuids", None) or [])]
+
+def _adv_name(dev, adv) -> str:
+    return dev.name or (getattr(adv, "local_name", None) or "")
+
+def _adv_rssi(dev, adv) -> int:
+    rssi = getattr(adv, "rssi", None)        # bleak >= 0.19
+    if rssi is None:
+        rssi = getattr(dev, "rssi", None)    # older bleak
+    return rssi if rssi is not None else -127
+
+def _rssi_bar(rssi: int, lo: int = -100, hi: int = -40, width: int = 10) -> str:
+    frac = max(0.0, min(1.0, (rssi - lo) / (hi - lo)))
+    filled = round(width * frac)
+    return "▮" * filled + "▯" * (width - filled)
+
+async def scan_matching(match_fn, timeout: float = 12.0, settle: float = 3.0):
+    """Collect every advertiser accepted by match_fn. After the first hit keep
+    scanning `settle` more seconds so a second nearby device is not missed."""
+    found = {}            # address -> (dev, adv) with the latest adv (and RSSI)
+    first_hit = None
+
+    def on_adv(dev, adv):
+        nonlocal first_hit
+        if match_fn(dev, adv):
+            found[dev.address] = (dev, adv)
+            if first_hit is None:
+                first_hit = time.time()
+
+    async with BleakScanner(on_adv):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            await asyncio.sleep(0.1)
+            if first_hit is not None and time.time() - first_hit >= settle:
+                break
+    return list(found.values())
+
+def pick_device(matches):
+    """Show all matches sorted by signal strength and let the user choose one."""
+    matches = sorted(matches, key=lambda m: _adv_rssi(*m), reverse=True)
+    best = _adv_rssi(*matches[0])
+    print(f"\nFound {len(matches)} matching devices:")
+    for i, (dev, adv) in enumerate(matches, 1):
+        rssi = _adv_rssi(dev, adv)
+        delta = best - rssi
+        if delta == 0:
+            note = "← closest"
+        else:
+            # free-space path loss: distance ratio ≈ 10^(ΔdB/20)
+            note = f"-{delta} dB (~{10 ** (delta / 20):.1f}× farther)"
+        print(f"  {i}. {_adv_name(dev, adv) or '(no name)'}  {dev.address}"
+              f"  {rssi:4d} dBm  [{_rssi_bar(rssi)}]  {note}")
+    while True:
+        ans = input(f"Select device [1-{len(matches)}, Enter=1]: ").strip()
+        if ans == "":
+            return matches[0][0]
+        if ans.isdigit() and 1 <= int(ans) <= len(matches):
+            return matches[int(ans) - 1][0]
+        print("  invalid choice")
 
 async def find_device_by_selector(selector: str, timeout: float = 12.0):
     if selector.endswith("*"):
         prefix = selector[:-1]
-        dev = await BleakScanner.find_device_by_filter(
-            lambda dev, adv: ((dev.name or "").startswith(prefix) or
-                              (getattr(adv, "local_name", None) or "").startswith(prefix)),
-            timeout=timeout)
-        if dev:
-            return dev
-        return await BleakScanner.find_device_by_filter(
-            lambda dev, adv: adv_has_nus(adv),
-            timeout=3.0)
-    return await BleakScanner.find_device_by_name(selector, timeout=timeout)
+        match_fn = lambda dev, adv: _adv_name(dev, adv).startswith(prefix)
+    else:
+        match_fn = lambda dev, adv: _adv_name(dev, adv) == selector
+
+    matches = await scan_matching(match_fn, timeout=timeout)
+    if not matches and selector.endswith("*"):
+        matches = await scan_matching(lambda dev, adv: adv_has_nus(adv), timeout=3.0)
+    if not matches:
+        return None
+    if len(matches) == 1:
+        dev, adv = matches[0]
+        rssi = _adv_rssi(dev, adv)
+        print(f"  {_adv_name(dev, adv)}  {dev.address}  {rssi} dBm  [{_rssi_bar(rssi)}]")
+        return dev
+    return pick_device(matches)
 
 # ── EBF (eink binary frames) format ──────────────────────────────────────────
 # 16-byte header:  magic(4) width(2) height(2) fps(f32) n_frames(u32)
@@ -279,7 +356,8 @@ def fmt_time(seconds: float) -> str:
     s = int(seconds)
     return f"{s//60}:{s%60:02d}"
 
-def status_line(prefix, idx, total, disp_ms, fps_actual, pkt_b, skipped=None, src_fps=None):
+def status_line(prefix, idx, total, fps_actual, pkt_b, cyc_ms, disp_ms,
+                skipped=None, src_fps=None):
     bar_w = 20
     frac = idx / total if total > 0 else 0
     filled = int(bar_w * frac)
@@ -288,10 +366,25 @@ def status_line(prefix, idx, total, disp_ms, fps_actual, pkt_b, skipped=None, sr
     eta_s = (total - idx) / fps_actual if fps_actual > 0 else 0
     skip_part = f"  skip={skipped}({100*skipped/max(1,idx):.0f}%)" if skipped is not None else ""
     src_part = f"/{src_fps:.0f}" if src_fps else ""
+    # cyc = avg ACK-to-ACK period (end-to-end frame cost)
+    # disp = device-side share (busy-wait + SPI);  net = the rest (BLE/host)
+    net_ms = max(0.0, cyc_ms - disp_ms)
     return (f"\r{prefix} [{bar}] {idx:5d}/{total}"
             f"  {fps_actual:.1f}{src_part}fps{skip_part}"
-            f"  disp={disp_ms:3d}ms  pkt={pkt_b:5d}B"
-            f"  ETA {fmt_time(eta_s)}")
+            f"  cyc~{cyc_ms:3.0f} disp~{disp_ms:3.0f} net~{net_ms:3.0f}ms"
+            f"  pkt={pkt_b:5d}B  ETA {fmt_time(eta_s)}")
+
+def print_bottleneck(session):
+    """One-line verdict: is the frame rate limited by the display or by BLE?"""
+    cyc, disp = session.cycle_ms(), session.disp_ms_avg()
+    if cyc <= 0:
+        return
+    net = max(0.0, cyc - disp)
+    if disp >= net:
+        verdict = "display-bound: shorter LUT wave is the next win"
+    else:
+        verdict = "BLE-bound: bigger MTU / faster conn interval is the next win"
+    print(f"  cycle {cyc:.0f}ms = display {disp:.0f}ms + ble/host {net:.0f}ms → {verdict}")
 
 # ── BLE session ───────────────────────────────────────────────────────────────
 
@@ -304,14 +397,37 @@ def frame_crc(frame: bytes) -> int:
 
 
 class VStreamSession:
-    def __init__(self, client: BleakClient, mtu: int = 240):
+    """Pipelined sender: up to `window` frames may be in flight (sent but not
+    yet ACKed). The device processes the byte stream strictly in order and
+    ACKs each frame after its SPI write, so the ACK round-trip overlaps with
+    the next frame's BLE transfer instead of serializing with it."""
+
+    def __init__(self, client: BleakClient, mtu: int = 240, window: int = 3):
         self.client   = client
         self.mtu      = mtu
-        self._ack     = asyncio.Event()
+        self.window   = window
+        self._credits = asyncio.Semaphore(window)
+        self._drained = asyncio.Event()
+        self._drained.set()
+        self._ready   = asyncio.Event()
+        self._pending = []          # FIFO of (frame_no, expected_crc) awaiting ACK
         self._buf     = ""
-        self.last_ms  = 0
-        self.last_dec = -1
-        self.last_crc = -1
+        self.last_ms  = 0           # disp ms from most recent ACK
+        self.acked    = 0           # total frames ACKed by device
+        self.dead     = False       # set on ACK timeout
+        # Rolling diagnostics (last 20 ACKs): where does the frame cycle go?
+        self._ack_t   = deque(maxlen=21)   # ACK arrival timestamps
+        self._disp_h  = deque(maxlen=20)   # device-reported disp ms
+
+    def cycle_ms(self) -> float:
+        """Avg ms between ACKs — the real end-to-end frame period."""
+        if len(self._ack_t) < 2:
+            return 0.0
+        return 1000 * (self._ack_t[-1] - self._ack_t[0]) / (len(self._ack_t) - 1)
+
+    def disp_ms_avg(self) -> float:
+        """Avg device-side ms (busy-wait for previous wave + SPI + trigger)."""
+        return sum(self._disp_h) / len(self._disp_h) if self._disp_h else 0.0
 
     def _notify(self, _h, data: bytearray):
         self._buf += data.decode('utf-8', errors='replace')
@@ -319,26 +435,55 @@ class VStreamSession:
             line, self._buf = self._buf.split('\n', 1)
             line = line.strip()
             if line.startswith("TELE:vs"):
-                try:
-                    self.last_ms = int(line.split("ms=")[1].split()[0])
-                except Exception:
-                    pass
-                try:
-                    self.last_dec = int(line.split("dec=")[1].split()[0])
-                except Exception:
-                    self.last_dec = -1
-                try:
-                    self.last_crc = int(line.split("crc=")[1].split()[0], 16)
-                except Exception:
-                    self.last_crc = -1
-                self._ack.set()
+                self._on_ack(line)
             elif line:
+                if line.startswith("VSTREAM:ready"):
+                    self._ready.set()
                 print(f"\n  dev> {line}")
 
-    async def start(self):
+    def _on_ack(self, line: str):
+        try:
+            self.last_ms = int(line.split("ms=")[1].split()[0])
+        except Exception:
+            pass
+        try:
+            dec = int(line.split("dec=")[1].split()[0])
+        except Exception:
+            dec = -1
+        try:
+            crc = int(line.split("crc=")[1].split()[0], 16)
+        except Exception:
+            crc = -1
+
+        if dec >= 0 and dec != FB_SIZE:
+            print(f"\n  [WARN] incomplete decode: dec={dec}/{FB_SIZE}")
+        if self._pending:
+            frame_no, exp_crc = self._pending.pop(0)
+            if crc >= 0 and exp_crc is not None and crc != exp_crc:
+                print(f"\n  [CRC MISMATCH] frame {frame_no}: "
+                      f"expected={exp_crc:02x} device={crc:02x}")
+        self.acked += 1
+        self._ack_t.append(time.time())
+        self._disp_h.append(self.last_ms)
+        self._credits.release()
+        if not self._pending:
+            self._drained.set()
+
+    async def start(self, pre_cmds=()):
         await self.client.start_notify(NUS_TX, self._notify)
+        # Setup commands (e.g. LUTW: video LUT) must land before VSTREAM:start —
+        # the device loads the active LUT while priming the display.
+        for cmd in pre_cmds:
+            await self._raw(cmd)
+            await asyncio.sleep(0.3)   # device reply prints as a dev> line
+        self._ready.clear()
         await self._raw(b"VSTREAM:start\n")
-        await asyncio.sleep(0.4)
+        # Device primes the display before replying ready (deep-sleep wake +
+        # HV charge can take ~1s); don't start blasting frames until then.
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            print("  [WARN] no VSTREAM:ready within 10s — old firmware? continuing anyway")
 
     async def stop(self):
         await self._raw(VS_STOP)
@@ -353,22 +498,30 @@ class VStreamSession:
             await self.client.write_gatt_char(NUS_RX, data[off:off + self.mtu], response=False)
             await asyncio.sleep(0)
 
-    async def send(self, pkt: bytes, timeout: float = 8.0,
-                   expected_frame: bytes | None = None) -> int:
-        self._ack.clear()
-        await self._raw(pkt)
+    async def send(self, pkt: bytes, timeout: float = 15.0,
+                   expected_frame: bytes | None = None) -> bool:
+        """Queue one frame. Blocks only when the in-flight window is full
+        (i.e. the display is the bottleneck). Returns False on ACK timeout."""
         try:
-            await asyncio.wait_for(self._ack.wait(), timeout=timeout)
+            await asyncio.wait_for(self._credits.acquire(), timeout=timeout)
         except asyncio.TimeoutError:
             print("\n  [WARNING] ACK timeout — is device still connected?")
-            return -1
-        if self.last_dec >= 0 and self.last_dec != FB_SIZE:
-            print(f"\n  [WARN] incomplete decode: dec={self.last_dec}/{FB_SIZE}")
-        if expected_frame is not None and self.last_crc >= 0:
-            exp = frame_crc(expected_frame)
-            if exp != self.last_crc:
-                print(f"\n  [CRC MISMATCH] expected={exp:02x} device={self.last_crc:02x}")
-        return self.last_ms
+            self.dead = True
+            return False
+        exp_crc = frame_crc(expected_frame) if expected_frame is not None else None
+        self._pending.append((self.acked + len(self._pending) + 1, exp_crc))
+        self._drained.clear()
+        await self._raw(pkt)
+        return True
+
+    async def drain(self, timeout: float = 15.0) -> bool:
+        """Wait until every queued frame has been ACKed (end of playback)."""
+        try:
+            await asyncio.wait_for(self._drained.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            print(f"\n  [WARNING] drain timeout — {len(self._pending)} frames unACKed")
+            return False
 
 # ── playback engines ──────────────────────────────────────────────────────────
 
@@ -376,26 +529,30 @@ async def play_guaranteed(session: VStreamSession, frames, total: int,
                           enc: int, src_fps: float):
     """Send every frame; pace is dictated by display speed only."""
     prev, count = None, 0
+    acked0 = session.acked          # session persists across --loop iterations
     t0 = time.time()
     try:
         for idx, frame in frames:
             if frame is None:
                 continue
             pkt = make_packet(frame, enc, prev)
-            disp_ms = await session.send(pkt, expected_frame=frame)
-            if disp_ms < 0:
+            if not await session.send(pkt, expected_frame=frame):
                 break
             prev = frame
             count += 1
             elapsed = time.time() - t0
-            fps = count / elapsed if elapsed > 0 else 0
-            print(status_line("G", count, total, disp_ms, fps, len(pkt), src_fps=src_fps),
+            fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
+            print(status_line("G", count, total, fps, len(pkt),
+                              session.cycle_ms(), session.disp_ms_avg(),
+                              src_fps=src_fps),
                   end='', flush=True)
+        await session.drain()
     except KeyboardInterrupt:
         pass
     elapsed = time.time() - t0
-    fps = count / elapsed if elapsed > 0 else 0
+    fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
     print(f"\n  done: {count} frames in {elapsed:.1f}s = {fps:.2f}fps")
+    print_bottleneck(session)
 
 async def play_sync(session: VStreamSession, frames, total: int,
                     enc: int, src_fps: float):
@@ -403,6 +560,7 @@ async def play_sync(session: VStreamSession, frames, total: int,
     SKIP_TOL = 0.010   # 10ms tolerance before marking a frame as late
     prev = None
     count, skipped = 0, 0
+    acked0 = session.acked          # session persists across --loop iterations
     t0 = time.time()
     try:
         for idx, frame in frames:
@@ -414,34 +572,42 @@ async def play_sync(session: VStreamSession, frames, total: int,
                 skipped += 1
                 # Do NOT update prev: device still shows the last sent frame
                 elapsed = now - t0
-                fps = count / elapsed if elapsed > 0 else 0
-                print(status_line("S", count + skipped, total, 0, fps,
-                                  0, skipped, src_fps),
+                fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
+                print(status_line("S", count + skipped, total, fps, 0,
+                                  session.cycle_ms(), session.disp_ms_avg(),
+                                  skipped, src_fps),
                       end='', flush=True)
                 continue
 
             if frame is None:
                 continue
 
+            # Ahead of schedule (pipelined sends return immediately) — hold
+            # until this frame's timestamp so slow sources play at real speed.
+            if now < deadline:
+                await asyncio.sleep(deadline - now)
+
             pkt = make_packet(frame, enc, prev)
-            disp_ms = await session.send(pkt, expected_frame=frame)
-            if disp_ms < 0:
+            if not await session.send(pkt, expected_frame=frame):
                 break
             prev = frame
             count += 1
             elapsed = time.time() - t0
-            fps = count / elapsed if elapsed > 0 else 0
-            print(status_line("S", count + skipped, total, disp_ms, fps,
-                              len(pkt), skipped, src_fps),
+            fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
+            print(status_line("S", count + skipped, total, fps, len(pkt),
+                              session.cycle_ms(), session.disp_ms_avg(),
+                              skipped, src_fps),
                   end='', flush=True)
 
+        await session.drain()
     except KeyboardInterrupt:
         pass
     elapsed = time.time() - t0
-    fps = count / elapsed if elapsed > 0 else 0
+    fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
     shown_pct = 100 * count / (count + skipped) if (count + skipped) > 0 else 0
     print(f"\n  done: {count} shown, {skipped} skipped ({shown_pct:.0f}% shown)"
           f" in {elapsed:.1f}s = {fps:.2f}fps displayed")
+    print_bottleneck(session)
 
 # ── connect + play wrapper ────────────────────────────────────────────────────
 
@@ -490,8 +656,10 @@ async def run_play(args):
         samp_rle  = sum(len(packbits_encode(ebf[mid+i])) for i in range(S)) / S
         samp_drle = sum(len(packbits_encode(bytes(a^b for a,b in zip(ebf[mid+i], ebf[mid+i-1]))))
                         for i in range(1, S)) / (S-1)
-        fps_rle  = 1000 / (64 + 1000 * samp_rle  / BLE_BPS)
-        fps_drle = 1000 / (64 + 1000 * samp_drle / BLE_BPS)
+        # Pipelined: BLE transfer overlaps the display refresh, so the
+        # per-frame cost is max(LUT wave, transfer) + SPI write (~7ms).
+        fps_rle  = 1000 / (max(64, 1000 * samp_rle  / BLE_BPS) + 7)
+        fps_drle = 1000 / (max(64, 1000 * samp_drle / BLE_BPS) + 7)
         print(f"  rle~{samp_rle:.0f}B({fps_rle:.1f}fps)  drle~{samp_drle:.0f}B({fps_drle:.1f}fps)"
               f"  raw={FB_SIZE}B")
 
@@ -510,11 +678,17 @@ async def run_play(args):
         mtu_size = getattr(client, 'mtu_size', 247)
         mtu = max(20, mtu_size - 3)
         print(f"Connected  MTU={mtu}B  mode={args.mode}  enc={args.enc}"
-              f"  dither={args.dither}"
+              f"  window={args.window}  dither={args.dither}"
               f"  rotate={rot}°  scale={scale}\n")
 
-        session = VStreamSession(client, mtu=mtu)
-        await session.start()
+        session = VStreamSession(client, mtu=mtu, window=args.window)
+        pre_cmds = []
+        if args.lut == 'video':
+            pre_cmds.append(b"LUTW:" + LUT_VIDEO.hex().upper().encode() + b"\n")
+        elif args.lut == 'turbo':
+            pre_cmds.append(b"LUTUSE:0\n")   # builtin TURBO (112ms wave)
+        # 'keep': don't touch whatever LUT the device currently uses
+        await session.start(pre_cmds)
 
         loop_n = 0
         try:
@@ -639,7 +813,8 @@ def cmd_convert(args):
         ebf.close()
 
         def est_fps(b):
-            return 1000 / (DISP_MS + 1000 * b / BLE_BPS)
+            # Pipelined: transfer overlaps refresh → max(), plus ~7ms SPI write
+            return 1000 / (max(DISP_MS, 1000 * b / BLE_BPS) + 7)
 
         print(f"\nCompression sample (~frame {mid}, {S} frames):")
         print(f"  raw   {FB_SIZE:5d}B/frame")
@@ -725,6 +900,11 @@ def build_parser():
     pl.add_argument("--invert",     action="store_true", help="Invert B/W")
     pl.add_argument("--threshold",  type=int, default=127,
                     help="B/W threshold (video source only, default 127)")
+    pl.add_argument("--window",     type=int, default=3,
+                    help="Frames in flight before waiting for ACK (default 3, 1=old stop-and-wait)")
+    pl.add_argument("--lut",        default="video", choices=["video", "turbo", "keep"],
+                    help="video=upload 64ms LUT (fast, default)  turbo=builtin 112ms"
+                         "  keep=use whatever device has")
     pl.add_argument("--loop",       action="store_true", help="Loop forever")
 
     return p
