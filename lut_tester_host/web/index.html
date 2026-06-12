@@ -940,6 +940,9 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
             <input type="checkbox" id="enc-loop" style="accent-color:var(--accent)"> Loop
           </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)" title="Полностью закодировать все кадры перед отправкой (как EBF). Убирает дёрганость, но старт дольше.">
+            <input type="checkbox" id="enc-preenc" style="accent-color:var(--accent)"> Pre-encode
+          </label>
         </div>
       </div>
 
@@ -949,14 +952,15 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn ok big" id="btn-stream" onclick="toggleStream()">▶ Stream</button>
           <button class="btn bad" onclick="stopStream()">■ Stop</button>
           <button class="btn" onclick="previewFrame0()" title="Показать кадр 0 на превью">🔍 Превью</button>
+          <button class="btn" id="btn-audio" onclick="toggleStreamAudio()" title="Воспроизводить звук видео на устройстве (синхронно с потоком)">🔇 Звук</button>
           <span id="stream-st"></span>
         </div>
         <div class="pbar"><div class="pfill" id="stream-prog" style="width:0%"></div></div>
       </div>
 
-      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:120px">
-        <div class="ctitle">Лог стриминга</div>
-        <div class="con" id="anim-log" style="flex:1"></div>
+      <div class="card" style="flex:0 0 auto;display:flex;flex-direction:column;height:180px;min-height:100px;max-height:40vh">
+        <div class="ctitle" style="flex-shrink:0">Лог стриминга</div>
+        <div class="con" id="anim-log" style="flex:1;overflow-y:auto;min-height:0"></div>
       </div>
     </div>
 
@@ -1071,8 +1075,6 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
       </div>
     </div>
   </div>
-</div>
-
 </div>
 
 <!-- ══ TAB: SYSTEM / DFU ══ -->
@@ -1564,33 +1566,78 @@ function updateMtuDisplay() {
   if (e2) e2.textContent = label;
 }
 
+let _bleParallelWriteSupported = true; // cleared on first failure, avoids repeated attempts
+
 async function sendBytes(data, noResponse=false, abortRef=null) {
   if (!connected || !rxChar) return;
   const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
   let chunkSz = mtu - 3;
-  for (let i = 0; i < buf.length; ) {
-    if (abortRef?.abort) throw new Error(abortRef.reason ?? 'stopped');
-    const sz = Math.min(chunkSz, buf.length - i);
-    const chunk = buf.slice(i, i + sz);
+  if (noResponse && _bleParallelWriteSupported) {
+    // Streaming fast path: fire all chunks as quickly as possible without
+    // yielding the event loop between them. This queues them in Chrome's BLE
+    // write buffer so they land in consecutive connection events — matching
+    // bleak's tight write loop.
+    const chunks = [];
+    for (let i = 0; i < buf.length; i += chunkSz) {
+      chunks.push(buf.slice(i, Math.min(i + chunkSz, buf.length)));
+    }
+    let retry = false;
     try {
-      if (noResponse) {
-        await Promise.race([
-          rxChar.writeValueWithoutResponse(chunk),
-          new Promise((_, r) => setTimeout(() => r(new Error('chunk timeout')), 5000))
-        ]);
-      } else {
-        await rxChar.writeValueWithResponse(chunk);
-      }
-      i += sz;
+      const promises = chunks.map(chunk => rxChar.writeValueWithoutResponse(chunk));
+      await Promise.all(promises);
+      return; // success
     } catch (e) {
       if (e.name === 'InvalidModificationError' && chunkSz > 20) {
-        // First fallback targets the old-firmware MTU (247) instead of blind
-        // halving, so devices without the 498-MTU build still get full chunks.
         chunkSz = chunkSz > 244 ? 244 : Math.max(20, chunkSz >> 1);
         mtu = chunkSz + 3;
         updateMtuDisplay();
+        retry = true;
+      } else if (e.name === 'NetworkError' || e.name === 'NotSupportedError'
+                 || e.message?.includes('GATT operation already in progress')) {
+        // Browser doesn't support parallel writes; disable permanently & fall through
+        _bleParallelWriteSupported = false;
+        retry = true;
       } else {
         throw e;
+      }
+    }
+    if (!retry) return;
+    // Fall through to sequential
+  }
+  if (noResponse) {
+    for (let i = 0; i < buf.length; ) {
+      if (abortRef?.abort) throw new Error(abortRef.reason ?? 'stopped');
+      const sz = Math.min(chunkSz, buf.length - i);
+      const chunk = buf.slice(i, i + sz);
+      try {
+        await rxChar.writeValueWithoutResponse(chunk);
+        i += sz;
+      } catch (e) {
+        if (e.name === 'InvalidModificationError' && chunkSz > 20) {
+          chunkSz = chunkSz > 244 ? 244 : Math.max(20, chunkSz >> 1);
+          mtu = chunkSz + 3;
+          updateMtuDisplay();
+        } else {
+          throw e;
+        }
+      }
+    }
+  } else {
+    for (let i = 0; i < buf.length; ) {
+      if (abortRef?.abort) throw new Error(abortRef.reason ?? 'stopped');
+      const sz = Math.min(chunkSz, buf.length - i);
+      const chunk = buf.slice(i, i + sz);
+      try {
+        await rxChar.writeValueWithResponse(chunk);
+        i += sz;
+      } catch (e) {
+        if (e.name === 'InvalidModificationError' && chunkSz > 20) {
+          chunkSz = chunkSz > 244 ? 244 : Math.max(20, chunkSz >> 1);
+          mtu = chunkSz + 3;
+          updateMtuDisplay();
+        } else {
+          throw e;
+        }
       }
     }
   }
@@ -1640,10 +1687,23 @@ function appendLog(el, cls, pre, msg) {
   const d = document.createElement('div');
   d.innerHTML = `<span class="ts">${ts}</span> <span class="${cls}">${pre} ${esc(msg)}</span>`;
   el.appendChild(d);
-  el.scrollTop = el.scrollHeight;
+  // Defer scroll to avoid forced synchronous reflow in hot paths (streaming ACKs).
+  // RAF batches all pending scrolls into a single frame.
+  if (!el._scrollPending) {
+    el._scrollPending = true;
+    requestAnimationFrame(() => {
+      el._scrollPending = false;
+      el.scrollTop = el.scrollHeight;
+    });
+  }
   while (el.children.length > 500) el.removeChild(el.firstChild);
 }
-function logR(m) { appendLog($('main-con'),'rx','←',m); }
+function logR(m) {
+  // During streaming, suppress all received-line logging to avoid DOM thrashing.
+  // TELE:vs ACKs fire at ~7Hz and each DOM insert delays the credit-wake path.
+  if (streamRunning) return;
+  appendLog($('main-con'),'rx','←',m);
+}
 function logT(m) { appendLog($('main-con'),'tx','→',m); }
 function logI(m) { appendLog($('main-con'),'inf','·',m); }
 function logE(m) { appendLog($('main-con'),'err','!',m); }
@@ -1653,6 +1713,8 @@ function animLog(m){ appendLog($('anim-log'),'inf','·',m); }
 //  Telemetry parsing
 // ═══════════════════════════════════════════════════════════════════
 function parseTele(line) {
+  // During streaming, TELE:vs ACKs should not trigger full telemetry DOM updates
+  if (streamRunning && line.startsWith('TELE:vs')) return;
   const ms = key => { const m=line.match(new RegExp(`${key}=(\\d+)ms?`)); return m?+m[1]:null; };
   if (line.includes('fapply') || line.includes('FAPPLY')) { const v=ms('time'); if(v) tele.fap=v; }
   if (line.includes(':fast'))  { const v=ms('time'); if(v) tele.fast=v; }
@@ -2591,6 +2653,156 @@ setupDrop($('img-drop'),  f=>loadImg(f));
 setupDrop($('anim-drop'), f=>loadAnimFile(f));
 
 // ═══════════════════════════════════════════════════════════════════
+//  Stream Audio — воспроизведение звука видео синхронно с потоком
+//  Используем Web Audio API (AudioContext + AudioBuffer) чтобы
+//  не загружать второй <video> элемент и не мешать декодеру кадров.
+// ═══════════════════════════════════════════════════════════════════
+let streamAudioEnabled = false;
+let _audioCtx = null;          // AudioContext (создаётся один раз)
+let _audioBuffer = null;       // декодированный AudioBuffer текущего файла
+let _audioSource = null;       // текущий AudioBufferSourceNode
+let _audioStartTime = 0;       // ctx.currentTime в момент старта
+let _audioStartOffset = 0;     // offset в аудио-буфере в момент старта
+let _audioPlaying = false;
+let _audioSyncMode = 'sync';
+let _audioNominalFps = 30;
+let _audioTotalFrames = 1;
+let _audioLastSyncMs = 0;
+let _audioFrameTimes = [];
+let _audioFileUrl = null;      // URL файла для которого декодирован буфер
+
+function toggleStreamAudio() {
+  streamAudioEnabled = !streamAudioEnabled;
+  const btn = $('btn-audio');
+  if (streamAudioEnabled) {
+    btn.textContent = '🔊 Звук';
+    btn.className = 'btn acc';
+    animLog('🔊 Звук включён — будет воспроизводиться при стриме');
+  } else {
+    btn.textContent = '🔇 Звук';
+    btn.className = 'btn';
+    stopStreamAudio();
+    animLog('🔇 Звук выключен');
+  }
+}
+
+// Декодировать аудио из видео-файла (вызывается при загрузке файла)
+async function prepareStreamAudioBuffer() {
+  if (!animVideoEl || !animVideoEl.src) { _audioBuffer = null; return; }
+  if (animVideoEl.src === _audioFileUrl && _audioBuffer) return; // уже декодировано
+
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const resp = await fetch(animVideoEl.src);
+    const arrBuf = await resp.arrayBuffer();
+    _audioBuffer = await _audioCtx.decodeAudioData(arrBuf);
+    _audioFileUrl = animVideoEl.src;
+    animLog(`🔊 Аудио декодировано: ${_audioBuffer.duration.toFixed(1)}с, ${_audioBuffer.numberOfChannels}ch`);
+  } catch (e) {
+    _audioBuffer = null;
+    _audioFileUrl = null;
+    // Файл без аудио-трека — не ошибка, просто нечего играть
+    animLog(`🔇 Аудио: нет аудио-дорожки или не удалось декодировать`);
+  }
+}
+
+function _audioCreateSource(offset) {
+  if (!_audioCtx || !_audioBuffer) return;
+  if (_audioSource) { try { _audioSource.stop(); } catch {} _audioSource = null; }
+  _audioSource = _audioCtx.createBufferSource();
+  _audioSource.buffer = _audioBuffer;
+  _audioSource.connect(_audioCtx.destination);
+  _audioStartOffset = Math.max(0, Math.min(offset, _audioBuffer.duration));
+  _audioSource.start(0, _audioStartOffset);
+  _audioStartTime = _audioCtx.currentTime;
+  _audioPlaying = true;
+}
+
+// Запуск аудио при старте стрима
+async function startStreamAudio(syncMode, fps) {
+  if (!streamAudioEnabled) return;
+  if (!animVideoEl || !animVideoEl.src) return;
+
+  _audioSyncMode = syncMode;
+  _audioNominalFps = fps;
+  _audioFrameTimes = [];
+  _audioLastSyncMs = 0;
+
+  // Декодируем если ещё не декодировали
+  await prepareStreamAudioBuffer();
+  if (!_audioBuffer) return;
+
+  if (_audioCtx.state === 'suspended') await _audioCtx.resume();
+
+  if (syncMode === 'sync') {
+    // Sync: стартуем сразу с позиции 0
+    _audioCreateSource(0);
+    animLog('🔊 Аудио: sync режим, нормальная скорость');
+  } else {
+    // Guaranteed: стартуем, но скорость будем подстраивать
+    _audioCreateSource(0);
+    animLog('🔊 Аудио: guaranteed режим, скорость подстраивается под кадры');
+  }
+}
+
+// Синхронизация аудио по прогрессу кадров
+function syncStreamAudio(frameIdx, totalFrames, nominalFps, syncMode) {
+  if (!streamAudioEnabled || !_audioBuffer || !_audioCtx) return;
+  if (!_audioPlaying) return;
+
+  const videoDuration = _audioBuffer.duration;
+  const targetTime = (frameIdx / totalFrames) * videoDuration;
+
+  if (syncMode === 'sync') {
+    // Sync: аудио играет само, только корректируем при сильном дрейфе
+    const currentPos = _audioStartOffset + (_audioCtx.currentTime - _audioStartTime);
+    const drift = Math.abs(currentPos - targetTime);
+    if (drift > 0.3) {
+      // Пересоздать source с новой позиции
+      _audioCreateSource(targetTime);
+    }
+  } else {
+    // Guaranteed: подстраиваем playbackRate через пересоздание source
+    const now = performance.now();
+    _audioFrameTimes.push(now);
+    if (_audioFrameTimes.length > 12) _audioFrameTimes.shift();
+
+    if (_audioFrameTimes.length >= 3) {
+      const dt = (_audioFrameTimes[_audioFrameTimes.length - 1] - _audioFrameTimes[0]) / (_audioFrameTimes.length - 1);
+      const realFps = 1000 / dt;
+      const rate = clamp(realFps / nominalFps, 0.25, 4.0);
+
+      // Обновляем playbackRate на source (меняется без пересоздания)
+      if (_audioSource && now - _audioLastSyncMs > 300) {
+        _audioLastSyncMs = now;
+        const currentRate = _audioSource.playbackRate.value;
+        const smoothed = currentRate * 0.65 + rate * 0.35;
+        _audioSource.playbackRate.value = clamp(smoothed, 0.25, 4.0);
+      }
+
+      // Корректировать позицию при дрейфе > 500ms
+      const currentPos = _audioStartOffset +
+        (_audioCtx.currentTime - _audioStartTime) * (_audioSource ? _audioSource.playbackRate.value : 1);
+      const drift = Math.abs(currentPos - targetTime);
+      if (drift > 0.5) {
+        _audioCreateSource(targetTime);
+        if (_audioSource) _audioSource.playbackRate.value = clamp(realFps / nominalFps, 0.25, 4.0);
+      }
+    }
+  }
+}
+
+function stopStreamAudio() {
+  _audioFrameTimes = [];
+  _audioLastSyncMs = 0;
+  _audioPlaying = false;
+  if (_audioSource) {
+    try { _audioSource.stop(); } catch {}
+    _audioSource = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  VStream — animation streaming
 // ═══════════════════════════════════════════════════════════════════
 function cancelAnimProducer() {
@@ -2638,9 +2850,40 @@ async function loadAnimFile(file) {
     animFileType = 'video';
     animPreEncoded = null; // invalidate cache on new file
     await new Promise(res => { animVideoEl.onloadedmetadata=res; });
-    const userFps = parseFloat($('enc-fps').value)||12;
+    // Detect real FPS: use requestVideoFrameCallback to measure frame interval
+    let detectedFps = 0;
+    if ('requestVideoFrameCallback' in animVideoEl) {
+      try {
+        detectedFps = await new Promise((resolve) => {
+          const times = [];
+          let cbId;
+          const onFrame = (now, meta) => {
+            if (Number.isFinite(meta.mediaTime)) times.push(meta.mediaTime);
+            if (times.length >= 6) {
+              animVideoEl.pause();
+              const dt = (times[times.length-1] - times[0]) / (times.length - 1);
+              resolve(dt > 0 ? Math.round(1 / dt) : 0);
+            } else {
+              cbId = animVideoEl.requestVideoFrameCallback(onFrame);
+            }
+          };
+          animVideoEl.currentTime = 0;
+          animVideoEl.playbackRate = 1;
+          cbId = animVideoEl.requestVideoFrameCallback(onFrame);
+          animVideoEl.play().catch(() => resolve(0));
+          // Timeout fallback
+          setTimeout(() => { try { animVideoEl.pause(); } catch{} resolve(0); }, 3000);
+        });
+        animVideoEl.pause();
+        animVideoEl.currentTime = 0;
+      } catch { detectedFps = 0; }
+    }
+    if (!detectedFps) detectedFps = 30; // safe fallback for most video
+    const userFps = parseFloat($('enc-fps').value) || detectedFps;
     animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * userFps));
-    info.textContent = `Видео: ${file.name} | ~${animTotalFrames} кадров @ ${userFps}fps`;
+    info.textContent = `Видео: ${file.name} | ~${animTotalFrames} кадров @ ${userFps}fps${userFps===detectedFps?' (auto)':''}`;
+    // Store detected fps so startStream can use it
+    animVideoEl._detectedFps = detectedFps;
   } else {
     const url = URL.createObjectURL(file);
     animImgEl = new Image();
@@ -2663,26 +2906,29 @@ async function startScreenShare() {
   try {
     animScreenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 30 },
-      audio: false,
+      audio: streamAudioEnabled,
     });
     if (!animVideoEl) {
       animVideoEl = document.createElement('video');
-      animVideoEl.muted = true;
       animVideoEl.style.display = 'none';
       document.body.appendChild(animVideoEl);
     }
+    // Если захвачен аудио-трек и звук включён — воспроизводим
+    const hasAudio = animScreenStream.getAudioTracks().length > 0;
+    animVideoEl.muted = !hasAudio || !streamAudioEnabled;
     animVideoEl.srcObject = animScreenStream;
     await animVideoEl.play();
     animFileType = 'screen';
     animTotalFrames = 0;
     const track = animScreenStream.getVideoTracks()[0];
     const s = track.getSettings();
-    $('anim-info').textContent = `Screen: ${s.width||'?'}×${s.height||'?'} @ ${s.frameRate||'?'}fps`;
+    const audioNote = hasAudio && streamAudioEnabled ? ' + 🔊 audio' : '';
+    $('anim-info').textContent = `Screen: ${s.width||'?'}×${s.height||'?'} @ ${s.frameRate||'?'}fps${audioNote}`;
     $('screen-st').textContent = '🔴 Захват активен';
     $('btn-screen').textContent = '⏹ Стоп Screen';
     $('btn-screen').className = 'btn bad big';
     track.addEventListener('ended', stopScreenShare);
-    logI(`Screen capture started: ${s.width}×${s.height}`);
+    logI(`Screen capture started: ${s.width}×${s.height}${audioNote}`);
   } catch(e) {
     logE('Screen capture: ' + e.message);
   }
@@ -2712,6 +2958,7 @@ function stopStream() {
   streamStop=true;
   if(streamSendCancel) { streamSendCancel(); streamSendCancel=null; }
   cancelAnimProducer();
+  stopStreamAudio();
   vsAbort(); // wake credit/drain waiters so the loop exits promptly
 }
 
@@ -2722,7 +2969,8 @@ async function startStream() {
   $('btn-stream').textContent='⏸ Pause';
 
   const encType  = parseInt($('enc-type').value);
-  const fps      = parseFloat($('enc-fps').value)||12;
+  const detectedFps = (animVideoEl && animVideoEl._detectedFps) || 30;
+  const fps      = parseFloat($('enc-fps').value) || detectedFps;
   const renderMode = currentAnimRenderMode();
   const toneVideo = renderMode !== 'mono';
   const toneServo = renderMode === 'tone-servo';
@@ -2748,6 +2996,9 @@ async function startStream() {
 
   // Start a bounded background encoder for video: wait only for a small startup
   // buffer, then stream while decoding continues ahead of the BLE/display loop.
+  // In pre-encode mode: wait for ALL frames before connecting to device — ensures
+  // zero decode jitter during playback (identical to vstream.py EBF behavior).
+  const preEncode = $('enc-preenc').checked;
   if (animFileType === 'video') {
     animPreEncoded = null;
     let waitingForBuffer = true;
@@ -2759,31 +3010,56 @@ async function startStream() {
       : null;
     animFrameProducer = startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, s => {
       if (!waitingForBuffer || streamStop) return;
-      const need = Math.max(1, s.startBuffer);
+      const need = preEncode ? s.total : Math.max(1, s.startBuffer);
       $('stream-prog').style.width = (Math.min(s.ready, need)/need*100).toFixed(0)+'%';
-      $('stream-st').textContent = `Буфер ${Math.min(s.ready, need)}/${need}`;
+      $('stream-st').textContent = preEncode
+        ? `Pre-encode ${s.ready}/${s.total} (${(s.ready/s.total*100).toFixed(0)}%)`
+        : `Буфер ${Math.min(s.ready, need)}/${need}`;
     }, encodeFrame, !toneVideo, previewFrame);
     if (animFrameProducer) {
       const s0 = animFrameProducer.stats();
-      animLog(`⏳ Буферизую ${s0.startBuffer} кадров, дальше кодирование пойдёт в фоне`);
-      $('stream-st').textContent = 'Буферизую…';
-      const ok = await animFrameProducer.waitForStart(10000);
-      waitingForBuffer = false;
-      if (streamStop) {
-        cancelAnimProducer();
-        streamRunning=false; streamStop=false;
-        $('btn-stream').textContent='▶ Stream';
-        $('stream-st').textContent='Остановлено';
-        $('stream-prog').style.width='0%';
-        return;
-      }
-      const s = animFrameProducer.stats();
-      if (ok) {
-        animTotalFrames = s.total;
-        animLog(`▶ Старт с буфером ${s.ready}/${s.total}; лимит ahead=${s.maxAhead} кадров`);
+      if (preEncode) {
+        animLog(`⏳ Pre-encode: кодирую все ${s0.total} кадров заранее…`);
+        $('stream-st').textContent = 'Pre-encode…';
+        const ok = await animFrameProducer.waitForAll(300000);
+        waitingForBuffer = false;
+        if (streamStop) {
+          cancelAnimProducer();
+          streamRunning=false; streamStop=false;
+          $('btn-stream').textContent='▶ Stream';
+          $('stream-st').textContent='Остановлено';
+          $('stream-prog').style.width='0%';
+          return;
+        }
+        const s = animFrameProducer.stats();
+        if (ok && s.ready === s.total) {
+          animTotalFrames = s.total;
+          animLog(`✓ Pre-encode готов: ${s.total} кадров в памяти`);
+        } else {
+          animLog(`⚠ Pre-encode: готово ${s.ready}/${s.total} — стримлю что есть`);
+          animTotalFrames = s.total;
+        }
       } else {
-        animLog('⚠ Фоновое кодирование не стартовало за 10с — seek-режим');
-        cancelAnimProducer();
+        animLog(`⏳ Буферизую ${s0.startBuffer} кадров, дальше кодирование пойдёт в фоне`);
+        $('stream-st').textContent = 'Буферизую…';
+        const ok = await animFrameProducer.waitForStart(10000);
+        waitingForBuffer = false;
+        if (streamStop) {
+          cancelAnimProducer();
+          streamRunning=false; streamStop=false;
+          $('btn-stream').textContent='▶ Stream';
+          $('stream-st').textContent='Остановлено';
+          $('stream-prog').style.width='0%';
+          return;
+        }
+        const s = animFrameProducer.stats();
+        if (ok) {
+          animTotalFrames = s.total;
+          animLog(`▶ Старт с буфером ${s.ready}/${s.total}; лимит ahead=${s.maxAhead} кадров`);
+        } else {
+          animLog('⚠ Фоновое кодирование не стартовало за 10с — seek-режим');
+          cancelAnimProducer();
+        }
       }
     } else {
       animLog('⚠ requestVideoFrameCallback не поддерживается — seek-режим');
@@ -2803,10 +3079,14 @@ async function startStream() {
     : `1bpp ${dith ? 'dither' : 'threshold'} lut=${lut}`;
   animLog(`▶ VSTREAM:start:${lut} | ${renderInfo} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
 
+  // Запускаем аудио-сопровождение если включено
+  await startStreamAudio(syncMode, fps);
+
   let prev=null, loop_n=0;
   const t0 = performance.now();
   let framesDone=0;  // frames sent (vs.acked = frames confirmed by device)
   let resyncs=0;
+  let lastUiUpdate=0; // throttle DOM updates to ~8fps to avoid layout thrashing
 
   const statusTxt = (head, pktLen, extra='') => {
     const elapsed=(performance.now()-t0)/1000;
@@ -2881,35 +3161,63 @@ async function startStream() {
 
         let i=0;
         while (i < animTotalFrames && !streamStop) {
-          // sync mode: hold to the source timeline — with pipelining the send
-          // returns early, so slow sources would otherwise play too fast.
           if (syncMode==='sync') {
+            // Mirror vstream.py play_sync: check each frame's deadline sequentially.
+            // Skip frames that are already late (don't send them), but always send
+            // the latest non-late frame. This ensures even spacing and minimal
+            // visual jumps — exactly how Python iterates through all frames.
+            const now = performance.now();
             const deadline = t0 + (i/fps)*1000;
+
+            if (now > deadline + 10) {
+              // This frame is late — skip without sending (don't update prev)
+              i++;
+              continue;
+            }
+
+            // This frame is on time or early — get it and send
+            const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale, toneState);
+            if (!fr) { i++; continue; }
+
+            // Sleep until deadline if we're early (frame ready, wait to send)
             const ahead = deadline - performance.now();
-            if (ahead > 5) await sleep(ahead);
-          }
-          const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale, toneState);
-          if (!fr) { i++; continue; }
-          const pktLen = await sendFrame(fr);
-          if (pktLen === null) break outer;
-          const elapsed = (performance.now()-t0)/1000;
+            if (ahead > 2) await sleep(ahead);
 
-          let skipped=0;
-          if (syncMode==='sync') {
-            const targetFrame = Math.floor(elapsed * fps);
-            if (targetFrame > i+1) { skipped=targetFrame-(i+1); i=targetFrame; }
-            else i++;
-          } else {
+            const pktLen = await sendFrame(fr);
+            if (pktLen === null) break outer;
             i++;
-          }
+            syncStreamAudio(i, animTotalFrames, fps, syncMode);
 
-          const pct = (i/animTotalFrames*100).toFixed(0);
-          $('stream-prog').style.width = pct+'%';
-          $('stream-st').textContent =
-            statusTxt(`[${i}/${animTotalFrames}]`, pktLen, skipped>0?` | ⏭${skipped}`:'');
-          if (framesDone%20===0)
-            animLog(statusTxt(`Frame ${i}/${animTotalFrames} |`, pktLen,
-                              skipped>0?` | skip=${skipped}`:''));
+            const pct = (i/animTotalFrames*100).toFixed(0);
+            const _now2 = performance.now();
+            if (_now2 - lastUiUpdate > 125) {
+              lastUiUpdate = _now2;
+              $('stream-prog').style.width = pct+'%';
+              $('stream-st').textContent =
+                statusTxt(`[${i}/${animTotalFrames}]`, pktLen);
+            }
+            if (framesDone%20===0)
+              animLog(statusTxt(`Frame ${i}/${animTotalFrames} |`, pktLen));
+          } else {
+            // Guaranteed mode: send every frame, paced only by device ACKs
+            const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale, toneState);
+            if (!fr) { i++; continue; }
+            const pktLen = await sendFrame(fr);
+            if (pktLen === null) break outer;
+            i++;
+            syncStreamAudio(i, animTotalFrames, fps, syncMode);
+
+            const pct = (i/animTotalFrames*100).toFixed(0);
+            const _now2 = performance.now();
+            if (_now2 - lastUiUpdate > 125) {
+              lastUiUpdate = _now2;
+              $('stream-prog').style.width = pct+'%';
+              $('stream-st').textContent =
+                statusTxt(`[${i}/${animTotalFrames}]`, pktLen);
+            }
+            if (framesDone%20===0)
+              animLog(statusTxt(`Frame ${i}/${animTotalFrames} |`, pktLen));
+          }
         }
         if (!loop || streamStop) break;
         animLog(`Loop ${loop_n} завершён`);
@@ -2920,6 +3228,7 @@ async function startStream() {
   } catch(e) { animLog('Ошибка: '+e.message); logE(e.message); }
   finally {
     cancelAnimProducer();
+    stopStreamAudio();
     // Video/animation finish: stop binary stream and let firmware restore saver.
     try { await sendBytes(VS_STOP_VIDEO, true); } catch(e) {}
     await sleep(300);
@@ -3004,6 +3313,7 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
   let lastTarget = -1;
   let lastFrame = null;
   let done = false, canceled = false, failed = false, pausedForBuffer = false;
+  let noThrottle = false; // set by waitForAll to disable pause-on-ahead
   let lastProgressAt = 0;
   const indexWaiters = new Map();
   const startWaiters = [];
@@ -3085,7 +3395,7 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
   }
 
   function maybeThrottle() {
-    if (done || canceled || failed) return;
+    if (done || canceled || failed || noThrottle) return;
     const a = ahead();
     if (!pausedForBuffer && a >= maxAhead) {
       pausedForBuffer = true;
@@ -3221,6 +3531,33 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
       indexWaiters.clear();
       wakeStartWaiters(false);
       emitProgress(true);
+    },
+    // Wait until ALL frames have been encoded (for pre-encode mode).
+    // Disables the ahead-throttle so the video runs at max speed without pausing.
+    waitForAll(timeoutMs=300000) {
+      // Disable throttle: let video run at full playbackRate without pausing
+      noThrottle = true;
+      pausedForBuffer = false;
+      if (done) { return Promise.resolve(ready === total); }
+      if (failed || canceled) { return Promise.resolve(false); }
+      // Resume video if it was paused by throttle
+      try { video.play().catch(()=>{}); } catch {}
+      return new Promise(resolve => {
+        let settled = false;
+        const finish = ok => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          clearInterval(poll);
+          resolve(!!ok);
+        };
+        const timer = setTimeout(() => finish(ready === total || done), timeoutMs);
+        // Poll: check every 100ms if done
+        const poll = setInterval(() => {
+          if (done || ready === total) { finish(true); }
+          else if (failed || canceled) { finish(false); }
+        }, 100);
+      });
     },
   };
 
