@@ -553,13 +553,27 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <option value="tone">Тона / импульсы</option>
           </select>
           <button class="btn acc" id="send-bwr" onclick="sendCanvas()">↑ Отправить</button>
-          <span id="tone-send-controls" style="display:none;align-items:center;gap:5px">
+          <span id="tone-send-controls" style="display:none;align-items:center;gap:5px;flex-wrap:wrap">
             <select id="tone-pulses" title="Количество тоновых импульсов" onchange="renderImg()">
               <option value="4">4 тона</option>
               <option value="8" selected>8 тонов</option>
               <option value="12">12 тонов</option>
               <option value="16">16 тонов</option>
             </select>
+            <span style="display:flex;align-items:center;gap:4px;font-size:10px"
+                  title="Сила одного импульса в симуляции превью: насколько темнеет пиксель за один проход. Подбери так, чтобы превью совпало с реальным экраном.">
+              <span style="color:var(--fg2);white-space:nowrap">Сила имп.</span>
+              <input type="range" id="tone-pulse-str" min="1" max="60" value="36" step="1"
+                     style="width:70px" oninput="$('tone-pstr-val').textContent=this.value;renderImg()">
+              <span id="tone-pstr-val" style="color:var(--yellow);font-variant-numeric:tabular-nums;min-width:18px">36</span>
+            </span>
+            <span style="display:flex;align-items:center;gap:4px;font-size:10px"
+                  title="Белые компенсирующие импульсы (TONE_LIGHT LUT) после тёмных проходов. Осветляют пиксели с малым числом тёмных импульсов, компенсируя общий дрейф в тёмную сторону.">
+              <span style="color:var(--vgl);white-space:nowrap">☀ Белый</span>
+              <input type="range" id="tone-light-passes" min="0" max="8" value="0" step="1"
+                     style="width:60px" oninput="$('tone-light-val').textContent=this.value;renderImg()">
+              <span id="tone-light-val" style="color:var(--vgl);font-variant-numeric:tabular-nums;min-width:12px">0</span>
+            </span>
             <button class="btn pur" onclick="sendCanvasTone()">↑ Отправить</button>
           </span>
         </div>
@@ -1747,17 +1761,46 @@ function ieProcessTonePreview(id) {
   const d = id.data;
   const n = 296 * 128;
   const lut = makeAdjustLut();
-  const maxPulse = parseInt($('tone-pulses')?.value) || 8;
-  const inv = $('ie-inv').checked;
+  const maxPulse    = parseInt($('tone-pulses')?.value) || 8;
+  const lightPasses = parseInt($('tone-light-passes')?.value ?? 0) || 0;
+  const inv         = $('ie-inv').checked;
+
+  // Симуляция накопительного потемнения e-ink:
+  // brightness *= (1 - str) за каждый тёмный импульс.
+  const pulseStr = (+($('tone-pulse-str')?.value ?? 36)) / 100;
+  // Белые импульсы — симметричное осветление: brightness /= (1 - str) но не выше 255.
+  // Пиксели с pulseCount <= lightPass получают осветляющий импульс.
+  const lightStr = pulseStr; // симметрично — та же сила в обратную сторону
+
+  // Сначала вычисляем levels через обратную ф-ию (так же как canvasToToneLevels)
+  const logBase = Math.log(1 - pulseStr);
+  const tempLevels = new Float32Array(n);
 
   for (let i = 0; i < n; i++) {
     const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
     const gray = lut[(0.299*r + 0.587*g + 0.114*b) | 0];
     const dark = inv ? gray / 255 : (255 - gray) / 255;
-    const level = clamp(Math.round(dark * maxPulse), 0, maxPulse);
-    const v = 255 - Math.round(level * 255 / Math.max(1, maxPulse));
+    let nl;
+    if (dark <= 0)      nl = 0;
+    else if (dark >= 1) nl = maxPulse;
+    else                nl = Math.log(1 - dark) / logBase;
+    tempLevels[i] = clamp(Math.round(nl), 0, maxPulse);
+  }
 
-    d[i*4] = d[i*4+1] = d[i*4+2] = v;
+  for (let i = 0; i < n; i++) {
+    const pulseCount = tempLevels[i];
+
+    // Тёмные проходы: brightness *= (1-str)^pulseCount
+    let brightness = 255 * Math.pow(1 - pulseStr, pulseCount);
+
+    // Белые проходы: пиксель получает осветляющий импульс если его pulseCount <= lightPass-порог
+    for (let lp = 0; lp < lightPasses; lp++) {
+      if (pulseCount <= lp) {
+        brightness = Math.min(255, brightness / (1 - lightStr));
+      }
+    }
+
+    d[i*4] = d[i*4+1] = d[i*4+2] = Math.round(Math.max(0, Math.min(255, brightness)));
     d[i*4+3] = 255;
   }
 }
@@ -1903,13 +1946,42 @@ function canvasToToneLevels(maxPulse) {
   const lut = src.raw ? makeAdjustLut() : null;
   const inv = src.raw && $('ie-inv').checked;
 
+  // Обратная передаточная функция физической панели.
+  //
+  // Превью симулирует реальный отклик как:
+  //   brightness = (1 - str)^N,  где str = pulseStr/100
+  //
+  // Значит физическая яркость при N импульсах = (1-str)^N * 255.
+  // Нам нужно найти N при заданной целевой яркости target:
+  //   target/255 = (1-str)^N
+  //   N = log(target/255) / log(1-str)
+  //
+  // Это и есть обратная функция — преобразуем линейную тёмность пикселя
+  // в количество импульсов, которое физически даст нужный результат.
+  // Слайдер «Сила имп.» калибрует модель: при str=36 превью совпадает
+  // с реальным экраном, значит обратная функция тоже верна.
+  const pulseStr = (+($('tone-pulse-str')?.value ?? 36)) / 100;
+  const logBase = Math.log(1 - pulseStr); // отрицательное число
+
   for (let i = 0; i < levels.length; i++) {
     const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
     let gray = (0.299*r + 0.587*g + 0.114*b) | 0;
     if (lut) gray = lut[gray];
 
     const dark = inv ? gray / 255 : (255 - gray) / 255;
-    levels[i] = clamp(Math.round(dark * maxPulse), 0, maxPulse);
+
+    let n;
+    if (dark <= 0) {
+      n = 0;                  // белый пиксель — 0 импульсов
+    } else if (dark >= 1) {
+      n = maxPulse;           // чёрный пиксель — максимум импульсов
+    } else {
+      // Нужная яркость: (1 - dark) * 255, т.е. target_brightness/255 = 1 - dark
+      // N = log(1 - dark) / log(1 - str)
+      n = Math.log(1 - dark) / logBase;
+    }
+
+    levels[i] = clamp(Math.round(n), 0, maxPulse);
   }
 
   return levels;
@@ -1933,6 +2005,36 @@ function toneLevelsToFrame(levels, pass) {
   return buf;
 }
 
+// Белый компенсирующий кадр для TONE_LIGHT LUT.
+// Пиксели которые получили мало тёмных импульсов (toneLevel < threshold)
+// отправляются белыми — BW RAM = 0xFF означает «белый» для TONE_LIGHT.
+// pass=0: осветляем только пиксели у которых level=0 (чисто белые)
+// pass=1: level<=1, pass=2: level<=2, итд — расширяем зону осветления.
+function toneLevelsToFrameLight(levels, maxPulse, lightPass) {
+  // Порог: осветляем пиксели чья тёмность ≤ lightThreshold.
+  // При lightPass=0 — только уровень 0 (белые пиксели), при lightPass=k — всё до k.
+  const threshold = lightPass;
+  const buf = new Uint8Array(FB_SIZE).fill(0xFF); // 0xFF = белый
+
+  for (let ly = 0; ly < DISP_W; ly++) {
+    for (let lx = 0; lx < DISP_H; lx++) {
+      const level = levels[ly * 296 + lx];
+      // Пиксели ВЫШЕ порога (тёмные) — не осветляем, ставим 0x00 (чёрный в BW RAM)
+      // чтобы TONE_LIGHT LUT их не трогал (LUT1 white: no-op для них)
+      if (level > threshold) {
+        const phx = DISP_W - 1 - ly;
+        const phy = lx;
+        const bi  = phy * 16 + (phx >> 3);
+        const msk = 1 << (7 - (phx & 7));
+        buf[bi] &= ~msk; // 0 = чёрный пиксель → TONE_LIGHT оставляет его как есть
+      }
+      // Пиксели ≤ порога остаются 0xFF (белый) → TONE_LIGHT даёт им VSL импульс → осветление
+    }
+  }
+
+  return buf;
+}
+
 async function sendCanvas() {
   if (!connected) { alert('Не подключено'); return; }
   const ctx = $('disp-canvas').getContext('2d');
@@ -1944,16 +2046,17 @@ async function sendCanvasTone() {
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
 
-  const maxPulse = parseInt($('tone-pulses').value) || 8;
-  const levels = canvasToToneLevels(maxPulse);
-  const usedMax = levels.reduce((m, v) => Math.max(m, v), 0);
+  const maxPulse   = parseInt($('tone-pulses').value) || 8;
+  const lightPasses = parseInt($('tone-light-passes')?.value ?? 0) || 0;
+  const levels     = canvasToToneLevels(maxPulse);
+  const usedMax    = levels.reduce((m, v) => Math.max(m, v), 0);
   let prev = null;
 
   streamRunning = true;
   streamStop = false;
   vsReset();
 
-  logI(`Отправляю canvas тонами: ${maxPulse} импульсов, max=${usedMax}`);
+  logI(`Отправляю canvas тонами: ${maxPulse} тёмных + ${lightPasses} белых импульсов, max=${usedMax}`);
 
   try {
     await sendBytes(new TextEncoder().encode('HOST:1\n'));
@@ -1974,6 +2077,7 @@ async function sendCanvasTone() {
       logI('  не дождался TELE:full, продолжаю после таймаута');
     }
 
+    // ── Тёмные проходы (TONE_DARK) ──────────────────────────────────────
     const lutWait = waitForLine(line => line.startsWith('LUTSET:TONE_DARK'), 2500);
     await sendBytes(new TextEncoder().encode('LUTSET:TONE_DARK\n'));
     await lutWait;
@@ -1994,17 +2098,55 @@ async function sendCanvasTone() {
       await sendBytesStream(pkt);
       prev = frame;
 
-      const pct = Math.round((pass + 1) * 100 / maxPulse);
-      logI(`  tone pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${pkt.length}B`);
+      const pct = Math.round((pass + 1) * 100 / (maxPulse + lightPasses));
+      logI(`  dark pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${pkt.length}B`);
     }
 
     await vsDrain(20000);
-    logI('canvas отправлен тонами');
+
+    // ── Белые компенсирующие проходы (TONE_LIGHT) ────────────────────────
+    if (lightPasses > 0 && !streamStop) {
+      logI(`  переключаю на TONE_LIGHT для ${lightPasses} белых проходов...`);
+
+      // Завершаем тёмный стрим, переключаем LUT, стартуем новый
+      try { await sendBytes(VS_STOP_PHOTO, true); } catch(e) {}
+      await sleep(300);
+
+      const lutLightWait = waitForLine(line => line.startsWith('LUTSET:TONE_LIGHT'), 2500);
+      await sendBytes(new TextEncoder().encode('LUTSET:TONE_LIGHT\n'));
+      await lutLightWait;
+
+      const readyLightWait = vsWaitReady(12000);
+      await sendBytes(new TextEncoder().encode('VSTREAM:start:TONE_LIGHT\n'));
+      if (!await readyLightWait) {
+        logI('  нет VSTREAM:ready (light) за 12с, продолжаю');
+      }
+
+      prev = null;
+      for (let lp = 0; lp < lightPasses && !streamStop; lp++) {
+        if (!await vsAcquireCredit(15000)) {
+          throw new Error('нет ACK/credit для light frame');
+        }
+
+        // Белый проход: осветляем пиксели у которых мало тёмных импульсов.
+        // С каждым проходом расширяем зону осветления (порог растёт).
+        const frame = toneLevelsToFrameLight(levels, maxPulse, lp);
+        const pkt = makeVSPkt(frame, 2, prev);
+        await sendBytesStream(pkt);
+        prev = frame;
+
+        const pct = Math.round((maxPulse + lp + 1) * 100 / (maxPulse + lightPasses));
+        logI(`  light pass ${lp + 1}/${lightPasses} · ${pct}% · pkt=${pkt.length}B`);
+      }
+
+      await vsDrain(20000);
+      logI('canvas отправлен тонами (тёмные + белая компенсация)');
+    } else {
+      logI('canvas отправлен тонами');
+    }
   } catch (e) {
     if (e.message !== 'stopped') logE('Tone send: ' + e.message);
   } finally {
-    // Still-photo finish: stop binary stream, drop HV/fast BLE, keep saver off
-    // so the tonal image remains on the e-paper after the channel relaxes.
     try { await sendBytes(VS_STOP_PHOTO, true); } catch(e) {}
     await sleep(300);
     streamRunning = false;
