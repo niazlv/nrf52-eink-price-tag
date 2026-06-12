@@ -5,6 +5,7 @@
 #include "ble/ble_service.h"
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/sys/poweroff.h>
 #include <drivers/ssd1675a.h>
 #include <lib/graphics.h>
 #include <zephyr/logging/log.h>
@@ -658,7 +659,64 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
     // Initial wait to let system boot
     k_sleep(K_SECONDS(2));
 
+    bool low_battery_screen_shown = false;
+
     while (1) {
+        /* ── Battery protection check ── */
+        int mv = battery_read_mv();
+        battery_state_t bstate = battery_monitor_update(mv);
+
+        if (bstate == BATT_CRITICAL || bstate == BATT_SHUTDOWN) {
+            /* Farewell screen: one final TURBO render, then deep sleep */
+            LOG_WRN("Battery critical (%d mV) — rendering farewell", mv);
+            display_manager_set_partial_mode(0); /* TURBO for minimal power */
+            display_screens_render_shutdown(mv, k_uptime_get() / 1000);
+            ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+            ssd1675a_wait_busy();
+            ssd1675a_sleep();
+
+            /* Notify over BLE if connected, then wait a moment */
+            ble_printf("BATT:SHUTDOWN mv=%d\r\n", mv);
+            k_sleep(K_MSEC(500));
+
+            /* Enter system-off: no BLE, no wakeup, only power cycle restarts.
+             * This is the terminal state to protect the battery from deep
+             * discharge in a boot-loop. */
+            LOG_WRN("Entering system-off (deep sleep)");
+            sys_poweroff();
+            /* Never reached */
+            return;
+        }
+
+        if (bstate == BATT_LOW) {
+            if (!low_battery_screen_shown) {
+                /* Show low-battery warning screen once (full clean update) */
+                LOG_WRN("Battery low (%d mV) — showing warning, inhibiting display", mv);
+                display_screens_render_low_battery(mv, k_uptime_get() / 1000);
+                ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+                ssd1675a_wait_busy();
+                ssd1675a_sleep();
+                low_battery_screen_shown = true;
+
+                ble_printf("BATT:LOW mv=%d\r\n", mv);
+
+                /* Disable screensaver — we've shown the final frame */
+                screensaver_enabled = false;
+            }
+            /* In BATT_LOW: just sleep, keep BLE alive, check battery periodically */
+            k_sleep(K_SECONDS(30));
+            continue;
+        }
+
+        /* Battery recovered from BATT_LOW */
+        if (low_battery_screen_shown && bstate == BATT_OK) {
+            low_battery_screen_shown = false;
+            screensaver_enabled = true;
+            ble_printf("BATT:OK mv=%d\r\n", mv);
+            LOG_INF("Battery recovered (%d mV) — resuming normal operation", mv);
+        }
+
+        /* ── Normal operation ── */
         if (screensaver_enabled) {
             if (screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
                 display_manager_update_lut_test();

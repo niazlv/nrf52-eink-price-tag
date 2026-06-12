@@ -125,6 +125,20 @@ build:
 flash:
 	"$(WEST)" flash -d "$(BUILD_DIR)"
 
+# ----------------------------------------------------------
+# flash-gdb — flash merged.hex via OpenOCD/GDB (telnet localhost 4444)
+# Use when nrfutil is not available / board connected via J-Link OpenOCD.
+# ----------------------------------------------------------
+flash-gdb:
+	@echo ">>> Flashing merged.hex via OpenOCD (localhost:4444)…"
+	@echo "reset halt\nprogram $(BUILD_DIR)/merged.hex verify\nreset run\nexit" | nc localhost 4444
+	@echo ">>> Flash complete"
+
+flash-openocd:
+	@echo ">>> Flashing merged.hex via openocd CLI…"
+	openocd -f interface/jlink.cfg -f target/nrf52.cfg \
+		-c "program $(BUILD_DIR)/merged.hex verify reset exit"
+
 clean:
 	rm -rf "$(BUILD_DIR)"
 

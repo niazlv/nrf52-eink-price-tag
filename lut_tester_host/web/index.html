@@ -1146,7 +1146,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           </div>
         </div>
         <div style="font-size:9px;color:var(--fg2);margin-top:8px;line-height:1.4">
-          Оценка: Li-Po 3.7V/350mAh (заряд 4.2V→разряд 3.0V). Ток рассчитывается прошивкой на основе модели потребления (BLE, дисплей, сон).
+          Оценка: Li-Po 3.7V/350mAh. АЦП видит до 3.6V (насыщение) — заряд отслеживается только при разряде. Ток рассчитывается прошивкой. При падении ниже 3.3V — экран блокируется, ниже 3.1V — глубокий сон.
         </div>
       </div>
 
@@ -1511,6 +1511,7 @@ function onNotify(ev) {
     wakeLineWaiters(line);
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
     if (line.startsWith('SYSINFO:')) parseSysinfo(line);
+    if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
     if (line.startsWith('TELE:vs')) vsOnAck(line);
     if (line.startsWith('VSTREAM:')) {
@@ -3893,7 +3894,9 @@ const sysState = {
 };
 
 const BATT_CAPACITY_MAH = 350;
-const BATT_V_FULL = 4200;
+// ADC ceiling is 3600 mV (gain 1/6, ref 0.6V). Above that = "full/charging".
+// We can only track discharge below 3600. Map 3000–3600 → 0–100%.
+const BATT_V_FULL = 3600;
 const BATT_V_EMPTY = 3000;
 
 function requestSysinfo() {
@@ -3940,11 +3943,13 @@ function updateSysUI() {
 
   // Battery
   if (s.battMv > 0) {
-    const pct = Math.max(0, Math.min(100, Math.round((s.battMv - BATT_V_EMPTY) / (BATT_V_FULL - BATT_V_EMPTY) * 100)));
+    const atCeiling = s.battMv >= 3590; // ADC saturated → actually higher
+    const pct = atCeiling ? 100 : Math.max(0, Math.min(100, Math.round((s.battMv - BATT_V_EMPTY) / (BATT_V_FULL - BATT_V_EMPTY) * 100)));
     const color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--orange)' : 'var(--red)';
-    $('sys-batt').innerHTML = `<span style="color:${color}">${s.battMv} mV (${pct}%)</span>`;
+    const label = atCeiling ? `≥${s.battMv} mV (полный)` : `${s.battMv} mV (${pct}%)`;
+    $('sys-batt').innerHTML = `<span style="color:${color}">${label}</span>`;
     $('sys-batt-bar').style.width = pct + '%';
-    $('sys-batt-pct').textContent = pct + '%';
+    $('sys-batt-pct').textContent = atCeiling ? '100%+' : pct + '%';
   }
 
   // Energy
@@ -3975,6 +3980,21 @@ function updateSysUI() {
 
   if (s.lastUpdate) {
     $('sys-last-update').textContent = 'Обновлено ' + s.lastUpdate.toLocaleTimeString();
+  }
+}
+
+// --- Battery alerts from firmware ---
+function parseBattAlert(line) {
+  const mvM = line.match(/mv=(\d+)/);
+  const mv = mvM ? +mvM[1] : 0;
+  if (line.startsWith('BATT:LOW')) {
+    logE(`⚠ BATTERY LOW: ${mv} mV — display updates inhibited`);
+    dfuLog(`⚠ Battery low: ${mv} mV`, 'wrn');
+  } else if (line.startsWith('BATT:SHUTDOWN')) {
+    logE(`🔴 BATTERY CRITICAL: ${mv} mV — device entering deep sleep!`);
+    dfuLog(`🔴 Shutdown: ${mv} mV — deep sleep`, 'err');
+  } else if (line.startsWith('BATT:OK')) {
+    logI(`✓ Battery recovered: ${mv} mV`);
   }
 }
 
@@ -4172,7 +4192,7 @@ function onSmpNotify(ev) {
   }
 }
 
-function smpRequest(op, group, cmdId, payload, timeoutMs = 15000) {
+function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
   return new Promise(async (resolve, reject) => {
     const cborData = CBOR.encode(payload);
     const hdr = new Uint8Array(8);
@@ -4210,11 +4230,15 @@ async function dfuStartUpload() {
 
   const total = dfuFirmwareData.length;
   let offset = 0;
-  const chunkSize = 192;
+  const chunkSize = 128; // smaller chunks = less flash erase blocking per packet
   const t0 = performance.now();
   const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', dfuFirmwareData));
 
   try {
+    // Notify firmware to show DFU screen
+    if (connected && rxChar) {
+      try { await sendBytes(new TextEncoder().encode('DFU:START\n')); } catch {}
+    }
     while (offset < total) {
       if (dfuAbortFlag) throw new Error('Отменено');
       const end = Math.min(offset + chunkSize, total);
@@ -4222,7 +4246,7 @@ async function dfuStartUpload() {
       const payload = { data: chunk, off: offset };
       if (offset === 0) { payload.len = total; payload.sha = sha; }
 
-      const resp = await smpRequest(2, 1, 1, payload, 30000);
+      const resp = await smpRequest(2, 1, 1, payload, 60000); // 60s timeout: flash erase can block
       if (resp.rc !== undefined && resp.rc !== 0) throw new Error(`rc=${resp.rc}`);
       offset = resp.off !== undefined ? resp.off : end;
 
@@ -4236,6 +4260,11 @@ async function dfuStartUpload() {
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     dfuLog(`✓ Загрузка завершена за ${elapsed}s`, 'ok');
     $('dfu-prog-text').textContent = `✓ Готово (${elapsed}s)`;
+
+    // Notify firmware: DFU complete
+    if (connected && rxChar) {
+      try { await sendBytes(new TextEncoder().encode('DFU:DONE\n')); } catch {}
+    }
 
     // Auto-test new image
     await sleep(300);

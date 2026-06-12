@@ -37,15 +37,23 @@ void display_screens_render_tone_test_pass(int pass, int max_passes);
 
 /**
  * @brief Render LUT test scene: moving bands + frame counter + timing stats.
- *
- * @param frame          Frame index (0-based)
- * @param delta_ms       Time since last frame (0 on first frame)
- * @param min_ms         Minimum observed frame time
- * @param max_ms         Maximum observed frame time
- * @param custom_lut     true if lut_data[] is a user-loaded LUT
  */
 void display_screens_render_lut_test(int32_t frame, int32_t delta_ms,
                                      int32_t min_ms, int32_t max_ms,
                                      bool custom_lut);
+
+/**
+ * @brief Render low-battery warning screen (red text, big, clean).
+ *        Used when battery is dropping and display updates are inhibited.
+ *        Shows: time, battery mV, "LOW BATTERY — BLE only" message.
+ */
+void display_screens_render_low_battery(int battery_mv, int64_t uptime_sec);
+
+/**
+ * @brief Render farewell/shutdown screen (final image before deep sleep).
+ *        Shows: time, "SHUTDOWN", battery mV, goodbye message.
+ *        Rendered with TURBO LUT for minimum power consumption.
+ */
+void display_screens_render_shutdown(int battery_mv, int64_t uptime_sec);
 
 #endif // APP_DISPLAY_SCREENS_H

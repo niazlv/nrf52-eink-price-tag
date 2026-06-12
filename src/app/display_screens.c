@@ -1,5 +1,6 @@
 #include "display_screens.h"
 #include "display_manager.h"
+#include "system_time.h"
 #include <lib/graphics.h>
 #include <lib/life.h>
 #include <drivers/ssd1675a.h>
@@ -565,4 +566,79 @@ void display_screens_render_lut_test(int32_t frame, int32_t delta_ms,
 #undef BALL_SPEED
 #undef TRACK_H
 #undef BALL_MARGIN
+}
+
+/* ── Low-battery warning screen ──────────────────────────────────────────── */
+void display_screens_render_low_battery(int battery_mv, int64_t uptime_sec)
+{
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+    char buf[64];
+    char time_part[20];
+
+    format_uptime(uptime_sec, time_part, sizeof(time_part));
+
+    /* White background */
+    graphics_clear(GFX_WHITE);
+
+    /* Red banner at top */
+    graphics_fill_rect(0, 0, w, 22, GFX_RED);
+    graphics_draw_string_color(w / 2 - 60, 7, "LOW BATTERY", GFX_BLACK);
+
+    /* Battery voltage - large */
+    snprintf(buf, sizeof(buf), "%d.%02dV", battery_mv / 1000, (battery_mv % 1000) / 10);
+    graphics_draw_string_color_scaled(w / 2 - 30, 30, buf, GFX_BLACK, 2);
+
+    /* Info text */
+    graphics_draw_string(10, 55, "Display updates stopped.");
+    graphics_draw_string(10, 67, "BLE active for commands.");
+
+    snprintf(buf, sizeof(buf), "Uptime: %s", time_part);
+    graphics_draw_string(10, 85, buf);
+
+    /* Red warning bar at bottom */
+    graphics_fill_rect(0, h - 14, w, 14, GFX_RED);
+    graphics_draw_string_color(10, h - 12, "Charge or replace battery", GFX_BLACK);
+}
+
+/* ── Farewell / shutdown screen ──────────────────────────────────────────── */
+void display_screens_render_shutdown(int battery_mv, int64_t uptime_sec)
+{
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+    char buf[64];
+    char time_part[20];
+    struct tm t;
+
+    format_uptime(uptime_sec, time_part, sizeof(time_part));
+    get_system_time(&t);
+
+    /* White background */
+    graphics_clear(GFX_WHITE);
+
+    /* Red border */
+    graphics_fill_rect(0, 0, w, 3, GFX_RED);
+    graphics_fill_rect(0, h - 3, w, 3, GFX_RED);
+    graphics_fill_rect(0, 0, 3, h, GFX_RED);
+    graphics_fill_rect(w - 3, 0, 3, h, GFX_RED);
+
+    /* SHUTDOWN text in red */
+    graphics_draw_string_color_scaled(w / 2 - 50, 12, "SHUTDOWN", GFX_RED, 2);
+
+    /* Time of shutdown */
+    snprintf(buf, sizeof(buf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+    graphics_draw_string_scaled(w / 2 - 25, 35, buf, 2);
+
+    /* Battery */
+    snprintf(buf, sizeof(buf), "Battery: %d mV", battery_mv);
+    graphics_draw_string(10, 60, buf);
+
+    /* Uptime */
+    snprintf(buf, sizeof(buf), "Uptime: %s", time_part);
+    graphics_draw_string(10, 74, buf);
+
+    /* Message */
+    graphics_draw_string_color(10, 94, "Deep sleep to protect", GFX_RED);
+    graphics_draw_string_color(10, 106, "battery. Replace/charge", GFX_RED);
+    graphics_draw_string_color(10, 118, "to restart.", GFX_RED);
 }

@@ -1024,6 +1024,45 @@ static void cmd_sysinfo(char *args)
                mah_x1000 / 1000, mah_x1000 % 1000, cur_ua);
 }
 
+/* DFU:START — host notifies that OTA upload is beginning.
+ * DFU:DONE — host notifies that OTA upload completed.
+ * Show a status screen so the user knows not to disconnect. */
+static void cmd_dfu(char *args)
+{
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+
+    display_manager_enable_screensaver(false);
+    k_msleep(100);
+    graphics_clear(GFX_WHITE);
+
+    if (strncmp(args, "START", 5) == 0) {
+        graphics_fill_rect(0, 0, w, 18, GFX_BLACK);
+        graphics_draw_string_color(w / 2 - 55, 5, "FIRMWARE UPDATE", GFX_WHITE);
+        graphics_draw_string(w / 2 - 65, 35, "Receiving firmware...");
+        graphics_draw_string(w / 2 - 70, 55, "Do NOT disconnect!");
+        /* Progress bar outline */
+        graphics_draw_rect(20, 80, w - 40, 16, GFX_BLACK);
+        graphics_fill_rect(22, 82, 20, 12, GFX_BLACK);
+        graphics_draw_string(w / 2 - 40, 105, "Please wait...");
+        display_manager_force_update();
+        ble_printf("DFU:ACK\r\n");
+    } else if (strncmp(args, "DONE", 4) == 0) {
+        graphics_fill_rect(0, 0, w, 18, GFX_BLACK);
+        graphics_draw_string_color(w / 2 - 55, 5, "UPDATE COMPLETE", GFX_WHITE);
+        graphics_draw_string(w / 2 - 50, 38, "Firmware loaded!");
+        /* Full progress bar */
+        graphics_draw_rect(20, 62, w - 40, 16, GFX_BLACK);
+        graphics_fill_rect(22, 64, w - 44, 12, GFX_BLACK);
+        graphics_draw_string_color(w / 2 - 75, 90, "Reboot to apply", GFX_RED);
+        graphics_draw_string(w / 2 - 60, 110, "(or send REBOOT)");
+        display_manager_force_update();
+        ble_printf("DFU:DONE_ACK\r\n");
+    } else {
+        ble_printf("DFU:usage START|DONE\r\n");
+    }
+}
+
 /* ── Command table ───────────────────────────────────────────────────────── */
 
 const struct shell_cmd commands[] = {
@@ -1068,6 +1107,7 @@ const struct shell_cmd commands[] = {
     /* System */
     {"REBOOT",      cmd_reboot,     "Cold reboot the device"},
     {"SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy"},
+    {"DFU:",        cmd_dfu,        "DFU display: DFU:START / DFU:DONE"},
     /* Debug */
     {"VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
     {"DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (legacy)"},

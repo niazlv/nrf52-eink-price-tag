@@ -1,5 +1,5 @@
 /* E·INK controller — service worker */
-const CACHE = 'eink-v3.0.2';
+const CACHE = 'eink-v3.0.3';
 const ASSETS = [
   './',
   './index.html',
@@ -32,6 +32,9 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
+
+  // firmware/ — NEVER cache (manifest.json + .bin must always be fresh)
+  if (url.pathname.includes('/firmware/')) return;
 
   // Навигация: сеть → кэш (свежая версия при онлайне, оболочка офлайн)
   if (req.mode === 'navigate') {
