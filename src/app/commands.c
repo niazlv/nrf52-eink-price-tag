@@ -816,6 +816,10 @@ static int parse_partial_mode_name(const char *name)
     else if (name[0] == '7' || strcasecmp(name, "TONE_BIDIR") == 0 ||
              strcasecmp(name, "BIDIR") == 0 ||
              strcasecmp(name, "BIDIR4") == 0) return 7;
+    else if (name[0] == '8' || strcasecmp(name, "TONE_SOFT_DARK") == 0 ||
+             strcasecmp(name, "SOFT_DARK") == 0) return 8;
+    else if (name[0] == '9' || strcasecmp(name, "TONE_SOFT_LIGHT") == 0 ||
+             strcasecmp(name, "SOFT_LIGHT") == 0) return 9;
 
     return -1;
 }
@@ -824,7 +828,7 @@ static const char *partial_mode_name(int mode)
 {
     static const char *names[] = {
         "TURBO", "BALANCED", "STABLE", "CLEAN", "TONE_DARK", "TONE_LIGHT",
-        "TONE_BIDIR_FAST", "TONE_BIDIR"
+        "TONE_BIDIR_FAST", "TONE_BIDIR", "TONE_SOFT_DARK", "TONE_SOFT_LIGHT"
     };
 
     return (mode >= 0 && mode < (int)ARRAY_SIZE(names)) ? names[mode] : "?";
@@ -848,6 +852,93 @@ void cmd_lutset(char *args)
     ssd1675a_set_use_custom_lut(false);
     display_manager_set_partial_mode(mode);
     ble_printf("LUTSET:%s (mode=%d, custom=off)\r\n", partial_mode_name(mode), mode);
+}
+
+/* VLUT:slot:base:off=val,off=val,... — define/activate/list/clear virtual LUT
+ *   VLUT:0:4:35=01,36=01      — define slot 0 based on mode 4 (TONE_DARK), patch TA/TB to 1
+ *   VLUT:0                     — activate slot 0
+ *   VLUT:OFF                   — deactivate virtual LUT, revert to partial mode
+ *   VLUT:LIST                  — show defined slots
+ *   VLUT:CLEAR                 — clear all virtual slots
+ */
+void cmd_vlut(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("VLUT: usage: slot:base:off=val,... | slot | OFF | LIST | CLEAR\r\n");
+        return;
+    }
+
+    if (strcmp(args, "CLEAR") == 0 || strcmp(args, "clear") == 0) {
+        ssd1675a_vlut_clear();
+        ble_printf("VLUT:cleared\r\n");
+        return;
+    }
+
+    if (strcmp(args, "OFF") == 0 || strcmp(args, "off") == 0) {
+        ssd1675a_vlut_activate(-1);
+        ble_printf("VLUT:off\r\n");
+        return;
+    }
+
+    if (strcmp(args, "LIST") == 0 || strcmp(args, "list") == 0) {
+        for (int i = 0; i < ssd1675a_vlut_get_count(); i++) {
+            if (ssd1675a_vlut_slot_defined(i)) {
+                ble_printf("VLUT[%d]: defined%s\r\n", i,
+                           (ssd1675a_vlut_active() == i) ? " *active*" : "");
+            }
+        }
+        if (ssd1675a_vlut_active() < 0) ble_printf("VLUT: none active\r\n");
+        return;
+    }
+
+    /* Parse: could be just "slot" to activate, or "slot:base:patches" to define */
+    char *p1 = strchr(args, ':');
+    int slot = atoi(args);
+
+    if (!p1) {
+        /* Just a slot number — activate it */
+        if (!ssd1675a_vlut_slot_defined(slot)) {
+            ble_printf("VLUT:slot %d not defined\r\n", slot);
+            return;
+        }
+        ssd1675a_vlut_activate(slot);
+        ssd1675a_set_use_custom_lut(false);
+        ble_printf("VLUT:%d active\r\n", slot);
+        return;
+    }
+
+    /* Define: slot:base:off=val,off=val,... */
+    char *p2 = strchr(p1 + 1, ':');
+    if (!p2) {
+        ble_printf("VLUT:err format slot:base:patches\r\n");
+        return;
+    }
+
+    int base_mode = atoi(p1 + 1);
+    char *patches_str = p2 + 1;
+
+    uint8_t offsets[16], values[16];
+    int count = 0;
+
+    while (*patches_str && count < 16) {
+        int off = (int)strtol(patches_str, &patches_str, 10);
+        if (*patches_str != '=') break;
+        patches_str++;
+        int val = (int)strtol(patches_str, &patches_str, 16);
+        if (off >= 0 && off < 70) {
+            offsets[count] = (uint8_t)off;
+            values[count]  = (uint8_t)val;
+            count++;
+        }
+        if (*patches_str == ',') patches_str++;
+    }
+
+    int rc = ssd1675a_vlut_define(slot, (uint8_t)base_mode, offsets, values, count);
+    if (rc < 0) {
+        ble_printf("VLUT:err rc=%d\r\n", rc);
+        return;
+    }
+    ble_printf("VLUT[%d]:defined base=%d patches=%d\r\n", slot, base_mode, count);
 }
 
 /* VSTREAM:start[:preset]|stop — enter/exit binary animation streaming mode */
@@ -928,7 +1019,7 @@ const struct shell_cmd commands[] = {
     {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
     {"FAST",        cmd_fast,       "Fast/partial update"},
     {"FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display"},
-    {"MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight 6=ToneBidirFast 7=ToneBidir"},
+    {"MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight 6=ToneBidirFast 7=ToneBidir 8=SoftDark 9=SoftLight"},
     {"PALTEST",     cmd_paltest,    "Render B/W/R palette and spatial dither test"},
     {"TONETEST",    cmd_tonetest,   "Render physical gray accumulation test"},
     {"TEXT:",       cmd_text,       "Draw text on display"},
@@ -941,7 +1032,8 @@ const struct shell_cmd commands[] = {
     {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
     {"L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
     {"LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1"},
-    {"LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR"},
+    {"LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR|TONE_SOFT_DARK|TONE_SOFT_LIGHT"},
+    {"VLUT:",       cmd_vlut,       "Virtual LUT: VLUT:slot:base:off=val,... | VLUT:slot | VLUT:OFF | VLUT:LIST | VLUT:CLEAR"},
     {"LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
     {"LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
     {"HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},
@@ -989,7 +1081,28 @@ void commands_init(void) {
 }
 
 void commands_on_disconnect(void) {
-    vs_exit_streaming(true);
+    /* If a video/animation stream was active, tear it down and restore the
+     * screensaver — the stream content is gone and the device should not sit
+     * frozen on a half-rendered frame.
+     *
+     * If the device is in still-photo / image mode (screensaver already off,
+     * no active vstream) the user intentionally left a tonal image on the
+     * display.  A BLE disconnect must NOT wake the screensaver and overwrite
+     * that image — the panel is bistable and the picture persists without
+     * power.  We only clean up the binary-stream machine state. */
+    if (vstream_active) {
+        vs_exit_streaming(true);   /* stream was running → restore saver */
+    } else {
+        /* No stream active: just reset protocol state, leave saver as-is. */
+        ble_service_set_streaming_mode(false);
+        display_manager_set_stream_write_red_plane(false);
+        k_work_cancel_delayable(&vs_watchdog_work);
+        vs_state = VS_IDLE;
+    }
+
+    /* Clear session-scoped virtual LUT slots — they are temporary experiments
+     * defined over BLE and should not persist across reconnections. */
+    ssd1675a_vlut_clear();
 }
 
 void commands_process(const void *data, uint16_t len)

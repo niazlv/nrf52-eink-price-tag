@@ -39,6 +39,15 @@ void ssd1675a_wait_busy(void);
 
 #define SSD1675A_LUT_SIZE 70
 
+/* ── Virtual LUT slots (session-scoped, BLE-programmable) ─────────────── */
+void ssd1675a_vlut_clear(void);
+int  ssd1675a_vlut_define(int slot, uint8_t base_mode,
+                           const uint8_t *offsets, const uint8_t *values, int count);
+int  ssd1675a_vlut_get_count(void);
+bool ssd1675a_vlut_slot_defined(int slot);
+void ssd1675a_vlut_activate(int slot);
+int  ssd1675a_vlut_active(void);
+
 // Partial Update
 typedef enum {
     SSD1675A_PARTIAL_MODE_TURBO,    // MODE:0 — 14f=112ms, direct B&W, use with streaming
@@ -48,7 +57,9 @@ typedef enum {
     SSD1675A_PARTIAL_MODE_TONE_DARK,  // MODE:4 — black-only pulse for tonal accumulation
     SSD1675A_PARTIAL_MODE_TONE_LIGHT, // MODE:5 — white-only pulse for tonal accumulation
     SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST, // MODE:6 — weak B/W pulse for tone video
-    SSD1675A_PARTIAL_MODE_TONE_BIDIR       // MODE:7 — stronger B/W pulse for tone video
+    SSD1675A_PARTIAL_MODE_TONE_BIDIR,      // MODE:7 — stronger B/W pulse for tone video
+    SSD1675A_PARTIAL_MODE_TONE_SOFT_DARK,  // MODE:8 — soft black pulse (TA=TB=1, ~half strength)
+    SSD1675A_PARTIAL_MODE_TONE_SOFT_LIGHT, // MODE:9 — soft white pulse (TA=TB=1, ~half strength)
 } ssd1675a_partial_mode_t;
 
 void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode);

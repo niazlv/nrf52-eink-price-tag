@@ -405,17 +405,121 @@ void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode) {
     current_partial_mode = mode;
 }
 
+/* Virtual soft-tone LUT buffer.
+ * Built on demand from lut_tone_dark / lut_tone_light by patching only the
+ * Phase-0 timing bytes (indices 35 & 36 = TA and TB).
+ * TONE_DARK/LIGHT use TA=TB=2 (4 subframes, ~60ms, str≈0.36).
+ * TONE_SOFT_DARK/LIGHT use TA=TB=1 (2 subframes, ~30ms, str≈0.18).
+ * No extra static RAM — one shared 70-byte scratch buffer. */
+static uint8_t lut_soft_buf[70];
+
+/* ── Virtual LUT slots ────────────────────────────────────────────────────────
+ * Up to VLUT_MAX_SLOTS runtime-defined LUTs that are delta-patches over any
+ * built-in base mode. Defined via BLE command "VLUT:" within a session and
+ * cleared on VLUT:CLEAR or next reboot. Each slot stores:
+ *   - base mode index (0..9 = same as partial mode enum)
+ *   - patch pairs: up to VLUT_MAX_PATCHES (offset, value) per slot
+ * At LUT selection time: base table is copied to lut_soft_buf, then patches
+ * applied. Compact: only storing diffs, no full 70-byte copies per slot.
+ */
+#define VLUT_MAX_SLOTS   8
+#define VLUT_MAX_PATCHES 16
+
+typedef struct {
+    uint8_t base_mode;                 /* index into partial_mode enum */
+    uint8_t patch_count;               /* 0 = slot empty/unused */
+    struct { uint8_t off; uint8_t val; } patches[VLUT_MAX_PATCHES];
+} vlut_slot_t;
+
+static vlut_slot_t vlut_slots[VLUT_MAX_SLOTS];
+static int vlut_active_slot = -1;  /* -1 = no virtual slot active */
+
+void ssd1675a_vlut_clear(void) {
+    memset(vlut_slots, 0, sizeof(vlut_slots));
+    vlut_active_slot = -1;
+}
+
+int ssd1675a_vlut_define(int slot, uint8_t base_mode,
+                          const uint8_t *offsets, const uint8_t *values, int count) {
+    if (slot < 0 || slot >= VLUT_MAX_SLOTS) return -1;
+    if (count < 0 || count > VLUT_MAX_PATCHES) return -2;
+    vlut_slots[slot].base_mode = base_mode;
+    vlut_slots[slot].patch_count = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        vlut_slots[slot].patches[i].off = offsets[i];
+        vlut_slots[slot].patches[i].val = values[i];
+    }
+    return 0;
+}
+
+int ssd1675a_vlut_get_count(void) { return VLUT_MAX_SLOTS; }
+
+bool ssd1675a_vlut_slot_defined(int slot) {
+    return (slot >= 0 && slot < VLUT_MAX_SLOTS && vlut_slots[slot].patch_count > 0);
+}
+
+void ssd1675a_vlut_activate(int slot) {
+    vlut_active_slot = (slot >= 0 && slot < VLUT_MAX_SLOTS) ? slot : -1;
+}
+
+int ssd1675a_vlut_active(void) { return vlut_active_slot; }
+
+/* Get base LUT pointer by mode index (does NOT apply patches). */
+static const uint8_t *base_lut_for_mode(uint8_t mode) {
+    switch (mode) {
+        case 0: return lut_turbo;
+        case 1: return lut_balanced;
+        case 2: return lut_stable;
+        case 3: return lut_data_default;
+        case 4: return lut_tone_dark;
+        case 5: return lut_tone_light;
+        case 6: return lut_tone_bidir_fast;
+        case 7: return lut_tone_bidir;
+        /* 8,9 are themselves derived — use their base */
+        case 8: return lut_tone_dark;
+        case 9: return lut_tone_light;
+        default: return lut_balanced;
+    }
+}
+
+static uint8_t *make_vlut(int slot) {
+    vlut_slot_t *s = &vlut_slots[slot];
+    const uint8_t *base = base_lut_for_mode(s->base_mode);
+    memcpy(lut_soft_buf, base, 70);
+    for (int i = 0; i < s->patch_count; i++) {
+        if (s->patches[i].off < 70) {
+            lut_soft_buf[s->patches[i].off] = s->patches[i].val;
+        }
+    }
+    return lut_soft_buf;
+}
+
+static uint8_t *make_soft_lut(const uint8_t *base)
+{
+    memcpy(lut_soft_buf, base, 70);
+    lut_soft_buf[35] = 0x01;   /* Ph0 TA = 1 subframe */
+    lut_soft_buf[36] = 0x01;   /* Ph0 TB = 1 subframe */
+    return lut_soft_buf;
+}
+
 static uint8_t *select_partial_lut(void) {
+    /* Virtual slot takes priority if active and defined */
+    if (!use_custom_lut && vlut_active_slot >= 0 &&
+        ssd1675a_vlut_slot_defined(vlut_active_slot)) {
+        return make_vlut(vlut_active_slot);
+    }
     if (use_custom_lut) return lut_data;
     switch (current_partial_mode) {
         case SSD1675A_PARTIAL_MODE_TURBO:    return lut_turbo;
         case SSD1675A_PARTIAL_MODE_BALANCED: return lut_balanced;
         case SSD1675A_PARTIAL_MODE_STABLE:   return lut_stable;
-        case SSD1675A_PARTIAL_MODE_CLEAN:    return (uint8_t *)lut_data_default;  // v5-balanced full LUT
-        case SSD1675A_PARTIAL_MODE_TONE_DARK:  return lut_tone_dark;
-        case SSD1675A_PARTIAL_MODE_TONE_LIGHT: return lut_tone_light;
-        case SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST: return lut_tone_bidir_fast;
-        case SSD1675A_PARTIAL_MODE_TONE_BIDIR:      return lut_tone_bidir;
+        case SSD1675A_PARTIAL_MODE_CLEAN:    return (uint8_t *)lut_data_default;
+        case SSD1675A_PARTIAL_MODE_TONE_DARK:        return lut_tone_dark;
+        case SSD1675A_PARTIAL_MODE_TONE_LIGHT:       return lut_tone_light;
+        case SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST:  return lut_tone_bidir_fast;
+        case SSD1675A_PARTIAL_MODE_TONE_BIDIR:       return lut_tone_bidir;
+        case SSD1675A_PARTIAL_MODE_TONE_SOFT_DARK:   return make_soft_lut(lut_tone_dark);
+        case SSD1675A_PARTIAL_MODE_TONE_SOFT_LIGHT:  return make_soft_lut(lut_tone_light);
         default:                             return lut_balanced;
     }
 }

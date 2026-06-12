@@ -550,7 +550,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn" onclick="clearCanvas()">Очистить</button>
           <select id="output-mode" title="Режим вывода" onchange="setOutputMode(this.value)">
             <option value="dither" selected>Дизер / BWR</option>
-            <option value="tone">Тона / импульсы</option>
+            <option value="tone">Тона · сильный (TONE_DARK)</option>
+            <option value="tone-soft">Тона · мягкий (SOFT_DARK, линейный)</option>
           </select>
           <button class="btn acc" id="send-bwr" onclick="sendCanvas()">↑ Отправить</button>
           <span id="tone-send-controls" style="display:none;align-items:center;gap:5px;flex-wrap:wrap">
@@ -575,6 +576,22 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <span id="tone-light-val" style="color:var(--vgl);font-variant-numeric:tabular-nums;min-width:12px">0</span>
             </span>
             <button class="btn pur" onclick="sendCanvasTone()">↑ Отправить</button>
+          </span>
+          <span id="tone-soft-send-controls" style="display:none;align-items:center;gap:5px;flex-wrap:wrap">
+            <select id="tone-soft-pulses" title="Тонов (мягкий режим: SOFT_DARK, линейное квантование)" onchange="renderImg()">
+              <option value="8">8 тонов</option>
+              <option value="16" selected>16 тонов</option>
+              <option value="24">24 тона</option>
+              <option value="32">32 тона</option>
+            </select>
+            <span style="display:flex;align-items:center;gap:4px;font-size:10px"
+                  title="Сила мягкого импульса для симуляции превью. SOFT_DARK ≈ вдвое слабее TONE_DARK.">
+              <span style="color:var(--fg2);white-space:nowrap">Сила имп.</span>
+              <input type="range" id="tone-soft-str" min="1" max="40" value="18" step="1"
+                     style="width:70px" oninput="$('tone-soft-str-val').textContent=this.value;renderImg()">
+              <span id="tone-soft-str-val" style="color:var(--yellow);font-variant-numeric:tabular-nums;min-width:18px">18</span>
+            </span>
+            <button class="btn acc" onclick="sendCanvasToneSoft()">↑ Отправить</button>
           </span>
         </div>
       </div>
@@ -610,7 +627,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <span class="ielbl">Вывод</span>
             <select id="ie-preview" onchange="setOutputMode(this.value)" style="flex:1">
               <option value="dither" selected>Дизер / BWR</option>
-              <option value="tone">Тона / импульсы</option>
+              <option value="tone">Тона · сильный (TONE_DARK)</option>
+              <option value="tone-soft">Тона · мягкий (SOFT_DARK, линейный)</option>
             </select>
           </div>
           <div class="ierow" id="ie-dither-row">
@@ -652,6 +670,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <button class="btn" onclick="ieClose()" title="Закрыть редактор (превью останется)">✕ Закрыть</button>
             <button class="btn acc" id="ie-send-bwr" onclick="sendCanvas()" style="margin-left:auto">↑ Отправить</button>
             <button class="btn pur" id="ie-send-tone" onclick="sendCanvasTone()" style="margin-left:auto;display:none">↑ Отправить</button>
+            <button class="btn acc" id="ie-send-tone-soft" onclick="sendCanvasToneSoft()" style="margin-left:auto;display:none">↑ Отправить</button>
           </div>
           <div class="iehint">Тяни превью — сдвиг/кроп · колесо или щипок — зум · двойной клик/тап — центрировать</div>
         </div>
@@ -1604,7 +1623,8 @@ function ieFlip(axis) {
 function currentOutputMode() {
   const top = $('output-mode');
   const ed = $('ie-preview');
-  return ((ed && ed.value) || (top && top.value) || 'dither') === 'tone' ? 'tone' : 'dither';
+  const v = ((ed && ed.value) || (top && top.value) || 'dither');
+  return (v === 'tone' || v === 'tone-soft') ? v : 'dither';
 }
 
 function showEl(id, show, display='') {
@@ -1613,19 +1633,23 @@ function showEl(id, show, display='') {
 }
 
 function setOutputMode(mode, rerender=true) {
-  const m = mode === 'tone' ? 'tone' : 'dither';
-  const tone = m === 'tone';
+  const m = (mode === 'tone' || mode === 'tone-soft') ? mode : 'dither';
+  const isTone     = m === 'tone';
+  const isSoft     = m === 'tone-soft';
+  const isToneAny  = isTone || isSoft;
 
   if ($('output-mode')) $('output-mode').value = m;
-  if ($('ie-preview')) $('ie-preview').value = m;
+  if ($('ie-preview'))  $('ie-preview').value  = m;
 
-  showEl('send-bwr', !tone);
-  showEl('tone-send-controls', tone, 'inline-flex');
-  showEl('ie-dither-row', !tone);
-  showEl('ie-thr-row', !tone);
-  showEl('ie-red-opt', !tone, 'flex');
-  showEl('ie-send-bwr', !tone);
-  showEl('ie-send-tone', tone);
+  showEl('send-bwr',               !isToneAny);
+  showEl('tone-send-controls',     isTone,    'inline-flex');
+  showEl('tone-soft-send-controls',isSoft,    'inline-flex');
+  showEl('ie-dither-row',          !isToneAny);
+  showEl('ie-thr-row',             !isToneAny);
+  showEl('ie-red-opt',             !isToneAny, 'flex');
+  showEl('ie-send-bwr',            !isToneAny);
+  showEl('ie-send-tone',           isTone);
+  showEl('ie-send-tone-soft',      isSoft);
 
   if (rerender && IE.img) renderImg();
 }
@@ -1695,6 +1719,8 @@ function renderImg() {
   const id = o.getImageData(0, 0, 296, 128);
   if (currentOutputMode() === 'tone') {
     ieProcessTonePreview(id);
+  } else if (currentOutputMode() === 'tone-soft') {
+    ieProcessToneSoftPreview(id);
   } else {
     ieProcess(id);
   }
@@ -2151,6 +2177,115 @@ async function sendCanvasTone() {
     await sleep(300);
     streamRunning = false;
     streamStop = false;
+  }
+}
+
+// ── Мягкий тоновый режим (TONE_SOFT_DARK) ─────────────────────────────────
+// Использует виртуальную LUT с TA=TB=1 (вдвое слабее TONE_DARK).
+// Квантование линейное — слабый импульс позволяет покрыть весь диапазон
+// серого без пробелов даже при 16 тонах.
+
+function ieProcessToneSoftPreview(id) {
+  const d   = id.data;
+  const n   = 296 * 128;
+  const lut = makeAdjustLut();
+  const maxPulse = parseInt($('tone-soft-pulses')?.value) || 16;
+  const inv      = $('ie-inv').checked;
+  // SOFT_DARK ≈ вдвое слабее TONE_DARK → str ≈ 0.18 при дефолте слайдера 18
+  const pulseStr = (+($('tone-soft-str')?.value ?? 18)) / 100;
+
+  for (let i = 0; i < n; i++) {
+    const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
+    const gray = lut[(0.299*r + 0.587*g + 0.114*b) | 0];
+    // Линейное квантование: слабый импульс — линейный отклик достаточно точен
+    const dark = inv ? gray / 255 : (255 - gray) / 255;
+    const pulseCount = clamp(Math.round(dark * maxPulse), 0, maxPulse);
+    // Симуляция накопления
+    const brightness = 255 * Math.pow(1 - pulseStr, pulseCount);
+    d[i*4] = d[i*4+1] = d[i*4+2] = Math.round(Math.max(0, Math.min(255, brightness)));
+    d[i*4+3] = 255;
+  }
+}
+
+function canvasToToneSoftLevels(maxPulse) {
+  const src = toneSourceImageData();
+  const d   = src.id.data;
+  const levels = new Uint8Array(296 * 128);
+  const lut = src.raw ? makeAdjustLut() : null;
+  const inv = src.raw && $('ie-inv').checked;
+
+  // Линейное квантование — мягкий импульс достаточно слаб чтобы
+  // линейное соответствие dark→N давало корректный результат на панели.
+  for (let i = 0; i < levels.length; i++) {
+    const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
+    let gray = (0.299*r + 0.587*g + 0.114*b) | 0;
+    if (lut) gray = lut[gray];
+    const dark = inv ? gray / 255 : (255 - gray) / 255;
+    levels[i] = clamp(Math.round(dark * maxPulse), 0, maxPulse);
+  }
+  return levels;
+}
+
+async function sendCanvasToneSoft() {
+  if (!connected) { alert('Не подключено'); return; }
+  if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
+
+  const maxPulse = parseInt($('tone-soft-pulses')?.value) || 16;
+  const levels   = canvasToToneSoftLevels(maxPulse);
+  const usedMax  = levels.reduce((m, v) => Math.max(m, v), 0);
+  let prev = null;
+
+  streamRunning = true;
+  streamStop    = false;
+  vsReset();
+
+  logI(`Отправляю canvas (мягкий тон): ${maxPulse} импульсов SOFT_DARK, max=${usedMax}`);
+
+  try {
+    await sendBytes(new TextEncoder().encode('HOST:1\n'));
+    await sendBytes(new TextEncoder().encode('SS:0\n'));
+    await sleep(100);
+
+    const clearWait = waitForLine(line => line === 'cleared', 2500);
+    await sendBytes(new TextEncoder().encode('CLEAR\n'));
+    await clearWait;
+
+    logI('  база: полный белый кадр...');
+    const fullWait = waitForLine(
+      line => line.startsWith('TELE:full') || /^done \d+ms/.test(line), 20000);
+    await sendBytes(new TextEncoder().encode('UPDATE\n'));
+    if (!await fullWait) logI('  не дождался TELE:full, продолжаю');
+
+    // Режим 8 = TONE_SOFT_DARK (виртуальная таблица, TA=TB=1)
+    const lutWait = waitForLine(line => line.startsWith('LUTSET:TONE_SOFT_DARK'), 2500);
+    await sendBytes(new TextEncoder().encode('LUTSET:TONE_SOFT_DARK\n'));
+    await lutWait;
+
+    const readyWait = vsWaitReady(12000);
+    await sendBytes(new TextEncoder().encode('VSTREAM:start:TONE_SOFT_DARK\n'));
+    if (!await readyWait) logI('  нет VSTREAM:ready за 12с, продолжаю');
+
+    for (let pass = 0; pass < maxPulse && !streamStop; pass++) {
+      if (!await vsAcquireCredit(15000)) throw new Error('нет ACK/credit для soft-tone frame');
+
+      const frame = toneLevelsToFrame(levels, pass);
+      const pkt   = makeVSPkt(frame, 2, prev);
+      await sendBytesStream(pkt);
+      prev = frame;
+
+      const pct = Math.round((pass + 1) * 100 / maxPulse);
+      logI(`  soft pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${pkt.length}B`);
+    }
+
+    await vsDrain(20000);
+    logI('canvas отправлен (мягкий тон)');
+  } catch (e) {
+    if (e.message !== 'stopped') logE('Soft tone send: ' + e.message);
+  } finally {
+    try { await sendBytes(VS_STOP_PHOTO, true); } catch(e) {}
+    await sleep(300);
+    streamRunning = false;
+    streamStop    = false;
   }
 }
 
