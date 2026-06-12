@@ -9,7 +9,6 @@
 
 typedef struct {
     uint8_t cells[LIFE_MAX_DIM][LIFE_MAX_DIM];
-    uint8_t next[LIFE_MAX_DIM][LIFE_MAX_DIM];
     uint32_t seed;
     bool initialized;
 } life_world_t;

@@ -749,6 +749,43 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn ylw" onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
           <button class="btn pur" onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
           <button class="btn ylw" onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
+          <button class="btn pur" onclick="send('LUTSET:TONE_SOFT_DARK\n')">SOFT DARK</button>
+          <button class="btn ylw" onclick="send('LUTSET:TONE_SOFT_LIGHT\n')">SOFT LIGHT</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ctitle">Виртуальные LUT (VLUT) · сессионные</div>
+        <div class="brow">
+          <button class="btn" onclick="vlutList()">LIST</button>
+          <button class="btn bad" onclick="vlutClear()">CLEAR</button>
+          <button class="btn warn" onclick="vlutOff()">OFF</button>
+        </div>
+        <div class="brow" style="margin-top:6px">
+          <span class="blbl">Слот:</span>
+          <input type="number" id="vlut-slot" value="0" min="0" max="7" style="width:40px">
+          <span class="blbl">База:</span>
+          <select id="vlut-base" style="width:120px">
+            <option value="0">0 TURBO</option>
+            <option value="1">1 BALANCED</option>
+            <option value="2">2 STABLE</option>
+            <option value="3">3 CLEAN</option>
+            <option value="4" selected>4 TONE_DARK</option>
+            <option value="5">5 TONE_LIGHT</option>
+            <option value="6">6 BIDIR_FAST</option>
+            <option value="7">7 BIDIR</option>
+            <option value="8">8 SOFT_DARK</option>
+            <option value="9">9 SOFT_LIGHT</option>
+          </select>
+        </div>
+        <div class="brow" style="margin-top:4px">
+          <span class="blbl">Патчи:</span>
+          <input type="text" id="vlut-patches" placeholder="35=01,36=01" style="flex:1"
+                 title="offset=hex_value через запятую. offset: 0-69, value: hex 00-FF">
+        </div>
+        <div class="brow" style="margin-top:5px">
+          <button class="btn ok" onclick="vlutDefine()">Определить</button>
+          <button class="btn acc" onclick="vlutActivate()">Активировать</button>
         </div>
       </div>
 
@@ -3635,6 +3672,58 @@ function toggleBotCon() {
     bc.classList.add('collapsed');
     bc.style.height='24px';
     $('bot-tog').textContent='▲';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Virtual LUT (VLUT) — JS API для работы с сессионными LUT-слотами
+// ═══════════════════════════════════════════════════════════════════
+
+// Локальный кеш определённых слотов (отражает состояние МК в текущей сессии)
+const vlutSlots = new Array(8).fill(null); // null = не определён
+
+function vlutList() { send('VLUT:LIST\n'); }
+function vlutClear() {
+  send('VLUT:CLEAR\n');
+  vlutSlots.fill(null);
+}
+function vlutOff() { send('VLUT:OFF\n'); }
+
+function vlutDefine() {
+  const slot    = parseInt($('vlut-slot').value) || 0;
+  const base    = $('vlut-base').value;
+  const patches = $('vlut-patches').value.trim();
+  if (!patches) { alert('Укажи патчи: offset=hex,offset=hex,...'); return; }
+  const cmd = `VLUT:${slot}:${base}:${patches}\n`;
+  send(cmd);
+  // Сохраняем в локальный кеш
+  vlutSlots[slot] = { base: parseInt(base), patches };
+  logI(`VLUT[${slot}] определён: base=${base}, patches=${patches}`);
+}
+
+function vlutActivate() {
+  const slot = parseInt($('vlut-slot').value) || 0;
+  send(`VLUT:${slot}\n`);
+}
+
+/**
+ * Программно определить и активировать виртуальный слот.
+ * Используется другими JS-функциями (например sendCanvasToneSoft может
+ * создать свой VLUT-слот с настроенными параметрами вместо хардкода).
+ *
+ * @param {number} slot     - номер слота 0..7
+ * @param {number} base     - базовый режим 0..9
+ * @param {string} patches  - строка патчей "35=01,36=01"
+ * @param {boolean} activate - активировать после определения
+ * @returns {Promise<void>}
+ */
+async function vlutDefineAndActivate(slot, base, patches, activate = true) {
+  const defCmd = `VLUT:${slot}:${base}:${patches}\n`;
+  await sendBytes(new TextEncoder().encode(defCmd));
+  vlutSlots[slot] = { base, patches };
+  if (activate) {
+    await sleep(50);
+    await sendBytes(new TextEncoder().encode(`VLUT:${slot}\n`));
   }
 }
 </script>

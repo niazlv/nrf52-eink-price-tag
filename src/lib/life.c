@@ -44,7 +44,7 @@ static int count_neighbors(const life_world_t *world, int x, int y, int width, i
 
             int nx = wrap(x + dx, width);
             int ny = wrap(y + dy, height);
-            if (world->cells[ny][nx]) {
+            if (world->cells[ny][nx] & 1) {
                 count++;
             }
         }
@@ -104,18 +104,25 @@ void life_update(life_world_t *world, int width, int height)
         }
     }
 
+    /* In-place update: pack next state into bit 1 of each cell (current state
+     * is in bit 0). count_neighbors reads only bit 0 via (cell & 1).
+     * After all cells are computed, shift bit 1 down to bit 0. 
+     * This avoids needing a full next[MAX_DIM][MAX_DIM] array (~1.4 KB saved). */
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             int neighbors = count_neighbors(world, x, y, width, height);
-            world->next[y][x] = world->cells[y][x]
+            uint8_t alive = world->cells[y][x] & 1;
+            uint8_t next_state = alive
                 ? (neighbors == 2 || neighbors == 3)
                 : (neighbors == 3);
+            world->cells[y][x] = alive | (next_state << 1);
         }
     }
 
+    /* Commit: shift bit 1 down to bit 0 */
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            world->cells[y][x] = world->next[y][x];
+            world->cells[y][x] = (world->cells[y][x] >> 1) & 1;
         }
     }
 }

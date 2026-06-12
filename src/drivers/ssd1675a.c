@@ -250,7 +250,7 @@ void ssd1675a_update_display(void) {
 
 
 // Preserved as "Stable/Reddish" (Works but ~1.1s)
-static uint8_t lut_stable[] = {
+static const uint8_t lut_stable[] = {
     0x22, 0x11, 0x10, 0x00, 0x10, 0x00, 0x00, 
     0x11, 0x88, 0x80, 0x80, 0x80, 0x00, 0x00, 
     0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00, 
@@ -273,7 +273,7 @@ static uint8_t lut_stable[] = {
 //   LUT0: VSH1; LUT1: VSL; LUT2/3: VSH2 (red channel).
 // Supports red pixels when Red RAM is written (LTEST mode).
 // ~TEST VARIANT A — send feedback to tune Ph timings.
-static uint8_t lut_balanced[] = {
+static const uint8_t lut_balanced[] = {
     0xAA, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 black: Ph0=VSL, Ph1=VSH1
     0x55, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 white: Ph0=VSH1, Ph1=VSL
     0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT2 red:   Ph0=VSH2, Ph1=VSH2
@@ -303,7 +303,7 @@ static uint8_t lut_balanced[] = {
 // quality loss is not worth +0.6fps; TURBO is the quality baseline.
 // Next untapped lever: shorten the subframe itself via 0x3A/0x3B (53 dummy
 // lines on a 296-line panel ≈ +18% scan time alone).
-static uint8_t lut_turbo[] = {
+static const uint8_t lut_turbo[] = {
     0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 (black): Ph0=VSH1
     0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 (white): Ph0=VSL
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT2: no red
@@ -324,7 +324,7 @@ static uint8_t lut_turbo[] = {
 // TONE_LIGHT is the inverse: only white pixels get a VSL pulse.
 // Timing: 4 subframes per pass with current scan settings (~60ms measured
 // scale), intentionally weaker than TURBO's 14-subframe full B/W drive.
-static uint8_t lut_tone_dark[] = {
+static const uint8_t lut_tone_dark[] = {
     0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 black: VSH1
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 white: no-op
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -339,7 +339,7 @@ static uint8_t lut_tone_dark[] = {
     0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-static uint8_t lut_tone_light[] = {
+static const uint8_t lut_tone_light[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 black: no-op
     0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 white: VSL
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -358,7 +358,7 @@ static uint8_t lut_tone_light[] = {
 // still-photo modes, every refresh may push black pixels darker and white
 // pixels lighter. The host encodes grayscale as temporal duty-cycle masks, so
 // one display refresh still equals one video output frame.
-static uint8_t lut_tone_bidir_fast[] = {
+static const uint8_t lut_tone_bidir_fast[] = {
     0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 black: VSH1
     0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 white: VSL
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -373,7 +373,7 @@ static uint8_t lut_tone_bidir_fast[] = {
     0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-static uint8_t lut_tone_bidir[] = {
+static const uint8_t lut_tone_bidir[] = {
     0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 black: VSH1
     0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 white: VSL
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -482,7 +482,7 @@ static const uint8_t *base_lut_for_mode(uint8_t mode) {
     }
 }
 
-static uint8_t *make_vlut(int slot) {
+static const uint8_t *make_vlut(int slot) {
     vlut_slot_t *s = &vlut_slots[slot];
     const uint8_t *base = base_lut_for_mode(s->base_mode);
     memcpy(lut_soft_buf, base, 70);
@@ -494,7 +494,7 @@ static uint8_t *make_vlut(int slot) {
     return lut_soft_buf;
 }
 
-static uint8_t *make_soft_lut(const uint8_t *base)
+static const uint8_t *make_soft_lut(const uint8_t *base)
 {
     memcpy(lut_soft_buf, base, 70);
     lut_soft_buf[35] = 0x01;   /* Ph0 TA = 1 subframe */
@@ -502,7 +502,7 @@ static uint8_t *make_soft_lut(const uint8_t *base)
     return lut_soft_buf;
 }
 
-static uint8_t *select_partial_lut(void) {
+static const uint8_t *select_partial_lut(void) {
     /* Virtual slot takes priority if active and defined */
     if (!use_custom_lut && vlut_active_slot >= 0 &&
         ssd1675a_vlut_slot_defined(vlut_active_slot)) {
@@ -513,7 +513,7 @@ static uint8_t *select_partial_lut(void) {
         case SSD1675A_PARTIAL_MODE_TURBO:    return lut_turbo;
         case SSD1675A_PARTIAL_MODE_BALANCED: return lut_balanced;
         case SSD1675A_PARTIAL_MODE_STABLE:   return lut_stable;
-        case SSD1675A_PARTIAL_MODE_CLEAN:    return (uint8_t *)lut_data_default;
+        case SSD1675A_PARTIAL_MODE_CLEAN:    return lut_data_default;
         case SSD1675A_PARTIAL_MODE_TONE_DARK:        return lut_tone_dark;
         case SSD1675A_PARTIAL_MODE_TONE_LIGHT:       return lut_tone_light;
         case SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST:  return lut_tone_bidir_fast;
@@ -525,7 +525,7 @@ static uint8_t *select_partial_lut(void) {
 }
 
 void ssd1675a_update_partial(void) {
-    uint8_t *lut_ptr = select_partial_lut();
+    const uint8_t *lut_ptr = select_partial_lut();
     send_cmd(0x32);
     for (int i = 0; i < 70; i++) { send_data(lut_ptr[i]); }
     // 0xC7: Enable CLK + Analog → Display Mode 1 → Disable Analog + CLK
@@ -542,7 +542,7 @@ void ssd1675a_update_partial(void) {
 // wave time alone: subframes × ~15ms, e.g. ~210ms for the 14-subframe TURBO.
 
 void ssd1675a_begin_streaming(void) {
-    uint8_t *lut_ptr = select_partial_lut();
+    const uint8_t *lut_ptr = select_partial_lut();
     send_cmd(0x32);
     for (int i = 0; i < 70; i++) { send_data(lut_ptr[i]); }
     // 0xC0: Enable CLK + Enable Analog only (no display yet).
