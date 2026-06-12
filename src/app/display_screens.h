@@ -32,6 +32,8 @@ void display_screens_render_partial_test(int32_t frame,
                                          const char *addr);
 void display_screens_render_animation_frame(int x, int y, int size, int frame,
                                              int32_t delta_ms);
+void display_screens_render_palette_test(void);
+void display_screens_render_tone_test_pass(int pass, int max_passes);
 
 /**
  * @brief Render LUT test scene: moving bands + frame counter + timing stats.

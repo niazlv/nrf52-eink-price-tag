@@ -15,6 +15,13 @@ static const char *const wday_names[] = {
     "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"
 };
 
+static const uint8_t bayer4x4[16] = {
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5,
+};
+
 static void format_uptime(int64_t uptime_sec, char *buf, size_t buf_size)
 {
     int d = uptime_sec / 86400;
@@ -56,6 +63,8 @@ static const char *partial_mode_tag(const display_status_model_t *model)
     case 1:  return "B";
     case 2:  return "S";
     case 3:  return "C";
+    case 4:  return "TD";
+    case 5:  return "TL";
     default: return "?";
     }
 }
@@ -228,6 +237,164 @@ void display_screens_render_text(const char *text)
             text++;
         }
     }
+}
+
+static void draw_dither_rect(int x, int y, int width, int height,
+                             int color, int level, int phase)
+{
+    if (level <= 0) {
+        graphics_fill_rect(x, y, width, height, GFX_WHITE);
+        return;
+    }
+    if (level >= 16) {
+        graphics_fill_rect(x, y, width, height, color);
+        return;
+    }
+
+    for (int yy = 0; yy < height; yy++) {
+        for (int xx = 0; xx < width; xx++) {
+            int bx = (xx + phase) & 3;
+            int by = (yy + phase) & 3;
+            int on = level > bayer4x4[by * 4 + bx];
+            graphics_draw_pixel(x + xx, y + yy, on ? color : GFX_WHITE);
+        }
+    }
+}
+
+static void draw_mix_rect(int x, int y, int width, int height,
+                          int red_level, int black_level, int phase)
+{
+    int red_cut = red_level;
+    int black_cut = red_level + black_level;
+
+    if (red_cut < 0) red_cut = 0;
+    if (red_cut > 16) red_cut = 16;
+    if (black_cut < red_cut) black_cut = red_cut;
+    if (black_cut > 16) black_cut = 16;
+
+    for (int yy = 0; yy < height; yy++) {
+        for (int xx = 0; xx < width; xx++) {
+            int bx = (xx + phase) & 3;
+            int by = (yy + phase) & 3;
+            int threshold = bayer4x4[by * 4 + bx];
+            int color = GFX_WHITE;
+
+            if (threshold < red_cut) {
+                color = GFX_RED;
+            } else if (threshold < black_cut) {
+                color = GFX_BLACK;
+            }
+
+            graphics_draw_pixel(x + xx, y + yy, color);
+        }
+    }
+}
+
+static void draw_palette_row(const char *label, int y, int color,
+                             const int levels[8], int sw_x, int sw_w,
+                             int sw_h, int gap)
+{
+    graphics_draw_string(2, y + 4, label);
+    for (int i = 0; i < 8; i++) {
+        int x = sw_x + i * (sw_w + gap);
+        draw_dither_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
+                         color, levels[i], i);
+        graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
+    }
+}
+
+void display_screens_render_palette_test(void)
+{
+    static const int levels[8] = {0, 2, 4, 6, 8, 10, 12, 16};
+    static const int mix_red[8] = {0, 3, 6, 9, 12, 12, 8, 0};
+    static const int mix_blk[8] = {0, 0, 0, 0, 0, 4, 8, 16};
+
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+    int sw_x = 44;
+    int gap = 2;
+    int sw_w = (w - sw_x - 4 - gap * 7) / 8;
+    int sw_h = 16;
+    int y = 13;
+
+    if (sw_w < 10) {
+        sw_w = 10;
+    }
+
+    graphics_clear(GFX_WHITE);
+    graphics_fill_rect(0, 0, w, 10, GFX_BLACK);
+    graphics_draw_string_color(2, 1, "PALETTE TEST  B/W/R + DITHER", GFX_WHITE);
+
+    draw_palette_row("GRAY", y, GFX_BLACK, levels, sw_x, sw_w, sw_h, gap);
+    y += 23;
+    draw_palette_row("RED", y, GFX_RED, levels, sw_x, sw_w, sw_h, gap);
+    y += 23;
+
+    graphics_draw_string(2, y + 4, "MIX");
+    for (int i = 0; i < 8; i++) {
+        int x = sw_x + i * (sw_w + gap);
+        draw_mix_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
+                      mix_red[i], mix_blk[i], i);
+        graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
+    }
+    y += 23;
+
+    graphics_draw_string(2, y + 4, "TONE");
+    for (int i = 0; i < 8; i++) {
+        int x = sw_x + i * (sw_w + gap);
+        int pulse = i == 7 ? 8 : i;
+        char label[4];
+
+        draw_dither_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
+                         GFX_BLACK, levels[i], i + 1);
+        graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
+        snprintf(label, sizeof(label), "%d", pulse);
+        graphics_draw_string(x + 3, y + sw_h + 2, label);
+    }
+
+    graphics_draw_string(2, h - 10, "PALTEST=spatial  TONETEST=physical pulses");
+}
+
+void display_screens_render_tone_test_pass(int pass, int max_passes)
+{
+    static const int pulses[8] = {0, 1, 2, 3, 4, 5, 6, 8};
+    char buf[48];
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+    int sw_x = 28;
+    int gap = 3;
+    int sw_w = (w - sw_x - 4 - gap * 7) / 8;
+    int sw_h = 42;
+    int y = 36;
+
+    (void)max_passes;
+
+    if (sw_w < 10) {
+        sw_w = 10;
+    }
+    if (sw_h > h - y - 24) {
+        sw_h = h - y - 24;
+    }
+
+    graphics_clear(GFX_WHITE);
+
+    graphics_draw_string(2, 2, "TONAL GRAY  0..8 PULSES");
+    graphics_draw_string(2, 13, "black-only LUT: repeated masked pulses");
+    graphics_draw_string(2, 25, "0 1 2 3 4 5 6 8 pulses");
+
+    for (int i = 0; i < 8; i++) {
+        int x = sw_x + i * (sw_w + gap);
+
+        graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
+        if (pulses[i] > pass) {
+            graphics_fill_rect(x + 2, y + 2, sw_w - 4, sw_h - 4, GFX_BLACK);
+        }
+
+        snprintf(buf, sizeof(buf), "%d", pulses[i]);
+        graphics_draw_string(x + 4, y + sw_h + 4, buf);
+    }
+
+    graphics_draw_string(2, h - 10, "After this: CLEAN/NUKE if ghosting stays");
 }
 
 void display_screens_render_partial_test(int32_t frame,

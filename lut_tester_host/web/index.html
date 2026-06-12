@@ -548,7 +548,20 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
         </div>
         <div class="brow" style="margin-top:9px;justify-content:center">
           <button class="btn" onclick="clearCanvas()">Очистить</button>
-          <button class="btn acc" onclick="sendCanvas()">↑ Отправить на дисплей</button>
+          <select id="output-mode" title="Режим вывода" onchange="setOutputMode(this.value)">
+            <option value="dither" selected>Дизер / BWR</option>
+            <option value="tone">Тона / импульсы</option>
+          </select>
+          <button class="btn acc" id="send-bwr" onclick="sendCanvas()">↑ Отправить</button>
+          <span id="tone-send-controls" style="display:none;align-items:center;gap:5px">
+            <select id="tone-pulses" title="Количество тоновых импульсов" onchange="renderImg()">
+              <option value="4">4 тона</option>
+              <option value="8" selected>8 тонов</option>
+              <option value="12">12 тонов</option>
+              <option value="16">16 тонов</option>
+            </select>
+            <button class="btn pur" onclick="sendCanvasTone()">↑ Отправить</button>
+          </span>
         </div>
       </div>
 
@@ -580,6 +593,13 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <div class="ierow"><span class="ielbl">Контраст</span><input type="range" id="ie-con" min="-100" max="100" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-con">0</span></div>
           <div class="ierow"><span class="ielbl">Гамма</span><input type="range" id="ie-gam" min="20" max="300" value="100" step="5" oninput="ieSet()"><span class="ieval" id="iev-gam">1.00</span></div>
           <div class="ierow">
+            <span class="ielbl">Вывод</span>
+            <select id="ie-preview" onchange="setOutputMode(this.value)" style="flex:1">
+              <option value="dither" selected>Дизер / BWR</option>
+              <option value="tone">Тона / импульсы</option>
+            </select>
+          </div>
+          <div class="ierow" id="ie-dither-row">
             <span class="ielbl">Дизер</span>
             <select id="ie-dith" onchange="ieSet()" style="flex:1">
               <option value="none">Нет — порог</option>
@@ -597,12 +617,12 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <option value="random">Случайный шум</option>
             </select>
           </div>
-          <div class="ierow"><span class="ielbl">Порог</span><input type="range" id="ie-thr" min="1" max="254" value="127" step="1" oninput="ieSet()"><span class="ieval" id="iev-thr">127</span></div>
+          <div class="ierow" id="ie-thr-row"><span class="ielbl">Порог</span><input type="range" id="ie-thr" min="1" max="254" value="127" step="1" oninput="ieSet()"><span class="ieval" id="iev-thr">127</span></div>
           <div class="brow" style="margin-top:6px">
             <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)">
               <input type="checkbox" id="ie-inv" style="accent-color:var(--accent)" onchange="ieSet()"> Инверт
             </label>
-            <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Извлекать красные пиксели в красный слой BWR">
+            <label id="ie-red-opt" style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Извлекать красные пиксели в красный слой BWR">
               <input type="checkbox" id="ie-red" style="accent-color:var(--accent)" onchange="ieSet()"> Красный
             </label>
             <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Сглаживание при масштабировании">
@@ -616,7 +636,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <div class="brow" style="margin-top:5px">
             <button class="btn" id="ie-orig" title="Удерживай, чтобы увидеть оригинал без обработки">👁 Оригинал</button>
             <button class="btn" onclick="ieClose()" title="Закрыть редактор (превью останется)">✕ Закрыть</button>
-            <button class="btn acc" onclick="sendCanvas()" style="margin-left:auto">↑ Отправить</button>
+            <button class="btn acc" id="ie-send-bwr" onclick="sendCanvas()" style="margin-left:auto">↑ Отправить</button>
+            <button class="btn pur" id="ie-send-tone" onclick="sendCanvasTone()" style="margin-left:auto;display:none">↑ Отправить</button>
           </div>
           <div class="iehint">Тяни превью — сдвиг/кроп · колесо или щипок — зум · двойной клик/тап — центрировать</div>
         </div>
@@ -642,6 +663,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn ok big" onclick="send('FAPPLY\n')">FAPPLY</button>
           <button class="btn" onclick="send('CLEAN\n')">CLEAN</button>
           <button class="btn bad" onclick="nukeDialog()">NUKE</button>
+          <button class="btn pur" onclick="send('PALTEST\n')">PALTEST</button>
+          <button class="btn ylw" onclick="send('TONETEST\n')">TONETEST</button>
           <button class="btn bad" onclick="rebootDevice()" title="Перезагрузить устройство">REBOOT</button>
           <button class="btn" onclick="sendTime()">TIME</button>
           <button class="btn" onclick="send('BATT\n')">BATT</button>
@@ -658,6 +681,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <option value="1">1 — Balanced</option>
             <option value="2">2 — Stable</option>
             <option value="3">3 — Clean</option>
+            <option value="4">4 — Tone Dark</option>
+            <option value="5">5 — Tone Light</option>
           </select>
           <span class="blbl" style="margin-left:10px">Поворот:</span>
           <select id="rot-sel" onchange="send('ROT: '+this.value+'\n')">
@@ -685,6 +710,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn ok"  onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
           <button class="btn"     onclick="send('LUTSET:STABLE\n')">STABLE</button>
           <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
+          <button class="btn pur" onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
+          <button class="btn ylw" onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
         </div>
       </div>
 
@@ -703,6 +730,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
         <div class="ctitle">LUT тест</div>
         <div class="brow">
           <button class="btn ylw" onclick="send('LTEST\n')">LTEST</button>
+          <button class="btn pur" onclick="send('PALTEST\n')">PALTEST</button>
+          <button class="btn ylw" onclick="send('TONETEST\n')">TONETEST</button>
           <button class="btn"     onclick="send('LTEST 0\n')">LTEST OFF</button>
           <button class="btn ok"  onclick="send('LUTUSE:1\n')">LUTUSE: ON</button>
           <button class="btn bad" onclick="send('LUTUSE:0\n')">LUTUSE: OFF</button>
@@ -773,6 +802,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <option value="BALANCED">BALANCED</option>
               <option value="STABLE">STABLE</option>
               <option value="CLEAN">CLEAN</option>
+              <option value="TONE_DARK">TONE_DARK</option>
+              <option value="TONE_LIGHT">TONE_LIGHT</option>
             </select>
           </div>
           <div style="display:flex;align-items:center;gap:5px">
@@ -864,6 +895,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <button class="btn ok"   onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
           <button class="btn"      onclick="send('LUTSET:STABLE\n')">STABLE</button>
           <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
+          <button class="btn pur"  onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
+          <button class="btn ylw"  onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
         </div>
       </div>
 
@@ -968,6 +1001,13 @@ const DISP_W  = 128;  // physical width
 const DISP_H  = 296;  // physical height
 const FB_SIZE = DISP_W * DISP_H / 8; // 4736
 
+// Binary VSTREAM stop escapes. The second byte is intentionally different:
+// [CC DD] is video/animation stop, so firmware restores the screensaver.
+// [CC DE] is still-photo stop, so firmware powers down HV/fast BLE but leaves
+// the final photo on screen with the screensaver disabled.
+const VS_STOP_VIDEO = new Uint8Array([0xCC, 0xDD]);
+const VS_STOP_PHOTO = new Uint8Array([0xCC, 0xDE]);
+
 const LUT_SZ   = 70;
 const N_GROUPS = 5;
 const N_PHASES = 7;
@@ -1010,19 +1050,105 @@ const ANIM_LUT = new Uint8Array([
 //  App state
 // ═══════════════════════════════════════════════════════════════════
 let bleDevice=null, rxChar=null, txChar=null;
-let connected=false, mtu=247; // optimistic; shrinks on InvalidModificationError
+let connected=false, mtu=498; // optimistic (firmware ATT MTU 498); shrinks on InvalidModificationError
 let rxBuf='';
 let lut = new Uint8Array(FACTORY_LUT);
 let lgetBuf = Array(7).fill(null);
 let tele = {fap:null, fast:null, full:null, lut_name:null};
+let lineWaiters = [];
 
-// VStream
+// VStream — pipelined session (mirrors vstream.py): up to vs.window frames may
+// be in flight; every TELE:vs ACK returns one credit. Counting ACKs instead of
+// a single buffered slot makes late/duplicate ACKs harmless (the old single-slot
+// scheme lost ACKs after a resync raced a delayed ACK → cascading timeouts).
 let streamRunning=false, streamStop=false;
-let vstreamAckFn=null, vstreamAckBuf=null;
 let streamSendCancel=null; // cancels stuck sendBytesStream()
+const vs = {
+  window: 3,
+  inflight: 0,
+  acked: 0,
+  lastMs: 0,
+  ackTimes: [],        // rolling timestamps (≤21) → cyc = avg ACK period
+  dispHist: [],        // rolling device ms (≤20) → display share of the cycle
+  creditWaiters: [],
+  drainWaiters: [],
+  readyWaiters: [],
+};
+function vsReset() {
+  vs.inflight=0; vs.acked=0; vs.lastMs=0;
+  vs.ackTimes=[]; vs.dispHist=[];
+  vs.creditWaiters=[]; vs.drainWaiters=[]; vs.readyWaiters=[];
+}
+function vsOnAck(line) {
+  const m = line.match(/ms=(\d+)/);
+  vs.lastMs = m ? +m[1] : 0;
+  vs.acked++;
+  vs.ackTimes.push(performance.now()); if (vs.ackTimes.length>21) vs.ackTimes.shift();
+  vs.dispHist.push(vs.lastMs);          if (vs.dispHist.length>20) vs.dispHist.shift();
+  if (vs.inflight>0) vs.inflight--;
+  const w = vs.creditWaiters.shift();
+  if (w) w(true);
+  if (vs.inflight===0) { vs.drainWaiters.forEach(f=>f()); vs.drainWaiters=[]; }
+}
+function vsOnReady() {
+  vs.readyWaiters.forEach(f=>f()); vs.readyWaiters=[];
+}
+// Resolve false on timeout/abort, true when a slot is available.
+function vsAcquireCredit(timeoutMs=15000) {
+  if (vs.inflight < vs.window) { vs.inflight++; return Promise.resolve(true); }
+  return new Promise(res => {
+    let done=false;
+    const fn = ok => { if(!done){ done=true; clearTimeout(t); if(ok) vs.inflight++; res(ok); } };
+    const t = setTimeout(() => {
+      const i = vs.creditWaiters.indexOf(fn);
+      if (i>=0) vs.creditWaiters.splice(i,1);
+      fn(false);
+    }, timeoutMs);
+    vs.creditWaiters.push(fn);
+  });
+}
+function vsDrain(timeoutMs=15000) {
+  if (vs.inflight===0) return Promise.resolve(true);
+  return new Promise(res => {
+    let done=false;
+    const fn = () => { if(!done){ done=true; clearTimeout(t); res(true); } };
+    const t = setTimeout(() => {
+      const i = vs.drainWaiters.indexOf(fn);
+      if (i>=0) vs.drainWaiters.splice(i,1);
+      if (!done){ done=true; res(false); }
+    }, timeoutMs);
+    vs.drainWaiters.push(fn);
+  });
+}
+function vsWaitReady(timeoutMs=10000) {
+  return new Promise(res => {
+    let done=false;
+    const fn = () => { if(!done){ done=true; clearTimeout(t); res(true); } };
+    const t = setTimeout(() => {
+      const i = vs.readyWaiters.indexOf(fn);
+      if (i>=0) vs.readyWaiters.splice(i,1);
+      if (!done){ done=true; res(false); }
+    }, timeoutMs);
+    vs.readyWaiters.push(fn);
+  });
+}
+function vsAbort() { // wake every waiter so loops can exit promptly on Stop
+  vs.creditWaiters.splice(0).forEach(f=>f(false));
+  vs.drainWaiters.splice(0).forEach(f=>f());
+  vs.readyWaiters.splice(0).forEach(f=>f());
+}
+function vsCycleMs() {
+  const t = vs.ackTimes;
+  return t.length>=2 ? (t[t.length-1]-t[0])/(t.length-1) : 0;
+}
+function vsDispMs() {
+  const d = vs.dispHist;
+  return d.length ? d.reduce((a,b)=>a+b,0)/d.length : 0;
+}
 let animVideoEl=null, animDecoder=null;
 let animTotalFrames=0, animFileType=null, animImgEl=null;
-let animPreEncoded=null; // Array of Uint8Array (1-bpp frames), filled by preEncodeVideo()
+let animPreEncoded=null; // Full-frame cache, filled only after background encode reaches the end
+let animFrameProducer=null; // Bounded background video encoder for the current stream
 let animScreenStream=null; // MediaStream from getDisplayMedia
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1078,7 +1204,7 @@ async function bleConnect() {
     await txChar.startNotifications();
     txChar.addEventListener('characteristicvaluechanged', onNotify);
     connected = true;
-    mtu = 247; // reset to optimistic; sendBytes will shrink on first oversized write
+    mtu = 498; // reset to optimistic; sendBytes will shrink on first oversized write
     updateMtuDisplay();
     setStatus(`Подключено → ${bleDevice.name}`, true);
     $('btn-conn').textContent = 'Отключить';
@@ -1118,13 +1244,45 @@ function onNotify(ev) {
     rxBuf = rxBuf.slice(nl + 1);
     if (!line) continue;
     logR(line);
+    wakeLineWaiters(line);
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
-    if (line.startsWith('TELE:vs')) {
-      if (vstreamAckFn) vstreamAckFn(line);
-      else vstreamAckBuf = line; // buffer in case sendBytes resolved before waitAck registered
+    if (line.startsWith('TELE:vs')) vsOnAck(line);
+    if (line.startsWith('VSTREAM:')) {
+      logI(line);
+      if (line.startsWith('VSTREAM:ready')) vsOnReady();
     }
-    if (line.startsWith('VSTREAM:')) logI(line);
+  }
+}
+
+function waitForLine(match, timeoutMs=10000) {
+  return new Promise(resolve => {
+    let done = false;
+    const fn = line => {
+      if (done) return false;
+      const ok = typeof match === 'function' ? match(line) : match.test(line);
+      if (!ok) return false;
+      done = true;
+      clearTimeout(timer);
+      resolve(line);
+      return true;
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      const i = lineWaiters.indexOf(fn);
+      if (i >= 0) lineWaiters.splice(i, 1);
+      resolve(null);
+    }, timeoutMs);
+    lineWaiters.push(fn);
+  });
+}
+
+function wakeLineWaiters(line) {
+  for (const fn of lineWaiters.slice()) {
+    if (!fn(line)) continue;
+    const i = lineWaiters.indexOf(fn);
+    if (i >= 0) lineWaiters.splice(i, 1);
   }
 }
 
@@ -1155,7 +1313,9 @@ async function sendBytes(data, noResponse=false, abortRef=null) {
       i += sz;
     } catch (e) {
       if (e.name === 'InvalidModificationError' && chunkSz > 20) {
-        chunkSz = Math.max(20, chunkSz >> 1);
+        // First fallback targets the old-firmware MTU (247) instead of blind
+        // halving, so devices without the 498-MTU build still get full chunks.
+        chunkSz = chunkSz > 244 ? 244 : Math.max(20, chunkSz >> 1);
         mtu = chunkSz + 3;
         updateMtuDisplay();
       } else {
@@ -1381,6 +1541,35 @@ function ieFlip(axis) {
   renderImg();
 }
 
+function currentOutputMode() {
+  const top = $('output-mode');
+  const ed = $('ie-preview');
+  return ((ed && ed.value) || (top && top.value) || 'dither') === 'tone' ? 'tone' : 'dither';
+}
+
+function showEl(id, show, display='') {
+  const el = $(id);
+  if (el) el.style.display = show ? display : 'none';
+}
+
+function setOutputMode(mode, rerender=true) {
+  const m = mode === 'tone' ? 'tone' : 'dither';
+  const tone = m === 'tone';
+
+  if ($('output-mode')) $('output-mode').value = m;
+  if ($('ie-preview')) $('ie-preview').value = m;
+
+  showEl('send-bwr', !tone);
+  showEl('tone-send-controls', tone, 'inline-flex');
+  showEl('ie-dither-row', !tone);
+  showEl('ie-thr-row', !tone);
+  showEl('ie-red-opt', !tone, 'flex');
+  showEl('ie-send-bwr', !tone);
+  showEl('ie-send-tone', tone);
+
+  if (rerender && IE.img) renderImg();
+}
+
 // Read all controls into state + refresh value labels, then re-render
 function ieSet() {
   IE.rot  = +$('ie-rot').value;
@@ -1391,6 +1580,7 @@ function ieSet() {
   $('iev-con').textContent  = $('ie-con').value;
   $('iev-gam').textContent  = (+$('ie-gam').value / 100).toFixed(2);
   $('iev-thr').textContent  = $('ie-thr').value;
+  setOutputMode(currentOutputMode(), false);
   renderImg();
 }
 
@@ -1424,7 +1614,11 @@ function renderImg() {
   if (IE.raw) { ctx.drawImage(oc, 0, 0); return; }
   // 2) Adjust + dither
   const id = o.getImageData(0, 0, 296, 128);
-  ieProcess(id);
+  if (currentOutputMode() === 'tone') {
+    ieProcessTonePreview(id);
+  } else {
+    ieProcess(id);
+  }
   ctx.putImageData(id, 0, 0);
 }
 
@@ -1481,6 +1675,25 @@ function ieProcess(id) {
     if (red && red[i]) { d[i*4] = 200; d[i*4+1] = 0; d[i*4+2] = 0; d[i*4+3] = 255; continue; }
     const v = (out[i] === 1) !== inv ? 0 : 255;
     d[i*4] = d[i*4+1] = d[i*4+2] = v; d[i*4+3] = 255;
+  }
+}
+
+function ieProcessTonePreview(id) {
+  const d = id.data;
+  const n = 296 * 128;
+  const lut = makeAdjustLut();
+  const maxPulse = parseInt($('tone-pulses')?.value) || 8;
+  const inv = $('ie-inv').checked;
+
+  for (let i = 0; i < n; i++) {
+    const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
+    const gray = lut[(0.299*r + 0.587*g + 0.114*b) | 0];
+    const dark = inv ? gray / 255 : (255 - gray) / 255;
+    const level = clamp(Math.round(dark * maxPulse), 0, maxPulse);
+    const v = 255 - Math.round(level * 255 / Math.max(1, maxPulse));
+
+    d[i*4] = d[i*4+1] = d[i*4+2] = v;
+    d[i*4+3] = 255;
   }
 }
 
@@ -1589,11 +1802,149 @@ function canvasToPhys(ctx) {
   return { bw, red };
 }
 
+function makeAdjustLut() {
+  const bri = +$('ie-bri').value, con = +$('ie-con').value;
+  const gam = +$('ie-gam').value / 100;
+  const cf = (259 * (con * 2.55 + 255)) / (255 * (259 - con * 2.55));
+  const lut = new Uint8ClampedArray(256);
+
+  for (let v = 0; v < 256; v++) {
+    const g = 255 * Math.pow(v / 255, 1 / gam);
+    lut[v] = cf * (g - 128) + 128 + bri * 1.27;
+  }
+
+  return lut;
+}
+
+function toneSourceImageData() {
+  if (IE.img) {
+    renderImg();
+  }
+
+  if (IE.img && IE.oc) {
+    return { id: IE.oc.getContext('2d').getImageData(0, 0, 296, 128), raw: true };
+  }
+
+  return {
+    id: $('disp-canvas').getContext('2d').getImageData(0, 0, 296, 128),
+    raw: false,
+  };
+}
+
+function canvasToToneLevels(maxPulse) {
+  const src = toneSourceImageData();
+  const d = src.id.data;
+  const levels = new Uint8Array(296 * 128);
+  const lut = src.raw ? makeAdjustLut() : null;
+  const inv = src.raw && $('ie-inv').checked;
+
+  for (let i = 0; i < levels.length; i++) {
+    const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
+    let gray = (0.299*r + 0.587*g + 0.114*b) | 0;
+    if (lut) gray = lut[gray];
+
+    const dark = inv ? gray / 255 : (255 - gray) / 255;
+    levels[i] = clamp(Math.round(dark * maxPulse), 0, maxPulse);
+  }
+
+  return levels;
+}
+
+function toneLevelsToFrame(levels, pass) {
+  const buf = new Uint8Array(FB_SIZE).fill(0xFF);
+
+  for (let ly = 0; ly < DISP_W; ly++) {
+    for (let lx = 0; lx < DISP_H; lx++) {
+      if (levels[ly * 296 + lx] <= pass) continue;
+
+      const phx = DISP_W - 1 - ly;
+      const phy = lx;
+      const bi  = phy * 16 + (phx >> 3);
+      const msk = 1 << (7 - (phx & 7));
+      buf[bi] &= ~msk;
+    }
+  }
+
+  return buf;
+}
+
 async function sendCanvas() {
   if (!connected) { alert('Не подключено'); return; }
   const ctx = $('disp-canvas').getContext('2d');
   const { bw, red } = canvasToPhys(ctx);
   await sendBWR(bw, red, 'canvas');
+}
+
+async function sendCanvasTone() {
+  if (!connected) { alert('Не подключено'); return; }
+  if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
+
+  const maxPulse = parseInt($('tone-pulses').value) || 8;
+  const levels = canvasToToneLevels(maxPulse);
+  const usedMax = levels.reduce((m, v) => Math.max(m, v), 0);
+  let prev = null;
+
+  streamRunning = true;
+  streamStop = false;
+  vsReset();
+
+  logI(`Отправляю canvas тонами: ${maxPulse} импульсов, max=${usedMax}`);
+
+  try {
+    await sendBytes(new TextEncoder().encode('HOST:1\n'));
+    await sendBytes(new TextEncoder().encode('SS:0\n'));
+    await sleep(100);
+
+    const clearWait = waitForLine(line => line === 'cleared', 2500);
+    await sendBytes(new TextEncoder().encode('CLEAR\n'));
+    await clearWait;
+
+    logI('  база: полный белый кадр...');
+    const fullWait = waitForLine(
+      line => line.startsWith('TELE:full') || /^done \d+ms/.test(line),
+      20000
+    );
+    await sendBytes(new TextEncoder().encode('UPDATE\n'));
+    if (!await fullWait) {
+      logI('  не дождался TELE:full, продолжаю после таймаута');
+    }
+
+    const lutWait = waitForLine(line => line.startsWith('LUTSET:TONE_DARK'), 2500);
+    await sendBytes(new TextEncoder().encode('LUTSET:TONE_DARK\n'));
+    await lutWait;
+
+    const readyWait = vsWaitReady(12000);
+    await sendBytes(new TextEncoder().encode('VSTREAM:start:TONE_DARK\n'));
+    if (!await readyWait) {
+      logI('  нет VSTREAM:ready за 12с, продолжаю осторожно');
+    }
+
+    for (let pass = 0; pass < maxPulse && !streamStop; pass++) {
+      if (!await vsAcquireCredit(15000)) {
+        throw new Error('нет ACK/credit для tone frame');
+      }
+
+      const frame = toneLevelsToFrame(levels, pass);
+      const pkt = makeVSPkt(frame, 2, prev);
+      await sendBytesStream(pkt);
+      prev = frame;
+
+      const pct = Math.round((pass + 1) * 100 / maxPulse);
+      logI(`  tone pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${pkt.length}B`);
+    }
+
+    await vsDrain(20000);
+    logI('canvas отправлен тонами');
+  } catch (e) {
+    if (e.message !== 'stopped') logE('Tone send: ' + e.message);
+  } finally {
+    // Still-photo finish: stop binary stream, drop HV/fast BLE, keep saver off
+    // so the tonal image remains on the e-paper after the channel relaxes.
+    try { await sendBytes(VS_STOP_PHOTO, true); } catch(e) {}
+    await sleep(300);
+    streamRunning = false;
+    streamStop = false;
+  }
 }
 
 async function sendBWR(bw, red, desc) {
@@ -1707,10 +2058,19 @@ setupDrop($('anim-drop'), f=>loadAnimFile(f));
 // ═══════════════════════════════════════════════════════════════════
 //  VStream — animation streaming
 // ═══════════════════════════════════════════════════════════════════
+function cancelAnimProducer() {
+  if (!animFrameProducer) return;
+  const p = animFrameProducer;
+  animFrameProducer = null;
+  p.cancel();
+}
+
 async function loadAnimFile(file) {
   if (!file) return;
   const info = $('anim-info');
   info.textContent = 'Загружаю: ' + file.name + '…';
+  cancelAnimProducer();
+  animPreEncoded=null;
   animDecoder=null; animVideoEl=null; animImgEl=null;
   animTotalFrames=0; animFileType=null;
 
@@ -1733,7 +2093,10 @@ async function loadAnimFile(file) {
   if (isVideo || isGif) {
     if (!animVideoEl) {
       animVideoEl = document.createElement('video');
-      animVideoEl.muted = true; animVideoEl.style.display='none';
+      animVideoEl.muted = true;
+      animVideoEl.playsInline = true;
+      animVideoEl.preload = 'auto';
+      animVideoEl.style.display='none';
       document.body.appendChild(animVideoEl);
     }
     animVideoEl.src = URL.createObjectURL(file);
@@ -1756,6 +2119,8 @@ async function loadAnimFile(file) {
 //  Screen capture
 // ═══════════════════════════════════════════════════════════════════
 async function startScreenShare() {
+  cancelAnimProducer();
+  animPreEncoded=null;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
     alert('getDisplayMedia не поддерживается.\nОткрой в Chrome и убедись что сайт открыт через https:// или localhost.');
     return;
@@ -1811,13 +2176,14 @@ function toggleStream() { if(streamRunning) stopStream(); else startStream(); }
 function stopStream() {
   streamStop=true;
   if(streamSendCancel) { streamSendCancel(); streamSendCancel=null; }
-  if(vstreamAckFn) vstreamAckFn(null);
+  cancelAnimProducer();
+  vsAbort(); // wake credit/drain waiters so the loop exits promptly
 }
 
 async function startStream() {
   if (!connected){ alert('Не подключено'); return; }
   if (!animFileType){ alert('Загрузи файл анимации'); return; }
-  streamRunning=true; streamStop=false; vstreamAckBuf=null;
+  streamRunning=true; streamStop=false; vsReset();
   $('btn-stream').textContent='⏸ Pause';
 
   const encType  = parseInt($('enc-type').value);
@@ -1836,64 +2202,109 @@ async function startStream() {
   const oc  = new OffscreenCanvas(tw, th);
   const oct = oc.getContext('2d', {willReadFrequently:true});
 
-  // Pre-encode video frames sequentially (no seeking) for maximum throughput.
-  // For GIF/image the cache is not needed — ImageDecoder already gives random access.
+  // Start a bounded background encoder for video: wait only for a small startup
+  // buffer, then stream while decoding continues ahead of the BLE/display loop.
   if (animFileType === 'video') {
     animPreEncoded = null;
-    animLog('⏳ Кодирование кадров…');
-    $('stream-st').textContent = 'Кодирую…';
-    const ok = await preEncodeVideo(tw, th, dith, inv, land, rot, scale,
-      (done, total) => {
-        $('stream-prog').style.width = (done/total*100).toFixed(1)+'%';
-        $('stream-st').textContent = `Кодирую ${done}/${total}`;
-      });
-    if (streamStop) return; // user aborted during pre-encode
-    if (ok) {
-      animTotalFrames = animPreEncoded.length; // use actual encoded count
-      animLog(`✓ Закодировано ${animTotalFrames} кадров`);
+    let waitingForBuffer = true;
+    animFrameProducer = startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, s => {
+      if (!waitingForBuffer || streamStop) return;
+      const need = Math.max(1, s.startBuffer);
+      $('stream-prog').style.width = (Math.min(s.ready, need)/need*100).toFixed(0)+'%';
+      $('stream-st').textContent = `Буфер ${Math.min(s.ready, need)}/${need}`;
+    });
+    if (animFrameProducer) {
+      const s0 = animFrameProducer.stats();
+      animLog(`⏳ Буферизую ${s0.startBuffer} кадров, дальше кодирование пойдёт в фоне`);
+      $('stream-st').textContent = 'Буферизую…';
+      const ok = await animFrameProducer.waitForStart(10000);
+      waitingForBuffer = false;
+      if (streamStop) {
+        cancelAnimProducer();
+        streamRunning=false; streamStop=false;
+        $('btn-stream').textContent='▶ Stream';
+        $('stream-st').textContent='Остановлено';
+        $('stream-prog').style.width='0%';
+        return;
+      }
+      const s = animFrameProducer.stats();
+      if (ok) {
+        animTotalFrames = s.total;
+        animLog(`▶ Старт с буфером ${s.ready}/${s.total}; лимит ahead=${s.maxAhead} кадров`);
+      } else {
+        animLog('⚠ Фоновое кодирование не стартовало за 10с — seek-режим');
+        cancelAnimProducer();
+      }
     } else {
-      animLog('⚠ Pre-encode недоступен, seek-режим');
+      animLog('⚠ requestVideoFrameCallback не поддерживается — seek-режим');
     }
     $('stream-prog').style.width = '0%';
   }
 
   await sendBytes(new TextEncoder().encode(`LUTSET:${lut}\n`));
   await sleep(150);
-  await sendBytes(new TextEncoder().encode('VSTREAM:start\n'));
-  await sleep(400);
-  animLog(`▶ VSTREAM:start | lut=${lut} mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
-
-  const waitAck = (to=8000) => new Promise((res,rej) => {
-    if (vstreamAckBuf !== null) {
-      const line=vstreamAckBuf; vstreamAckBuf=null;
-      const m=line.match(/ms=(\d+)/); res(m?+m[1]:0); return;
-    }
-    vstreamAckFn = line => {
-      vstreamAckFn=null;
-      if (line===null) rej(new Error('stopped'));
-      else { const m=line.match(/ms=(\d+)/); res(m?+m[1]:0); }
-    };
-    setTimeout(()=>{ if(vstreamAckFn){vstreamAckFn=null;rej(new Error('ACK timeout'));} }, to);
-  });
+  await sendBytes(new TextEncoder().encode(`VSTREAM:start:${lut}\n`));
+  // Device primes the display before replying ready (deep-sleep wake + HV
+  // charge, ~1s) — don't blast frames into an unprimed controller.
+  if (!await vsWaitReady(10000))
+    animLog('⚠ нет VSTREAM:ready за 10с — старая прошивка? продолжаю');
+  animLog(`▶ VSTREAM:start:${lut} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
 
   let prev=null, loop_n=0;
   const t0 = performance.now();
-  let framesDone=0;
+  let framesDone=0;  // frames sent (vs.acked = frames confirmed by device)
+  let resyncs=0;
+
+  const statusTxt = (head, pktLen, extra='') => {
+    const elapsed=(performance.now()-t0)/1000;
+    const fps = elapsed>0 ? vs.acked/elapsed : 0;
+    const cyc=vsCycleMs(), disp=vsDispMs(), net=Math.max(0,cyc-disp);
+    const buf = animFrameProducer ? (() => {
+      const s = animFrameProducer.stats();
+      return ` | enc=${s.ready}/${s.total} buf=${s.ahead}`;
+    })() : '';
+    return `${head} ${fps.toFixed(1)}fps | cyc~${cyc.toFixed(0)} disp~${disp.toFixed(0)} `+
+           `net~${net.toFixed(0)}ms | pkt=${pktLen}B${buf}${extra}`;
+  };
+
+  // Pipelined send: waits only when the in-flight window (vs.window) is full,
+  // i.e. the display is the bottleneck — BLE transfer overlaps the LUT wave.
+  // 15s credit timeout rides out the worst device pauses (DC-balance full
+  // refresh every 500 frames ≈ 1.5-2.5s, deep-sleep recovery up to 8s).
+  // Returns packet length, or null when the stream must stop.
+  async function sendFrame(fr) {
+    if (!await vsAcquireCredit(15000)) {
+      if (streamStop) return null;
+      if (++resyncs > 3) { animLog('⚠ слишком много resync — стоп'); return null; }
+      // No ACK in 15s: drop stale in-flight accounting, send full RLE keyframe
+      animLog('↺ нет ACK 15с — resync RLE-кадром');
+      vs.inflight = 0;
+      await vsAcquireCredit(1); // grants instantly at inflight=0
+      try { await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null)); }
+      catch(e) { animLog('⚠ resync: '+e.message); return null; }
+      prev = fr; framesDone++;
+      return 0;
+    }
+    const pkt = makeVSPkt(fr, encType, prev);
+    try { await sendBytesStream(pkt); }
+    catch(e) {
+      if (e.message !== 'stopped') animLog(`↺ send error: ${e.message}`);
+      return null;
+    }
+    prev = fr; framesDone++;
+    return pkt.length;
+  }
 
   try {
     if (animFileType === 'screen') {
-      // Real-time screen capture — no seeking, no frame count, ACK-throttled
+      // Real-time screen capture — no seeking, no frame count
       let lastSentMs = performance.now();
       const KEEPALIVE_MS = 5000; // re-send prev frame if stalled to beat device watchdog (30s)
       while (!streamStop) {
         const fr = await getAnimFrame(0, 1, fps, oct, tw, th, dith, inv, land, rot, scale);
         if (!fr) {
           if (prev && performance.now() - lastSentMs > KEEPALIVE_MS) {
-            const pkt = makeVSPkt(prev, encType, prev);
-            try {
-              await sendBytesStream(pkt);
-              await waitAck(8000);
-            } catch(e) { animLog('⚠ keepalive: '+e.message); break; }
+            if (await sendFrame(prev) === null) break;
             lastSentMs = performance.now();
             animLog('↺ keepalive (screen stalled)');
           } else {
@@ -1901,79 +2312,34 @@ async function startStream() {
           }
           continue;
         }
-        const pkt = makeVSPkt(fr, encType, prev);
-        let ackMs, needResync = false;
-        try {
-          await sendBytesStream(pkt);
-        } catch(e) {
-          if (e.message === 'stopped') break;
-          needResync = true;
-          animLog(`↺ send error: ${e.message}`);
-        }
-        if (!needResync) {
-          try {
-            ackMs = await waitAck(8000);
-          } catch(e) {
-            if (e.message === 'stopped') break;
-            needResync = true;
-            animLog(`↺ ACK timeout, resync RLE`);
-          }
-        }
-        if (needResync) {
-          try {
-            await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null));
-            ackMs = await waitAck(8000);
-          } catch(e2) { animLog('⚠ resync failed: '+e2.message); break; }
-        }
-        prev = fr;
+        const pktLen = await sendFrame(fr);
+        if (pktLen === null) break;
         lastSentMs = performance.now();
-        framesDone++;
-        const elapsed = (performance.now()-t0)/1000;
-        const actualFps = framesDone/elapsed;
-        $('stream-st').textContent =
-          `[${framesDone}] ${actualFps.toFixed(1)}fps | disp=${ackMs}ms | pkt=${pkt.length}B`;
+        $('stream-st').textContent = statusTxt(`[${framesDone}]`, pktLen);
         if (framesDone%30===0)
-          animLog(`Screen frame ${framesDone} | ${actualFps.toFixed(1)}fps | pkt=${pkt.length}B | disp=${ackMs}ms`);
+          animLog(`Screen ${statusTxt(`frame ${framesDone} |`, pktLen)}`);
       }
     } else {
       outer: while (!streamStop) {
         loop_n++;
         if (animFileType==='video' && animVideoEl)
-          if (!animPreEncoded)
+          if (!animPreEncoded && !animFrameProducer)
             animTotalFrames = Math.max(1, Math.round(animVideoEl.duration * fps));
 
         let i=0;
         while (i < animTotalFrames && !streamStop) {
+          // sync mode: hold to the source timeline — with pipelining the send
+          // returns early, so slow sources would otherwise play too fast.
+          if (syncMode==='sync') {
+            const deadline = t0 + (i/fps)*1000;
+            const ahead = deadline - performance.now();
+            if (ahead > 5) await sleep(ahead);
+          }
           const fr = await getAnimFrame(i, animTotalFrames, fps, oct, tw, th, dith, inv, land, rot, scale);
           if (!fr) { i++; continue; }
-          const pkt = makeVSPkt(fr, encType, prev);
-          let ackMs, needResync = false;
-          try {
-            await sendBytesStream(pkt);
-          } catch(e) {
-            if (e.message === 'stopped') break outer;
-            needResync = true;
-            animLog(`↺ send error [${i}]: ${e.message}`);
-          }
-          if (!needResync) {
-            try {
-              ackMs = await waitAck(8000);
-            } catch(e) {
-              if (e.message === 'stopped') break outer;
-              needResync = true;
-              animLog(`↺ ACK timeout [${i}], resync RLE`);
-            }
-          }
-          if (needResync) {
-            try {
-              await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null));
-              ackMs = await waitAck(8000);
-            } catch(e2) { animLog('⚠ resync failed: '+e2.message); break outer; }
-          }
-          prev = fr;
-          framesDone++;
+          const pktLen = await sendFrame(fr);
+          if (pktLen === null) break outer;
           const elapsed = (performance.now()-t0)/1000;
-          const actualFps = framesDone/elapsed;
 
           let skipped=0;
           if (syncMode==='sync') {
@@ -1987,21 +2353,24 @@ async function startStream() {
           const pct = (i/animTotalFrames*100).toFixed(0);
           $('stream-prog').style.width = pct+'%';
           $('stream-st').textContent =
-            `[${i}/${animTotalFrames}] ${actualFps.toFixed(1)}fps | disp=${ackMs}ms | pkt=${pkt.length}B`+
-            (skipped>0?` | ⏭${skipped}`:'');
+            statusTxt(`[${i}/${animTotalFrames}]`, pktLen, skipped>0?` | ⏭${skipped}`:'');
           if (framesDone%20===0)
-            animLog(`Frame ${i}/${animTotalFrames} | ${actualFps.toFixed(1)}fps | pkt=${pkt.length}B | disp=${ackMs}ms`+
-                    (skipped>0?` | skip=${skipped}`:''));
+            animLog(statusTxt(`Frame ${i}/${animTotalFrames} |`, pktLen,
+                              skipped>0?` | skip=${skipped}`:''));
         }
         if (!loop || streamStop) break;
         animLog(`Loop ${loop_n} завершён`);
       }
     }
+    // Let the device confirm everything still in flight before sending stop.
+    if (!streamStop) await vsDrain(15000);
   } catch(e) { animLog('Ошибка: '+e.message); logE(e.message); }
   finally {
-    try { await sendBytes(new Uint8Array([0xCC,0xDD]), true); } catch(e) {}
+    cancelAnimProducer();
+    // Video/animation finish: stop binary stream and let firmware restore saver.
+    try { await sendBytes(VS_STOP_VIDEO, true); } catch(e) {}
     await sleep(300);
-    vstreamAckFn=null; vstreamAckBuf=null; streamRunning=false; streamStop=false;
+    streamRunning=false; streamStop=false;
     $('btn-stream').textContent='▶ Stream';
     $('stream-st').textContent='Завершено';
     $('stream-prog').style.width='0%';
@@ -2011,6 +2380,19 @@ async function startStream() {
 }
 
 async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, scale='fit') {
+  // Streaming video path: frames are produced sequentially in the background.
+  if (animFrameProducer) {
+    const buf = await animFrameProducer.get(i);
+    if (buf) {
+      updateAnimPreview(buf);
+      return buf;
+    }
+    if (streamStop) return null;
+    const s = animFrameProducer.stats();
+    if (s.failed || s.canceled) cancelAnimProducer();
+    else return null;
+  }
+
   // Fast path: use pre-encoded cache if available (video only)
   if (animPreEncoded && animPreEncoded[i]) {
     const buf = animPreEncoded[i];
@@ -2045,83 +2427,235 @@ async function getAnimFrame(i, total, fps, ctx, tw, th, dith, inv, land, rot=0, 
   return buf;
 }
 
-/* Pre-encode all video frames sequentially using requestVideoFrameCallback.
- * Plays the video at max speed, captures each decoded frame in order — no
- * seeking, so the browser decoder runs in its fast sequential path.
- * Result stored in animPreEncoded (Array of Uint8Array 1-bpp buffers). */
-async function preEncodeVideo(tw, th, dith, inv, land, rot, scale, onProgress) {
-  animPreEncoded = null;
-  if (animFileType !== 'video' || !animVideoEl) return false;
-  if (!('requestVideoFrameCallback' in animVideoEl)) {
-    animLog('requestVideoFrameCallback не поддерживается браузером — seek-режим');
-    return false;
-  }
+function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onProgress) {
+  if (animFileType !== 'video' || !animVideoEl) return null;
+  if (!('requestVideoFrameCallback' in animVideoEl)) return null;
 
-  const fps   = parseFloat($('enc-fps').value) || 12;
-  const total = Math.max(1, Math.round(animVideoEl.duration * fps));
-  const interval = animVideoEl.duration / total;
-  const frames = new Array(total).fill(null); // pre-allocated, no sparse array bugs
-  let frameCount = 0;
+  const video = animVideoEl;
+  const total = Math.max(1, Math.round(video.duration * fps));
+  const interval = video.duration / total;
+  const startBuffer = Math.min(total, clamp(Math.ceil(fps * 1.5), 6, 30));
+  const maxAhead = Math.min(total, Math.max(startBuffer + 4, clamp(Math.ceil(fps * 5), 24, 90)));
+  const resumeAhead = Math.max(startBuffer, Math.floor(maxAhead * 0.55));
+  const frames = new Array(total).fill(null);
   const oc  = new OffscreenCanvas(tw, th);
   const oct = oc.getContext('2d', {willReadFrequently:true});
 
-  animVideoEl.currentTime = 0;
-  await new Promise(r => animVideoEl.addEventListener('seeked', r, {once:true}));
-  animVideoEl.playbackRate = 16;
+  let ready = 0;          // contiguous frames available from index 0
+  let produced = 0;       // unique target slots filled
+  let consumed = -1;      // last frame index requested by the sender
+  let lastTarget = -1;
+  let lastFrame = null;
+  let done = false, canceled = false, failed = false, pausedForBuffer = false;
+  let lastProgressAt = 0;
+  const indexWaiters = new Map();
+  const startWaiters = [];
 
-  await new Promise((resolve) => {
-    let lastTarget = -1;
-    let resolved = false;
-    const done = () => {
-      if (resolved) return;
-      resolved = true;
-      animVideoEl.pause();
-      animVideoEl.removeEventListener('ended', done);
-      resolve();
-    };
-
-    // Safety net: video may end without the last rVFC callback firing
-    animVideoEl.addEventListener('ended', done, {once:true});
-
-    const onFrame = (_now, meta) => {
-      if (streamStop || resolved) { done(); return; }
-      const t = meta.mediaTime;
-      const targetIdx = Math.min(total - 1, Math.floor(t / interval));
-
-      if (targetIdx > lastTarget) {
-        lastTarget = targetIdx;
-        oct.fillStyle = 'white';
-        oct.fillRect(0, 0, tw, th);
-        drawScaledRotated(oct, animVideoEl, animVideoEl.videoWidth, animVideoEl.videoHeight, tw, th, rot, scale);
-        frames[targetIdx] = canvasTo1bpp(oct, tw, th, dith, inv, land);
-        frameCount++;
-        if (frameCount % 10 === 0 || lastTarget === total - 1)
-          updateAnimPreview(frames[lastTarget]);
-        onProgress(frameCount, total);
-      }
-
-      if (lastTarget >= total - 1) {
-        done();
-      } else {
-        animVideoEl.requestVideoFrameCallback(onFrame);
-      }
-    };
-
-    animVideoEl.requestVideoFrameCallback(onFrame);
-    animVideoEl.play().catch(done);
+  const ahead = () => Math.max(0, ready - consumed - 1);
+  const stats = () => ({
+    total, ready, produced, startBuffer, maxAhead, resumeAhead,
+    ahead: ahead(), done, canceled, failed, paused: pausedForBuffer,
   });
+  const emitProgress = (force=false) => {
+    const now = performance.now();
+    if (!force && now - lastProgressAt < 120) return;
+    lastProgressAt = now;
+    if (onProgress) onProgress(stats());
+  };
+  const wakeStartWaiters = ok => startWaiters.splice(0).forEach(fn => fn(ok));
+  const maybeWakeStart = () => {
+    if (ready >= startBuffer || done) wakeStartWaiters(ready > 0);
+    else if (failed || canceled) wakeStartWaiters(false);
+  };
+  const blankFrame = () => new Uint8Array(FB_SIZE).fill(0xFF);
 
-  // Fill gaps with nearest collected neighbour
-  let last = null;
-  for (let i = 0; i < total; i++) {
-    if (frames[i]) last = frames[i];
-    else if (last) frames[i] = last;
+  function markConsumed(idx) {
+    if (idx > consumed) consumed = idx;
+    maybeThrottle();
   }
 
-  animPreEncoded = frames.filter(Boolean);
-  animVideoEl.pause();
-  animVideoEl.currentTime = 0;
-  return animPreEncoded.length > 0;
+  function publish(idx, frame) {
+    if (idx < 0 || idx >= total || frames[idx]) return;
+    frames[idx] = frame;
+    produced++;
+
+    const waiters = indexWaiters.get(idx);
+    if (waiters) {
+      indexWaiters.delete(idx);
+      waiters.forEach(fn => fn(frame));
+    }
+
+    while (ready < total && frames[ready]) ready++;
+    maybeWakeStart();
+    emitProgress();
+  }
+
+  function settleMissingTail() {
+    const fill = lastFrame || blankFrame();
+    for (let i = lastTarget + 1; i < total; i++) publish(i, fill);
+  }
+
+  function complete() {
+    if (done || canceled || failed) return;
+    settleMissingTail();
+    done = true;
+    pausedForBuffer = false;
+    try { video.pause(); video.playbackRate = 1; } catch {}
+    video.removeEventListener('ended', complete);
+    if (ready === total) animPreEncoded = frames.slice();
+
+    indexWaiters.forEach((waiters, idx) => {
+      const frame = frames[idx] || lastFrame || null;
+      waiters.forEach(fn => fn(frame));
+    });
+    indexWaiters.clear();
+    wakeStartWaiters(ready > 0);
+    emitProgress(true);
+  }
+
+  function fail(err) {
+    if (done || canceled || failed) return;
+    failed = true;
+    pausedForBuffer = false;
+    try { video.pause(); video.playbackRate = 1; } catch {}
+    video.removeEventListener('ended', complete);
+    if (err && err.message) animLog('⚠ video encoder: '+err.message);
+
+    indexWaiters.forEach(waiters => waiters.forEach(fn => fn(null)));
+    indexWaiters.clear();
+    wakeStartWaiters(false);
+    emitProgress(true);
+  }
+
+  function maybeThrottle() {
+    if (done || canceled || failed) return;
+    const a = ahead();
+    if (!pausedForBuffer && a >= maxAhead) {
+      pausedForBuffer = true;
+      try { video.pause(); } catch {}
+      emitProgress(true);
+    } else if (pausedForBuffer && a <= resumeAhead) {
+      pausedForBuffer = false;
+      video.play().catch(fail);
+      emitProgress(true);
+    }
+  }
+
+  function onFrame(_now, meta) {
+    if (done || canceled || failed) return;
+    const mediaTime = Number.isFinite(meta.mediaTime) ? meta.mediaTime : video.currentTime;
+    const targetIdx = clamp(Math.floor(mediaTime / interval), 0, total - 1);
+
+    if (targetIdx > lastTarget) {
+      oct.fillStyle = 'white';
+      oct.fillRect(0, 0, tw, th);
+      drawScaledRotated(oct, video, video.videoWidth, video.videoHeight, tw, th, rot, scale);
+      const frame = canvasTo1bpp(oct, tw, th, dith, inv, land);
+      for (let i = lastTarget + 1; i <= targetIdx; i++) publish(i, frame);
+      lastTarget = targetIdx;
+      lastFrame = frame;
+      if (produced % 10 === 0 || targetIdx === total - 1) updateAnimPreview(frame);
+    }
+
+    if (lastTarget >= total - 1) complete();
+    else {
+      maybeThrottle();
+      video.requestVideoFrameCallback(onFrame);
+    }
+  }
+
+  async function prepareAndRun() {
+    try {
+      video.pause();
+      video.playbackRate = 1;
+      await new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          video.removeEventListener('seeked', finish);
+          video.removeEventListener('loadeddata', finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, 3000);
+        video.addEventListener('seeked', finish, {once:true});
+        video.addEventListener('loadeddata', finish, {once:true});
+        try { video.currentTime = 0; } catch {}
+        if (video.readyState >= 2 && video.currentTime < 0.05) finish();
+      });
+      if (canceled) return;
+      video.addEventListener('ended', complete, {once:true});
+      video.playbackRate = 16;
+      video.requestVideoFrameCallback(onFrame);
+      await video.play();
+    } catch(e) {
+      fail(e);
+    }
+  }
+
+  const api = {
+    stats,
+    waitForStart(timeoutMs=10000) {
+      if (ready >= startBuffer || done) return Promise.resolve(ready > 0);
+      if (failed || canceled) return Promise.resolve(false);
+      return new Promise(resolve => {
+        let settled = false;
+        const finish = ok => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(!!ok);
+        };
+        const timer = setTimeout(() => finish(ready > 0), timeoutMs);
+        startWaiters.push(finish);
+      });
+    },
+    get(i, timeoutMs=15000) {
+      i = clamp(Math.floor(i), 0, total - 1);
+      markConsumed(i - 1);
+      if (frames[i]) { markConsumed(i); return Promise.resolve(frames[i]); }
+      if (done) { markConsumed(i); return Promise.resolve(frames[i] || lastFrame); }
+      if (failed || canceled) return Promise.resolve(null);
+      return new Promise(resolve => {
+        let settled = false;
+        const finish = frame => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          markConsumed(i);
+          resolve(frame || null);
+        };
+        const timer = setTimeout(() => {
+          const waiters = indexWaiters.get(i);
+          if (waiters) {
+            const pos = waiters.indexOf(finish);
+            if (pos >= 0) waiters.splice(pos, 1);
+            if (!waiters.length) indexWaiters.delete(i);
+          }
+          if (!done && !canceled && !failed) fail(new Error('frame encode timeout'));
+          finish(frames[i] || null);
+        }, timeoutMs);
+        if (!indexWaiters.has(i)) indexWaiters.set(i, []);
+        indexWaiters.get(i).push(finish);
+        maybeThrottle();
+      });
+    },
+    cancel() {
+      if (canceled) return;
+      canceled = true;
+      pausedForBuffer = false;
+      try { video.pause(); video.playbackRate = 1; } catch {}
+      video.removeEventListener('ended', complete);
+      indexWaiters.forEach(waiters => waiters.forEach(fn => fn(null)));
+      indexWaiters.clear();
+      wakeStartWaiters(false);
+      emitProgress(true);
+    },
+  };
+
+  prepareAndRun();
+  return api;
 }
 
 function drawScaledRotated(ctx, source, srcW, srcH, tw, th, rot, scale='fit') {
@@ -2514,6 +3048,7 @@ function exportLut(){
 // ═══════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', ()=>{
   clearCanvas();
+  setOutputMode('dither', false);
   buildLUTEditor();
   lutToUI(); renderTele(); renderTicks();
   const ro=new ResizeObserver(()=>drawWf());

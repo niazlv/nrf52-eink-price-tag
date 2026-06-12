@@ -1,5 +1,5 @@
 /* E·INK controller — service worker */
-const CACHE = 'eink-v2';
+const CACHE = 'eink-v2.7';
 const ASSETS = [
   './',
   './index.html',

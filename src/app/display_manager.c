@@ -326,6 +326,10 @@ void display_manager_set_partial_mode(int mode) {
         ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_STABLE);
     } else if (mode == 3) {
         ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_CLEAN);
+    } else if (mode == 4) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_DARK);
+    } else if (mode == 5) {
+        ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_LIGHT);
     } else {
         return;
     }
@@ -497,6 +501,41 @@ void display_manager_show_text(const char *text) {
     if (!text) return;
     display_screens_render_text(text);
     perform_display_update();
+}
+
+void display_manager_show_palette_test(void) {
+    stop_streaming_if_active();
+    display_screens_render_palette_test();
+    perform_display_update();
+}
+
+void display_manager_run_tone_test(void) {
+#define TONE_TEST_PASSES 8
+    if (!gpio_dev_dm) return;
+
+    bool prev_custom = ssd1675a_get_use_custom_lut();
+    int prev_mode = partial_mode_current;
+
+    stop_streaming_if_active();
+    stream_partial_count = 0;
+
+    graphics_clear(GFX_WHITE);
+    perform_display_update();
+
+    ssd1675a_set_use_custom_lut(false);
+    display_manager_set_partial_mode(4);
+    display_manager_set_keep_on(true);
+
+    for (int pass = 0; pass < TONE_TEST_PASSES; pass++) {
+        display_screens_render_tone_test_pass(pass, TONE_TEST_PASSES);
+        display_manager_update_partial();
+    }
+
+    display_manager_set_keep_on(false);
+    display_manager_set_partial_mode(prev_mode);
+    ssd1675a_set_use_custom_lut(prev_custom);
+    stream_partial_count = 0;
+#undef TONE_TEST_PASSES
 }
 
 void display_manager_clean(void) {

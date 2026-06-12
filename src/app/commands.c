@@ -39,13 +39,17 @@ static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
 /* ── Binary vstream (animation streaming over BLE) ──────────────────────────
  *
  * Wire protocol:
- *   Start : text command  VSTREAM:start   → device replies VSTREAM:ready
+ *   Start : text command  VSTREAM:start[:preset] → device replies VSTREAM:ready
  *   Frame : [0xAA][0x55][type][len_hi][len_lo][payload*len][0xBB]
  *     0x00 RAW  — 4736 bytes uncompressed 1-bpp B&W
  *     0x01 RLE  — PackBits full frame
  *     0x02 DRLE — PackBits XOR-delta (current FB = prev frame, XOR in-place)
  *   ACK   : "TELE:vs f=N ms=M\r\n" after every flush (host flow-control)
- *   Stop  : [0xCC][0xDD] binary escape, or VSTREAM:stop text before streaming
+ *   Stop  : [0xCC][0xDD] binary escape for video/animation streams.
+ *           This restores the screensaver after shutting down HV/fast BLE.
+ *   Photo : [0xCC][0xDE] binary escape for still-photo tone streams.
+ *           This shuts down HV/fast BLE but keeps the rendered photo on screen
+ *           by leaving the screensaver disabled.
  *
  * PackBits:  ctrl bit7=1 → next byte × (ctrl&0x7F)+1 times (run)
  *            ctrl bit7=0 → next (ctrl+1) bytes literal
@@ -53,8 +57,9 @@ static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
 #define VS_HDR1  0xAAu
 #define VS_HDR2  0x55u
 #define VS_FLUSH 0xBBu
-#define VS_STOP1 0xCCu
-#define VS_STOP2 0xDDu
+#define VS_STOP1       0xCCu  /* Common binary stop escape prefix. */
+#define VS_VIDEO_STOP2 0xDDu  /* Video stop: restore saver after stream ends. */
+#define VS_PHOTO_STOP2 0xDEu  /* Photo stop: keep saver off so the image stays. */
 
 #define VS_TYPE_RAW  0x00u
 #define VS_TYPE_RLE  0x01u
@@ -85,7 +90,7 @@ static int        vs_frame_count;
 #define VS_WATCHDOG_MS 30000
 static struct k_work_delayable vs_watchdog_work;
 
-static void vs_exit_streaming(void) {
+static void vs_exit_streaming(bool restore_screensaver) {
     /* Wait for any in-progress pipelined display refresh to finish before
      * powering down HV rails. Safe to call even when no refresh is active. */
     ssd1675a_wait_busy();
@@ -97,14 +102,19 @@ static void vs_exit_streaming(void) {
         vs_frame_count = 0;
         display_manager_set_keep_on(false);
     }
-    display_manager_enable_screensaver(true);
+    /* Video/animation wants the device to resume its saver after stop.
+     * Still-photo rendering wants a sleeping display with the final image left
+     * alone, so that path passes false here. */
+    if (restore_screensaver) {
+        display_manager_enable_screensaver(true);
+    }
 }
 
 static void vs_watchdog_handler(struct k_work *work) {
     ARG_UNUSED(work);
     if (vstream_active) {
         ble_printf("VSTREAM:timeout\r\n");
-        vs_exit_streaming();
+        vs_exit_streaming(true);
     }
 }
 
@@ -244,9 +254,15 @@ static void vs_process_byte(uint8_t b) {
         vs_state = VS_IDLE;
         break;
     case VS_STOP2_WAIT:
-        if (b == VS_STOP2) {
-            vs_exit_streaming();
+        if (b == VS_VIDEO_STOP2) {
+            /* [CC DD] = video semantics: stop streaming and restore saver. */
+            vs_exit_streaming(true);
             ble_printf("VSTREAM:stopped\r\n");
+        } else if (b == VS_PHOTO_STOP2) {
+            /* [CC DE] = still-photo semantics: stop streaming, power down
+             * display/HV, but do not restart saver over the rendered photo. */
+            vs_exit_streaming(false);
+            ble_printf("VSTREAM:photo_stopped\r\n");
         }
         vs_state = VS_IDLE;
         break;
@@ -356,10 +372,10 @@ void cmd_test(char *args)
 
 void cmd_mode(char *args)
 {
-    if (!args || !*args) { ble_printf("usage: MODE: 0-3\r\n"); return; }
+    if (!args || !*args) { ble_printf("usage: MODE: 0-5\r\n"); return; }
     int m = atoi(args);
     display_manager_set_partial_mode(m);
-    ble_printf("Mode Set: %d (0=Turbo,1=Balanced,2=Stable,3=Clean)\r\n", m);
+    ble_printf("Mode Set: %d (0=T,1=B,2=S,3=C,4=ToneDark,5=ToneLight)\r\n", m);
 }
 
 void cmd_text(char *args)
@@ -368,6 +384,24 @@ void cmd_text(char *args)
     display_manager_enable_screensaver(false);
     display_manager_show_text(args);
     ble_printf("drawn\r\n");
+}
+
+void cmd_paltest(char *args)
+{
+    ARG_UNUSED(args);
+    display_manager_enable_screensaver(false);
+    ble_printf("PALTEST: rendering spatial B/W/R palette...\r\n");
+    display_manager_show_palette_test();
+    ble_printf("PALTEST: done\r\n");
+}
+
+void cmd_tonetest(char *args)
+{
+    ARG_UNUSED(args);
+    display_manager_enable_screensaver(false);
+    ble_printf("TONETEST: white base + 8 black-only pulse passes...\r\n");
+    display_manager_run_tone_test();
+    ble_printf("TONETEST: done (use CLEAN/NUKE if residual ghosting stays)\r\n");
 }
 
 void cmd_rot(char *args)
@@ -723,45 +757,82 @@ void cmd_ltest(char *args)
     }
 }
 
+static int parse_partial_mode_name(const char *name)
+{
+    if (!name || !*name) return -1;
+
+    if      (name[0] == '0' || strncasecmp(name, "TURBO",    5) == 0) return 0;
+    else if (name[0] == '1' || strncasecmp(name, "BALANCED", 8) == 0) return 1;
+    else if (name[0] == '2' || strncasecmp(name, "STABLE",   6) == 0) return 2;
+    else if (name[0] == '3' || strncasecmp(name, "CLEAN",    5) == 0) return 3;
+    else if (name[0] == '4' || strncasecmp(name, "TONE_DARK", 9) == 0 ||
+             strncasecmp(name, "DARK", 4) == 0) return 4;
+    else if (name[0] == '5' || strncasecmp(name, "TONE_LIGHT", 10) == 0 ||
+             strncasecmp(name, "LIGHT", 5) == 0) return 5;
+
+    return -1;
+}
+
+static const char *partial_mode_name(int mode)
+{
+    static const char *names[] = {
+        "TURBO", "BALANCED", "STABLE", "CLEAN", "TONE_DARK", "TONE_LIGHT"
+    };
+
+    return (mode >= 0 && mode < (int)ARRAY_SIZE(names)) ? names[mode] : "?";
+}
+
 /* LUTSET:<name|n> — select built-in preset by name/index and disable custom LUT.
- * Accepted: TURBO/0, BALANCED/1, STABLE/2, CLEAN/3 (case-insensitive). */
+ * Accepted: TURBO/0, BALANCED/1, STABLE/2, CLEAN/3, TONE_DARK/4,
+ * TONE_LIGHT/5 (case-insensitive). */
 void cmd_lutset(char *args)
 {
     if (!args || !*args) {
-        ble_printf("LUTSET: usage: LUTSET:TURBO|BALANCED|STABLE|CLEAN (or 0-3)\r\n");
+        ble_printf("LUTSET: usage: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT (0-5)\r\n");
         return;
     }
-    int mode = -1;
-    if      (args[0] == '0' || strncasecmp(args, "TURBO",    5) == 0) mode = 0;
-    else if (args[0] == '1' || strncasecmp(args, "BALANCED", 8) == 0) mode = 1;
-    else if (args[0] == '2' || strncasecmp(args, "STABLE",   6) == 0) mode = 2;
-    else if (args[0] == '3' || strncasecmp(args, "CLEAN",    5) == 0) mode = 3;
-    else { ble_printf("LUTSET: unknown preset '%s'\r\n", args); return; }
+    int mode = parse_partial_mode_name(args);
+    if (mode < 0) {
+        ble_printf("LUTSET: unknown preset '%s'\r\n", args);
+        return;
+    }
 
     ssd1675a_set_use_custom_lut(false);
     display_manager_set_partial_mode(mode);
-    static const char *names[] = {"TURBO", "BALANCED", "STABLE", "CLEAN"};
-    ble_printf("LUTSET:%s (mode=%d, custom=off)\r\n", names[mode], mode);
+    ble_printf("LUTSET:%s (mode=%d, custom=off)\r\n", partial_mode_name(mode), mode);
 }
 
-/* VSTREAM:start|stop — enter/exit binary animation streaming mode */
+/* VSTREAM:start[:preset]|stop — enter/exit binary animation streaming mode */
 void cmd_vstream(char *args)
 {
     if (!args || !*args) {
-        ble_printf("VSTREAM:usage start|stop\r\n");
+        ble_printf("VSTREAM:usage start[:TURBO|...|TONE_DARK]|stop\r\n");
         return;
     }
     if (args[0] == '0' || strncmp(args, "stop", 4) == 0) {
-        vs_exit_streaming();
+        vs_exit_streaming(true);
         ble_printf("VSTREAM:stopped\r\n");
         return;
     }
     if (args[0] == '1' || strncmp(args, "start", 5) == 0) {
+        const char *mode_arg = (args[0] == '1') ? args + 1 : args + 5;
+        int mode = 0;  /* Backward-compatible default: TURBO. */
+
+        while (*mode_arg == ':' || *mode_arg == '=' || *mode_arg == ' ') mode_arg++;
+        if (*mode_arg) {
+            mode = parse_partial_mode_name(mode_arg);
+            if (mode < 0) {
+                ble_printf("VSTREAM:bad lut '%s'\r\n", mode_arg);
+                return;
+            }
+        }
+
         display_manager_enable_screensaver(false);
         k_msleep(50);  /* let screensaver thread finish any in-progress update */
         graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
         display_manager_set_keep_on(true);
-        display_manager_set_partial_mode(0);  /* TURBO for max fps */
+        ssd1675a_set_use_custom_lut(false);
+        display_manager_set_partial_mode(mode);
         /* Prime the display before replying ready: wakes the controller from
          * deep sleep (where BUSY idles high and vs_flush_frame's wait_busy
          * would spin its full 8 s timeout on the first frame), charges the HV
@@ -774,7 +845,8 @@ void cmd_vstream(char *args)
         vs_reset_frame();
         vstream_active = true;
         k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
-        ble_printf("VSTREAM:ready type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD\r\n");
+        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE fmt=AA55 tt LL LL [payload] BB stop=CCDD\r\n",
+                   partial_mode_name(mode));
         return;
     }
     ble_printf("VSTREAM:unknown\r\n");
@@ -807,18 +879,20 @@ const struct shell_cmd commands[] = {
     {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
     {"FAST",        cmd_fast,       "Fast/partial update"},
     {"FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display"},
-    {"MODE:",       cmd_mode,       "Partial mode: 0=Turbo 1=Balanced 2=Stable 3=Clean"},
+    {"MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight"},
+    {"PALTEST",     cmd_paltest,    "Render B/W/R palette and spatial dither test"},
+    {"TONETEST",    cmd_tonetest,   "Render physical gray accumulation test"},
     {"TEXT:",       cmd_text,       "Draw text on display"},
     {"ROT:",        cmd_rot,        "Set rotation 0-3"},
     {"ANIM",        cmd_anim,       "Run bouncing-ball animation"},
     {"TEST",        cmd_test,       "Infinite partial stress test"},
-    {"VSTREAM:",    cmd_vstream,    "Binary anim stream: VSTREAM:start|stop  (then binary frames)"},
+    {"VSTREAM:",    cmd_vstream,    "Binary stream: VSTREAM:start[:preset]|stop (then binary frames)"},
     /* LUT editor */
     {"LUTW:",       cmd_lutw,       "Write full LUT: LUTW:HH..HH (140 hex)"},
     {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
     {"L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
     {"LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1"},
-    {"LUTSET:",     cmd_lutset,     "Select built-in preset: LUTSET:TURBO|BALANCED|STABLE|CLEAN"},
+    {"LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT"},
     {"LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
     {"LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
     {"HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},
@@ -866,7 +940,7 @@ void commands_init(void) {
 }
 
 void commands_on_disconnect(void) {
-    vs_exit_streaming();
+    vs_exit_streaming(true);
 }
 
 void commands_process(const void *data, uint16_t len)

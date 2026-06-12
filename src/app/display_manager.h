@@ -20,6 +20,8 @@ void display_manager_update_status(void);
  * @param text Text to display
  */
 void display_manager_show_text(const char *text);
+void display_manager_show_palette_test(void);
+void display_manager_run_tone_test(void);
 
 /**
  * @brief Run a cleaning cycle (7× B/W/R full updates)
@@ -64,7 +66,8 @@ void display_manager_update_frame_stream(void);
 void display_manager_end_streaming(void);
 
 /**
- * @brief Set the partial update mode (0=Turbo, 1=Balanced, 2=Stable)
+ * @brief Set the partial update mode (0=Turbo, 1=Balanced, 2=Stable,
+ *        3=Clean, 4=Tone dark, 5=Tone light)
  */
 void display_manager_set_partial_mode(int mode);
 

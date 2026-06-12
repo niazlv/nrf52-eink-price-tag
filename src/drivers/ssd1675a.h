@@ -42,7 +42,9 @@ typedef enum {
     SSD1675A_PARTIAL_MODE_TURBO,    // MODE:0 — 14f=112ms, direct B&W, use with streaming
     SSD1675A_PARTIAL_MODE_BALANCED, // MODE:1 — ~896ms, pre-erase + main, red support
     SSD1675A_PARTIAL_MODE_STABLE,   // MODE:2 — ~1.1s, legacy (preserved)
-    SSD1675A_PARTIAL_MODE_CLEAN     // MODE:3 — v5-balanced full LUT (deep clean)
+    SSD1675A_PARTIAL_MODE_CLEAN,    // MODE:3 — v5-balanced full LUT (deep clean)
+    SSD1675A_PARTIAL_MODE_TONE_DARK,  // MODE:4 — black-only pulse for tonal accumulation
+    SSD1675A_PARTIAL_MODE_TONE_LIGHT  // MODE:5 — white-only pulse for tonal accumulation
 } ssd1675a_partial_mode_t;
 
 void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode);
