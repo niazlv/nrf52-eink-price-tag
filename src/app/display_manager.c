@@ -21,7 +21,8 @@ static int partial_mode_current = 1;
 
 // DC-balance maintenance: after this many streaming partial frames, force one
 // full 0xC7 cycle to prevent particle polarization / ghost burn-in.
-// At ~270ms/frame: 500 frames ≈ 2.25min between maintenance passes (~1-2s pause each).
+// At ~230ms/frame (vstream TURBO, measured): 500 frames ≈ 1.9min between
+// maintenance passes (~1-2s pause each).
 #define STREAM_REFRESH_INTERVAL 500
 static int stream_partial_count = 0;
 

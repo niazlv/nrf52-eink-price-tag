@@ -1,4 +1,5 @@
 #include "soft_spi.h"
+#include <hal/nrf_gpio.h>
 
 static const struct device *spi_gpio_dev;
 
@@ -16,26 +17,38 @@ void soft_spi_init(const struct device *gpio_dev) {
     gpio_pin_set(spi_gpio_dev, PIN_CLK, 0);
 }
 
+/* Direct register writes via nrf_gpio HAL, NOT gpio_pin_set(): the Zephyr GPIO
+ * API costs ~0.6µs per call through the driver abstraction, which at ~28 calls
+ * per byte made a 4736-byte frame take ~85ms (measured via vstream telemetry:
+ * disp 205ms = 120ms LUT wave + ~85ms SPI). Raw OUTSET/OUTCLR stores at 64MHz
+ * bring it to ~1.5µs/byte — confirmed: disp dropped to wave + ~7ms. NOPs keep
+ * each clock half-period ≥60ns; SSD1675A allows up to 20MHz, margin is ample. */
+
+static inline void clk_pulse(void) {
+    __NOP(); __NOP();
+    nrf_gpio_pin_set(PIN_CLK);
+    __NOP(); __NOP(); __NOP();
+    nrf_gpio_pin_clear(PIN_CLK);
+}
+
 // 9-bit transmission: 1 bit (C/D) + 8 bits data
 void soft_spi_write_9bit(uint8_t data, uint8_t is_data) {
     if (!spi_gpio_dev) return;
 
-    gpio_pin_set(spi_gpio_dev, PIN_CS, 0);
+    nrf_gpio_pin_clear(PIN_CS);
 
     // 1. Command/Data Bit (0=Cmd, 1=Data)
-    gpio_pin_set(spi_gpio_dev, PIN_MOSI, is_data ? 1 : 0);
-    gpio_pin_set(spi_gpio_dev, PIN_CLK, 1);
-    gpio_pin_set(spi_gpio_dev, PIN_CLK, 0);
+    if (is_data) nrf_gpio_pin_set(PIN_MOSI);
+    else         nrf_gpio_pin_clear(PIN_MOSI);
+    clk_pulse();
 
     // 2. 8 Data Bits (MSB first)
-    // No k_busy_wait: nRF52 GPIO at 64MHz gives ~150ns per toggle → ~6MHz effective
-    // clock, well within SSD1675A's 20MHz SPI max. Saves ~42ms per full frame.
     for (int i = 0; i < 8; i++) {
-        gpio_pin_set(spi_gpio_dev, PIN_MOSI, (data & 0x80) ? 1 : 0);
-        gpio_pin_set(spi_gpio_dev, PIN_CLK, 1);
-        gpio_pin_set(spi_gpio_dev, PIN_CLK, 0);
+        if (data & 0x80) nrf_gpio_pin_set(PIN_MOSI);
+        else             nrf_gpio_pin_clear(PIN_MOSI);
         data <<= 1;
+        clk_pulse();
     }
 
-    gpio_pin_set(spi_gpio_dev, PIN_CS, 1);
+    nrf_gpio_pin_set(PIN_CS);
 }

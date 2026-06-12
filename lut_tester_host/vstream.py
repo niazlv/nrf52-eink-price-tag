@@ -68,18 +68,37 @@ VS_DRLE = 0x02
 
 ENC_NAMES = {'raw': VS_RAW, 'rle': VS_RLE, 'drle': VS_DRLE}
 
-# ── video LUT (uploaded via LUTW: before streaming) ──────────────────────────
+# ── drive LUTs (uploaded via LUTW: before streaming) ─────────────────────────
 # Same drive scheme as the built-in TURBO (black=VSH1, white=VSL, selected by
-# NEW pixel state) but Ph0 TA=8/TB=0 → 8 subframes = ~64ms wave instead of
-# TURBO's 14 = 112ms. Matches the old ANIM LUT that was confirmed working.
-LUT_VIDEO = bytes(
-    [0x55, 0, 0, 0, 0, 0, 0,     # LUT0 black: Ph0=VSH1
-     0xAA, 0, 0, 0, 0, 0, 0]     # LUT1 white: Ph0=VSL
-    + [0] * 21                   # LUT2/3/4: no red, VCOM=0
-    + [0x08, 0, 0, 0, 0]         # Ph0: TA=8, TB=0, RP=0 → 8 frames ≈ 64ms
-    + [0] * 30                   # Ph1..Ph6 unused
-)
-assert len(LUT_VIDEO) == 70
+# NEW pixel state), only the Ph0 timing differs. Shorter wave = faster frames
+# but weaker single-pass drive: static areas re-accumulate contrast every
+# frame while a moving pixel only gets one pass — too short looks washed out.
+#
+# MEASURED (2026-06, disp telemetry; one subframe ≈ 15ms with the device's
+# scan settings 0x3A=0x35/0x3B=0x04 — NOT the 8ms the firmware comments
+# originally assumed):
+#   turbo  14 subfr ≈ 210ms wave → 4.4fps  — quality baseline
+#   fast   10 subfr ≈ 150ms wave → 5.0fps  — verdict: NOT worth it, moving
+#          pixels lose detail ("тень без деталей"), +0.6fps only
+#   video   8 subfr ≈ 120ms wave → ~5.6fps — motion almost invisible until
+#          pixels repeat; experiments only
+# To go faster without quality loss, shorten the subframe itself (scan regs
+# 0x3A dummy lines / 0x3B gate width), not the subframe count.
+def make_drive_lut(ta: int, tb: int = 0) -> bytes:
+    lut = bytes(
+        [0x55, 0, 0, 0, 0, 0, 0,    # LUT0 black: Ph0=VSH1
+         0xAA, 0, 0, 0, 0, 0, 0]    # LUT1 white: Ph0=VSL
+        + [0] * 21                  # LUT2/3/4: no red, VCOM=0
+        + [ta, tb, 0, 0, 0]         # Ph0: (ta+tb) subframes × ~15ms
+        + [0] * 30                  # Ph1..Ph6 unused
+    )
+    assert len(lut) == 70
+    return lut
+
+DRIVE_LUTS = {
+    'video': make_drive_lut(0x08),        # 8 subfr ≈ 120ms
+    'fast':  make_drive_lut(0x05, 0x05),  # 10 subfr ≈ 150ms
+}
 
 def adv_has_nus(adv) -> bool:
     return NUS_SERVICE in [u.lower() for u in (getattr(adv, "service_uuids", None) or [])]
@@ -658,8 +677,9 @@ async def run_play(args):
                         for i in range(1, S)) / (S-1)
         # Pipelined: BLE transfer overlaps the display refresh, so the
         # per-frame cost is max(LUT wave, transfer) + SPI write (~7ms).
-        fps_rle  = 1000 / (max(64, 1000 * samp_rle  / BLE_BPS) + 7)
-        fps_drle = 1000 / (max(64, 1000 * samp_drle / BLE_BPS) + 7)
+        # TURBO wave ≈ 210ms measured (14 subframes × ~15ms).
+        fps_rle  = 1000 / (max(210, 1000 * samp_rle  / BLE_BPS) + 7)
+        fps_drle = 1000 / (max(210, 1000 * samp_drle / BLE_BPS) + 7)
         print(f"  rle~{samp_rle:.0f}B({fps_rle:.1f}fps)  drle~{samp_drle:.0f}B({fps_drle:.1f}fps)"
               f"  raw={FB_SIZE}B")
 
@@ -683,8 +703,8 @@ async def run_play(args):
 
         session = VStreamSession(client, mtu=mtu, window=args.window)
         pre_cmds = []
-        if args.lut == 'video':
-            pre_cmds.append(b"LUTW:" + LUT_VIDEO.hex().upper().encode() + b"\n")
+        if args.lut in DRIVE_LUTS:
+            pre_cmds.append(b"LUTW:" + DRIVE_LUTS[args.lut].hex().upper().encode() + b"\n")
         elif args.lut == 'turbo':
             pre_cmds.append(b"LUTUSE:0\n")   # builtin TURBO (112ms wave)
         # 'keep': don't touch whatever LUT the device currently uses
@@ -804,7 +824,7 @@ def cmd_convert(args):
         mid = max(10, n // 4)
         S = min(30, n - mid - 1)
         BLE_BPS = 32_000  # realistic Nordic NUS with DLE, ~32 KB/s
-        DISP_MS = 64      # turbo partial update
+        DISP_MS = 210     # TURBO LUT wave, measured (14 subframes × ~15ms)
 
         samp_rle  = sum(len(packbits_encode(ebf[mid + i])) for i in range(S)) / S
         samp_drle = sum(len(packbits_encode(
@@ -902,8 +922,11 @@ def build_parser():
                     help="B/W threshold (video source only, default 127)")
     pl.add_argument("--window",     type=int, default=3,
                     help="Frames in flight before waiting for ACK (default 3, 1=old stop-and-wait)")
-    pl.add_argument("--lut",        default="video", choices=["video", "turbo", "keep"],
-                    help="video=upload 64ms LUT (fast, default)  turbo=builtin 112ms"
+    pl.add_argument("--lut",        default="turbo",
+                    choices=["turbo", "fast", "video", "keep"],
+                    help="turbo=builtin 210ms wave, 4.4fps, quality baseline (default)"
+                         "  fast=150ms/5.0fps, washes out motion — not recommended"
+                         "  video=120ms, experiments only"
                          "  keep=use whatever device has")
     pl.add_argument("--loop",       action="store_true", help="Loop forever")
 

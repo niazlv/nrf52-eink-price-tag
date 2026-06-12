@@ -288,11 +288,21 @@ static uint8_t lut_balanced[] = {
     0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-// Turbo LUT — direct B&W drive, 14 frames = 112ms wave.
+// Turbo LUT — direct B&W drive, 14 subframes.
 // LUT0 (black): VSH1 both TA and TB periods.
 // LUT1 (white): VSL  both TA and TB periods.
 // DC-balanced: TA=7 VSH1 + TB=7 VSH1 for black; TA=7 VSL + TB=7 VSL for white.
 // Use with streaming (begin_streaming/update_frame_stream) to avoid HV overhead.
+//
+// TIMING (measured 2026-06, vstream telemetry): one subframe ≈ 15ms with the
+// current scan settings (0x3A dummy=0x35, 0x3B gate width=0x04), NOT the 8ms
+// originally assumed. So this wave is 14 × 15 ≈ 210ms (expected 112ms).
+// Measured fps over BLE vstream: 4.4 (TURBO), 5.0 (10-subframe custom),
+// where shorter LUTs visibly wash out moving pixels — static areas re-drive
+// every frame, a moving pixel gets only one pass. User verdict: 10-subframe
+// quality loss is not worth +0.6fps; TURBO is the quality baseline.
+// Next untapped lever: shorten the subframe itself via 0x3A/0x3B (53 dummy
+// lines on a 296-line panel ≈ +18% scan time alone).
 static uint8_t lut_turbo[] = {
     0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT0 (black): Ph0=VSH1
     0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // LUT1 (white): Ph0=VSL
@@ -350,7 +360,8 @@ void ssd1675a_update_partial(void) {
 
 // ── Streaming mode: enable HV once, update many frames, disable HV once ───
 // Usage: begin_streaming() → [update_frame_stream() × N] → end_streaming()
-// Reduces per-frame time from ~700ms to ~LUT wave time (~64ms for lut_anim).
+// Reduces per-frame time from ~700ms (HV recharge in every 0xC7) to the LUT
+// wave time alone: subframes × ~15ms, e.g. ~210ms for the 14-subframe TURBO.
 
 void ssd1675a_begin_streaming(void) {
     uint8_t *lut_ptr = select_partial_lut();
@@ -366,7 +377,7 @@ void ssd1675a_begin_streaming(void) {
 
 void ssd1675a_update_frame_stream(void) {
     // 0x04: Display Mode 1 only — HV rails already on, no power cycling.
-    // BUSY duration = LUT wave time only (~64ms for lut_anim 8-frame LUT).
+    // BUSY duration = LUT wave time only (subframes × ~15ms; TURBO ≈ 210ms).
     send_cmd(0x22);
     send_data(0x04);
     send_cmd(0x20);
