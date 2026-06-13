@@ -1035,7 +1035,6 @@ static void cmd_sysinfo(char *args)
 static void cmd_dfu(char *args)
 {
     int w = graphics_get_width();
-    int h = graphics_get_height();
 
     display_manager_enable_screensaver(false);
     k_msleep(100);

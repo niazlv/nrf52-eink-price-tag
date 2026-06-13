@@ -3,6 +3,7 @@
 #include "system_time.h"
 #include <lib/graphics.h>
 #include <lib/life.h>
+#include <lib/dither.h>
 #include <drivers/ssd1675a.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -16,17 +17,11 @@ static const char *const wday_names[] = {
     "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"
 };
 
-static const uint8_t bayer4x4[16] = {
-     0,  8,  2, 10,
-    12,  4, 14,  6,
-     3, 11,  1,  9,
-    15,  7, 13,  5,
-};
-
 /* Zero-pad helpers: CONFIG_CBPRINTF_NANO=y strips width specifiers (%02d). */
 static void fmt_d2(char *out, int v)
 {
-    if (v < 0) v = 0; if (v > 99) v = 99;
+    if (v < 0) v = 0;
+    if (v > 99) v = 99;
     out[0] = '0' + v / 10; out[1] = '0' + v % 10; out[2] = '\0';
 }
 static void fmt_u3(char *out, unsigned int v)
@@ -252,57 +247,6 @@ void display_screens_render_text(const char *text)
     }
 }
 
-static void draw_dither_rect(int x, int y, int width, int height,
-                             int color, int level, int phase)
-{
-    if (level <= 0) {
-        graphics_fill_rect(x, y, width, height, GFX_WHITE);
-        return;
-    }
-    if (level >= 16) {
-        graphics_fill_rect(x, y, width, height, color);
-        return;
-    }
-
-    for (int yy = 0; yy < height; yy++) {
-        for (int xx = 0; xx < width; xx++) {
-            int bx = (xx + phase) & 3;
-            int by = (yy + phase) & 3;
-            int on = level > bayer4x4[by * 4 + bx];
-            graphics_draw_pixel(x + xx, y + yy, on ? color : GFX_WHITE);
-        }
-    }
-}
-
-static void draw_mix_rect(int x, int y, int width, int height,
-                          int red_level, int black_level, int phase)
-{
-    int red_cut = red_level;
-    int black_cut = red_level + black_level;
-
-    if (red_cut < 0) red_cut = 0;
-    if (red_cut > 16) red_cut = 16;
-    if (black_cut < red_cut) black_cut = red_cut;
-    if (black_cut > 16) black_cut = 16;
-
-    for (int yy = 0; yy < height; yy++) {
-        for (int xx = 0; xx < width; xx++) {
-            int bx = (xx + phase) & 3;
-            int by = (yy + phase) & 3;
-            int threshold = bayer4x4[by * 4 + bx];
-            int color = GFX_WHITE;
-
-            if (threshold < red_cut) {
-                color = GFX_RED;
-            } else if (threshold < black_cut) {
-                color = GFX_BLACK;
-            }
-
-            graphics_draw_pixel(x + xx, y + yy, color);
-        }
-    }
-}
-
 static void draw_palette_row(const char *label, int y, int color,
                              const int levels[8], int sw_x, int sw_w,
                              int sw_h, int gap)
@@ -310,7 +254,7 @@ static void draw_palette_row(const char *label, int y, int color,
     graphics_draw_string(2, y + 4, label);
     for (int i = 0; i < 8; i++) {
         int x = sw_x + i * (sw_w + gap);
-        draw_dither_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
+        dither_fill_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
                          color, levels[i], i);
         graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
     }
@@ -346,7 +290,7 @@ void display_screens_render_palette_test(void)
     graphics_draw_string(2, y + 4, "MIX");
     for (int i = 0; i < 8; i++) {
         int x = sw_x + i * (sw_w + gap);
-        draw_mix_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
+        dither_fill_rect_mix(x + 1, y + 1, sw_w - 2, sw_h - 2,
                       mix_red[i], mix_blk[i], i);
         graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
     }
@@ -358,7 +302,7 @@ void display_screens_render_palette_test(void)
         int pulse = i == 7 ? 8 : i;
         char label[4];
 
-        draw_dither_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
+        dither_fill_rect(x + 1, y + 1, sw_w - 2, sw_h - 2,
                          GFX_BLACK, levels[i], i + 1);
         graphics_draw_rect(x, y, sw_w, sw_h, GFX_BLACK);
         snprintf(label, sizeof(label), "%d", pulse);

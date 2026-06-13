@@ -26,7 +26,9 @@ target_sources(app PRIVATE
   src/main.c
   src/drivers/soft_spi.c
   src/drivers/ssd1675a.c
+  src/lib/eink_lut.c
   src/lib/graphics.c
+  src/lib/dither.c
   src/lib/life.c
   src/app/battery.c
   src/app/display_manager.c

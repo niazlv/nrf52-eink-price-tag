@@ -4,6 +4,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include "soft_spi.h"
+#include <lib/eink_lut.h>  /* portable LUT presets + selection logic */
 
 // Pin Definitions
 #define PIN_BUSY 6
@@ -31,38 +32,42 @@ uint8_t ssd1675a_get_lut_byte(int index);
 void ssd1675a_reset_lut(void);
 
 /* Force all updates (full and partial) to use lut_data[] loaded via LUTW/LW.
- * When false, partial updates use the built-in turbo/balanced/stable tables. */
-void ssd1675a_set_use_custom_lut(bool use);
-bool ssd1675a_get_use_custom_lut(void);
+ * When false, partial updates use the built-in turbo/balanced/stable tables.
+ * The LUT *policy* lives in lib/eink_lut.h; these are zero-cost re-export shims
+ * so existing ssd1675a_* callers don't change. */
+static inline void ssd1675a_set_use_custom_lut(bool use) { eink_lut_set_use_custom(use); }
+static inline bool ssd1675a_get_use_custom_lut(void)     { return eink_lut_get_use_custom(); }
 
 void ssd1675a_wait_busy(void);
 
-#define SSD1675A_LUT_SIZE 70
+#define SSD1675A_LUT_SIZE EINK_LUT_SIZE
 
-/* ── Virtual LUT slots (session-scoped, BLE-programmable) ─────────────── */
-void ssd1675a_vlut_clear(void);
-int  ssd1675a_vlut_define(int slot, uint8_t base_mode,
-                           const uint8_t *offsets, const uint8_t *values, int count);
-int  ssd1675a_vlut_get_count(void);
-bool ssd1675a_vlut_slot_defined(int slot);
-void ssd1675a_vlut_activate(int slot);
-int  ssd1675a_vlut_active(void);
+/* ── Virtual LUT slots (session-scoped, BLE-programmable) — shims into eink_lut */
+static inline void ssd1675a_vlut_clear(void) { eink_lut_vlut_clear(); }
+static inline int  ssd1675a_vlut_define(int slot, uint8_t base_mode,
+                           const uint8_t *offsets, const uint8_t *values, int count) {
+    return eink_lut_vlut_define(slot, base_mode, offsets, values, count);
+}
+static inline int  ssd1675a_vlut_get_count(void)        { return eink_lut_vlut_get_count(); }
+static inline bool ssd1675a_vlut_slot_defined(int slot) { return eink_lut_vlut_slot_defined(slot); }
+static inline void ssd1675a_vlut_activate(int slot)     { eink_lut_vlut_activate(slot); }
+static inline int  ssd1675a_vlut_active(void)           { return eink_lut_vlut_active(); }
 
-// Partial Update
-typedef enum {
-    SSD1675A_PARTIAL_MODE_TURBO,    // MODE:0 — 14f=112ms, direct B&W, use with streaming
-    SSD1675A_PARTIAL_MODE_BALANCED, // MODE:1 — ~896ms, pre-erase + main, red support
-    SSD1675A_PARTIAL_MODE_STABLE,   // MODE:2 — ~1.1s, legacy (preserved)
-    SSD1675A_PARTIAL_MODE_CLEAN,    // MODE:3 — v5-balanced full LUT (deep clean)
-    SSD1675A_PARTIAL_MODE_TONE_DARK,  // MODE:4 — black-only pulse for tonal accumulation
-    SSD1675A_PARTIAL_MODE_TONE_LIGHT, // MODE:5 — white-only pulse for tonal accumulation
-    SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST, // MODE:6 — weak B/W pulse for tone video
-    SSD1675A_PARTIAL_MODE_TONE_BIDIR,      // MODE:7 — stronger B/W pulse for tone video
-    SSD1675A_PARTIAL_MODE_TONE_SOFT_DARK,  // MODE:8 — soft black pulse (TA=TB=1, ~half strength)
-    SSD1675A_PARTIAL_MODE_TONE_SOFT_LIGHT, // MODE:9 — soft white pulse (TA=TB=1, ~half strength)
-} ssd1675a_partial_mode_t;
+/* Partial-update modes — the enum now lives in lib/eink_lut.h (eink_lut_mode_t).
+ * These aliases keep the historic ssd1675a_* names so callers don't change. */
+typedef eink_lut_mode_t ssd1675a_partial_mode_t;
+#define SSD1675A_PARTIAL_MODE_TURBO            EINK_LUT_MODE_TURBO
+#define SSD1675A_PARTIAL_MODE_BALANCED         EINK_LUT_MODE_BALANCED
+#define SSD1675A_PARTIAL_MODE_STABLE           EINK_LUT_MODE_STABLE
+#define SSD1675A_PARTIAL_MODE_CLEAN            EINK_LUT_MODE_CLEAN
+#define SSD1675A_PARTIAL_MODE_TONE_DARK        EINK_LUT_MODE_TONE_DARK
+#define SSD1675A_PARTIAL_MODE_TONE_LIGHT       EINK_LUT_MODE_TONE_LIGHT
+#define SSD1675A_PARTIAL_MODE_TONE_BIDIR_FAST  EINK_LUT_MODE_TONE_BIDIR_FAST
+#define SSD1675A_PARTIAL_MODE_TONE_BIDIR       EINK_LUT_MODE_TONE_BIDIR
+#define SSD1675A_PARTIAL_MODE_TONE_SOFT_DARK   EINK_LUT_MODE_TONE_SOFT_DARK
+#define SSD1675A_PARTIAL_MODE_TONE_SOFT_LIGHT  EINK_LUT_MODE_TONE_SOFT_LIGHT
 
-void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode);
+static inline void ssd1675a_set_partial_mode(ssd1675a_partial_mode_t mode) { eink_lut_set_mode(mode); }
 void ssd1675a_update_partial(void);
 void ssd1675a_begin_streaming(void);
 void ssd1675a_update_frame_stream(void);

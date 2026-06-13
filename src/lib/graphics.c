@@ -253,13 +253,11 @@ void graphics_clear(uint8_t color) {
             memset(active_canvas->red_buffer, 0x00, active_canvas->buffer_size);
         }
     } else if (color == GFX_RED) {
-        memset(active_canvas->bw_buffer, 0xFF, active_canvas->buffer_size); // White Backing? Or Black? Usually red covers. Let's keep white backing.
+        // Full red screen: white BW backing + all-red plane (red bit 1 = Red).
+        memset(active_canvas->bw_buffer, 0xFF, active_canvas->buffer_size);
         if (active_canvas->red_buffer) {
-            memset(active_canvas->red_buffer, 0xFF, active_canvas->buffer_size); // All Red? 1=Red?
+            memset(active_canvas->red_buffer, 0xFF, active_canvas->buffer_size);
         }
-        // Wait, if 0x00 is Transparent, 0xFF is All Red (if 1=Red).
-        // If we want FULL RED screen:
-        // Set red buffer to 0xFF.
     }
 }
 
