@@ -23,6 +23,19 @@ static const uint8_t bayer4x4[16] = {
     15,  7, 13,  5,
 };
 
+/* Zero-pad helpers: CONFIG_CBPRINTF_NANO=y strips width specifiers (%02d). */
+static void fmt_d2(char *out, int v)
+{
+    if (v < 0) v = 0; if (v > 99) v = 99;
+    out[0] = '0' + v / 10; out[1] = '0' + v % 10; out[2] = '\0';
+}
+static void fmt_u3(char *out, unsigned int v)
+{
+    if (v > 999) v = 999;
+    out[0] = '0' + v / 100; out[1] = '0' + (v / 10) % 10;
+    out[2] = '0' + v % 10; out[3] = '\0';
+}
+
 static void format_uptime(int64_t uptime_sec, char *buf, size_t buf_size)
 {
     int d = uptime_sec / 86400;
@@ -105,11 +118,10 @@ static void render_stats(const display_status_model_t *model, int x, int y)
              power_tag(model));
     graphics_draw_string(x, y, stat_str);
 
-    snprintf(power_str, sizeof(power_str), "mAh:%u.%03u I:%d.%dmA",
-             (unsigned int)mah,
-             (unsigned int)mah_frac,
-             current_ma_x10 / 10,
-             current_ma_x10 % 10);
+    char mf_s[4]; fmt_u3(mf_s, (unsigned int)mah_frac);
+    snprintf(power_str, sizeof(power_str), "mAh:%u.%s I:%d.%dmA",
+             (unsigned int)mah, mf_s,
+             current_ma_x10 / 10, current_ma_x10 % 10);
     graphics_draw_string(x, y + 10, power_str);
 }
 
@@ -132,13 +144,12 @@ void display_screens_render_status_static(const display_status_model_t *model)
 
     graphics_clear(GFX_WHITE);
 
-    snprintf(time_str, sizeof(time_str), "%02d:%02d", model->time.tm_hour, model->time.tm_min);
+    { char h[3], m[3]; fmt_d2(h, model->time.tm_hour); fmt_d2(m, model->time.tm_min);
+      snprintf(time_str, sizeof(time_str), "%s:%s", h, m); }
     graphics_draw_string_scaled(70, 30, time_str, 5);
 
-    snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d",
-             model->time.tm_mday,
-             model->time.tm_mon + 1,
-             model->time.tm_year + 1900);
+    { char d[3], mo[3]; fmt_d2(d, model->time.tm_mday); fmt_d2(mo, model->time.tm_mon + 1);
+      snprintf(date_str, sizeof(date_str), "%s.%s.%d", d, mo, model->time.tm_year + 1900); }
     graphics_draw_string_scaled(58, 80, date_str, 3);
 
     if (model->time.tm_wday >= 0 && model->time.tm_wday <= 6) {
@@ -183,10 +194,9 @@ void display_screens_render_status_dynamic(const display_status_model_t *model)
         }
     }
 
-    snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d",
-             model->time.tm_hour,
-             model->time.tm_min,
-             model->time.tm_sec);
+    { char h[3], m[3], s[3];
+      fmt_d2(h, model->time.tm_hour); fmt_d2(m, model->time.tm_min); fmt_d2(s, model->time.tm_sec);
+      snprintf(time_str, sizeof(time_str), "%s:%s:%s", h, m, s); }
 
     int scale = (width >= 150) ? 3 : 2;
     int str_w = 8 * (6 * scale);
@@ -195,10 +205,8 @@ void display_screens_render_status_dynamic(const display_status_model_t *model)
 
     graphics_draw_string_scaled(tx, ty, time_str, scale);
 
-    snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d",
-             model->time.tm_mday,
-             model->time.tm_mon + 1,
-             model->time.tm_year + 1900);
+    { char d[3], mo[3]; fmt_d2(d, model->time.tm_mday); fmt_d2(mo, model->time.tm_mon + 1);
+      snprintf(date_str, sizeof(date_str), "%s.%s.%d", d, mo, model->time.tm_year + 1900); }
     graphics_draw_string_scaled((width - 10 * 6) / 2, ty + (10 * scale), date_str, 1);
 
     if (model->time.tm_wday >= 0 && model->time.tm_wday <= 6) {
@@ -586,7 +594,8 @@ void display_screens_render_low_battery(int battery_mv, int64_t uptime_sec)
     graphics_draw_string_color(w / 2 - 60, 7, "LOW BATTERY", GFX_BLACK);
 
     /* Battery voltage - large */
-    snprintf(buf, sizeof(buf), "%d.%02dV", battery_mv / 1000, (battery_mv % 1000) / 10);
+    { char cv[3]; fmt_d2(cv, (battery_mv % 1000) / 10);
+      snprintf(buf, sizeof(buf), "%d.%sV", battery_mv / 1000, cv); }
     graphics_draw_string_color_scaled(w / 2 - 30, 30, buf, GFX_BLACK, 2);
 
     /* Info text */
@@ -626,7 +635,8 @@ void display_screens_render_shutdown(int battery_mv, int64_t uptime_sec)
     graphics_draw_string_color_scaled(w / 2 - 50, 12, "SHUTDOWN", GFX_RED, 2);
 
     /* Time of shutdown */
-    snprintf(buf, sizeof(buf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+    { char h[3], m[3], s[3]; fmt_d2(h, t.tm_hour); fmt_d2(m, t.tm_min); fmt_d2(s, t.tm_sec);
+      snprintf(buf, sizeof(buf), "%s:%s:%s", h, m, s); }
     graphics_draw_string_scaled(w / 2 - 25, 35, buf, 2);
 
     /* Battery */

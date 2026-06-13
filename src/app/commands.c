@@ -487,7 +487,8 @@ void cmd_time_eq(char *args)
     get_system_time(&t);
     set_system_time(h, m, s, t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
     display_manager_force_update();
-    ble_printf("TIME set %02d:%02d:%02d\r\n", h, m, s);
+    ble_printf("TIME set %d:%s%d:%s%d\r\n",
+               h, m < 10 ? "0" : "", m, s < 10 ? "0" : "", s);
 }
 
 void cmd_dsaver(char *args)
@@ -1015,9 +1016,13 @@ static void cmd_sysinfo(char *args)
     ble_printf("SYSINFO:fw=%d.%d.%d",
                APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_PATCHLEVEL);
 #if defined(APP_BUILD_YEAR)
-    ble_printf(" build=%04d-%02d-%02d_%02d:%02d:%02d",
-               APP_BUILD_YEAR, APP_BUILD_MONTH, APP_BUILD_DAY,
-               APP_BUILD_HOUR, APP_BUILD_MIN, APP_BUILD_SEC);
+    ble_printf(" build=%d-%s%d-%s%d_%s%d:%s%d:%s%d",
+               APP_BUILD_YEAR,
+               APP_BUILD_MONTH < 10 ? "0" : "", APP_BUILD_MONTH,
+               APP_BUILD_DAY   < 10 ? "0" : "", APP_BUILD_DAY,
+               APP_BUILD_HOUR  < 10 ? "0" : "", APP_BUILD_HOUR,
+               APP_BUILD_MIN   < 10 ? "0" : "", APP_BUILD_MIN,
+               APP_BUILD_SEC   < 10 ? "0" : "", APP_BUILD_SEC);
 #endif
     ble_printf(" uptime=%lld bat=%d mah=%u.%03u cur_ua=%d\r\n",
                (long long)uptime_s, mv,
