@@ -2,6 +2,7 @@
 #include "battery.h"
 #include "display_screens.h"
 #include "system_time.h"
+#include "persist.h"
 #include "ble/ble_service.h"
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
@@ -237,6 +238,8 @@ static void perform_display_update(void) {
 
     power_down_after_idle_update();
     power_estimate_resync_idle();
+
+    persist_add_refresh();
 
     // k_mutex_unlock(&display_lock);
 }
@@ -499,7 +502,7 @@ void display_manager_update_status(void) {
     model.battery_mv = mv;
     model.battery_percent = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv - 2000) / 10);
     model.last_render_ms = last_dur;
-    model.uptime_sec = k_uptime_get() / 1000;
+    model.uptime_sec = (int64_t)persist_uptime_sec(); /* cumulative, survives DFU */
     model.saver_mode = screensaver_mode;
     model.partial_mode = (screensaver_mode == SCREENSAVER_MODE_STATIC)
                          ? STATIC_SAVER_PARTIAL_MODE : partial_mode_current;
@@ -666,11 +669,17 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
         int mv = battery_read_mv();
         battery_state_t bstate = battery_monitor_update(mv);
 
+        /* Roll cumulative stats forward in retained RAM (~1/min). RAM-only. */
+        persist_tick();
+
         if (bstate == BATT_CRITICAL || bstate == BATT_SHUTDOWN) {
+            /* Power may be about to be lost: last-breath save to flash. */
+            persist_save_to_flash();
+
             /* Farewell screen: one final TURBO render, then deep sleep */
             LOG_WRN("Battery critical (%d mV) — rendering farewell", mv);
             display_manager_set_partial_mode(0); /* TURBO for minimal power */
-            display_screens_render_shutdown(mv, k_uptime_get() / 1000);
+            display_screens_render_shutdown(mv, (int64_t)persist_uptime_sec());
             ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
             ssd1675a_wait_busy();
             ssd1675a_sleep();
@@ -690,9 +699,12 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
 
         if (bstate == BATT_LOW) {
             if (!low_battery_screen_shown) {
+                /* Power may be about to be lost: last-breath save to flash. */
+                persist_save_to_flash();
+
                 /* Show low-battery warning screen once (full clean update) */
                 LOG_WRN("Battery low (%d mV) — showing warning, inhibiting display", mv);
-                display_screens_render_low_battery(mv, k_uptime_get() / 1000);
+                display_screens_render_low_battery(mv, (int64_t)persist_uptime_sec());
                 ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
                 ssd1675a_wait_busy();
                 ssd1675a_sleep();

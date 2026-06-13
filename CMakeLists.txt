@@ -35,6 +35,7 @@ target_sources(app PRIVATE
   src/app/display_screens.c
   src/app/commands.c
   src/app/system_time.c
+  src/app/persist.c
   src/ble/ble_service.c
 )
 

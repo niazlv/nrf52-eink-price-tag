@@ -1,0 +1,22 @@
+/*
+ * MCUboot devicetree overlay.
+ *
+ * Setting this file makes sysbuild use it as MCUboot's DTC_OVERLAY_FILE, which
+ * suppresses MCUboot's own boot/zephyr/app.overlay — so we must re-declare the
+ * code-partition chosen here, in addition to our change.
+ *
+ * The change: shrink sram0 by 256 bytes so MCUboot's stack cannot clobber the
+ * application's retained-statistics block at the top of SRAM across a DFU
+ * reboot. Must match boards/nrf52dk_nrf52832.overlay. (Harmless on larger SoCs:
+ * the bootloader needs far less than 64K of RAM.)
+ */
+
+/ {
+	chosen {
+		zephyr,code-partition = &boot_partition;
+	};
+};
+
+&sram0 {
+	reg = <0x20000000 0xFF00>;
+};

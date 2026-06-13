@@ -1,0 +1,21 @@
+/*
+ * Reserve the top 256 bytes of SRAM for retained statistics that must survive
+ * an OTA DFU (warm reboot). See src/app/persist.c.
+ *
+ * sram0 is shrunk from 64K to 0xFF00 so the application linker never allocates
+ * into the top region; the matching overlay in
+ * sysbuild/mcuboot/boards/nrf52dk_nrf52832.overlay shrinks sram0 for MCUboot
+ * too, so the bootloader's stack cannot clobber it between resets.
+ */
+
+&sram0 {
+	reg = <0x20000000 0xFF00>;
+};
+
+/ {
+	sram_retained: memory@2000ff00 {
+		compatible = "mmio-sram";
+		reg = <0x2000ff00 0x100>;
+		status = "okay";
+	};
+};

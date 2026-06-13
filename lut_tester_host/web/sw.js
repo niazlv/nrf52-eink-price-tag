@@ -1,5 +1,5 @@
 /* E·INK controller — service worker */
-const CACHE = 'eink-v3.1.1';
+const CACHE = 'eink-v3.1.4';
 const ASSETS = [
   './',
   './index.html',
@@ -36,18 +36,19 @@ self.addEventListener('fetch', e => {
   // firmware/ — NEVER cache (manifest.json + .bin must always be fresh)
   if (url.pathname.includes('/firmware/')) return;
 
-  // Навигация: сеть → кэш (свежая версия при онлайне, оболочка офлайн)
+  // Навигация: кэш → сеть (мгновенный старт даже при слабом интернете).
+  // Оболочка отдаётся из кэша сразу, свежий index.html подтягивается в фоне.
+  // Новую версию ставит сам SW (новый CACHE → тост «Обновить»), а не этот fetch.
   if (req.mode === 'navigate') {
+    const update = fetch(req).then(fresh => {
+      if (fresh && fresh.ok) caches.open(CACHE).then(c => c.put('./index.html', fresh.clone()));
+      return fresh;
+    }).catch(() => null);
     e.respondWith((async () => {
-      try {
-        const fresh = await fetch(req);
-        const c = await caches.open(CACHE);
-        c.put('./index.html', fresh.clone());
-        return fresh;
-      } catch {
-        return (await caches.match('./index.html')) || (await caches.match('./'));
-      }
+      const cached = await caches.match('./index.html');
+      return cached || (await update) || (await caches.match('./'));
     })());
+    e.waitUntil(update);
     return;
   }
 

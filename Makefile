@@ -50,6 +50,14 @@ FW_DIR       := $(ROOT_DIR)/lut_tester_host/web/firmware
 FW_BIN       := $(FW_DIR)/app_update.bin
 FW_MANIFEST  := $(FW_DIR)/manifest.json
 
+# OTA size ceiling for MCUboot swap-using-move (nrf52dk/nrf52832).
+# Slot = 58 sectors x 4096 B. The top 2 sectors are reserved (trailer + the
+# "move" sector), so the signed app must fit in 56 sectors = 229376 B. Above
+# this, OTA uploads and marks the image "test", but MCUboot can NOT perform the
+# swap — it silently keeps booting the old image. (If MCUboot is switched to
+# overwrite-only, raise this to 57*4096 = 233472.)
+OTA_MAX_SIGNED := 229376
+
 # ----------------------------------------------------------
 # Deploy target (rsync to web server)
 # ----------------------------------------------------------
@@ -93,6 +101,18 @@ build:
 	"$(WEST)" build -p always -b "$(BOARD)" "$(APP_DIR)" -d "$(BUILD_DIR)" \
 		-- $(CMAKE_EXTRA)
 	@echo ">>> HEX ready: $(BUILD_DIR)/merged.hex"
+	@# --- OTA size guard: fail loudly BEFORE publishing an image MCUboot can't swap ---
+	@SIGNED_SZ=$$(wc -c < "$(SIGNED_BIN)" | tr -d ' '); \
+	if [ "$$SIGNED_SZ" -gt "$(OTA_MAX_SIGNED)" ]; then \
+		echo ""; \
+		echo "!!! OTA SIZE ERROR: signed image $$SIGNED_SZ B > limit $(OTA_MAX_SIGNED) B (56 sectors)."; \
+		echo "    It fits flash and boots when wired-flashed, but over BLE MCUboot will"; \
+		echo "    mark it 'test' and then FAIL to swap (verify ok, never applied)."; \
+		echo "    Trim flash or switch MCUboot to overwrite-only. NOT publishing."; \
+		echo ""; \
+		exit 1; \
+	fi; \
+	echo ">>> OTA size OK: $$SIGNED_SZ / $(OTA_MAX_SIGNED) B ($$(( $(OTA_MAX_SIGNED) - SIGNED_SZ )) B headroom)"
 	@# --- Auto-publish firmware for OTA ---
 	@mkdir -p "$(FW_DIR)/history"
 	@if [ -f "$(FW_BIN)" ]; then \

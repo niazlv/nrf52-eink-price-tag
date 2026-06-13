@@ -12,6 +12,7 @@
 #include "app/battery.h"
 #include "app/commands.h"
 #include "app/system_time.h"
+#include "app/persist.h"
 #include "ble/ble_service.h"
 #include "lib/graphics.h"
 #include <dk_buttons_and_leds.h>
@@ -46,6 +47,7 @@ int main(void)
     configure_gpio();
     battery_init();
     system_time_init(); // Set time from Build Date/Time
+    persist_init();     // Validate retained-RAM stats (survives DFU reboot)
     
     // 2. Init Graphics & Display
     // graphics_init is from lib/graphics.h
@@ -61,6 +63,10 @@ int main(void)
         LOG_ERR("BLE Init failed: %d", err);
         return 0;
     }
+
+    // Settings are now loaded (ble_service_init -> settings_load): finalize
+    // stats — restore from flash if RAM was lost, adopt saved clock, count boot.
+    persist_post_settings();
 
     // 4. Thread will handle initial screen
     display_manager_update_status();

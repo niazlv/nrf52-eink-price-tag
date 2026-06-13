@@ -1,9 +1,9 @@
 {
-  "version": "3.2.0",
+  "version": "3.2.2",
   "file": "app_update.bin",
-  "size": 228116,
-  "sha256": "63ee58526ce2eb1db917f94c7139238deca808377bc2597c263f834889d46a79",
+  "size": 213596,
+  "sha256": "b38d975e2aed09748afecc7e7786ad049a2df52f87645d332bdd482caf61cc2b",
   "notes": "",
-  "date": "2026-06-13",
+  "date": "2026-06-14",
   "min_version": "1.0.0"
 }

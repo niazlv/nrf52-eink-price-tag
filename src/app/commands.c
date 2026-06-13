@@ -4,6 +4,7 @@
 #include "display_screens.h"
 #include "battery.h"
 #include "system_time.h"
+#include "persist.h"
 #include "lib/graphics.h"
 #include <drivers/ssd1675a.h>
 #include <string.h>
@@ -998,7 +999,11 @@ static void cmd_reboot(char *args)
 {
     (void)args;
     ble_printf("REBOOT\r\n");
-    k_sleep(K_MSEC(100));   /* flush BLE TX before reset */
+    /* Save to flash before the (DFU) reboot: carries stats across even when
+     * retained RAM does not survive (old MCUboot / power blip). The new
+     * firmware consumes this snapshot and marks it spent. */
+    persist_save_to_flash();
+    k_sleep(K_MSEC(100));   /* flush BLE TX + let flash write settle before reset */
     sys_reboot(SYS_REBOOT_COLD);
 }
 
@@ -1009,7 +1014,7 @@ static void cmd_sysinfo(char *args)
 {
     (void)args;
     int mv = battery_read_mv();
-    int64_t uptime_s = k_uptime_get() / 1000;
+    int64_t uptime_s = (int64_t)persist_uptime_sec();
     uint32_t mah_x1000 = display_manager_get_energy_mah_x1000();
     int cur_ua = display_manager_get_estimated_current_ua();
 
@@ -1024,9 +1029,29 @@ static void cmd_sysinfo(char *args)
                APP_BUILD_MIN   < 10 ? "0" : "", APP_BUILD_MIN,
                APP_BUILD_SEC   < 10 ? "0" : "", APP_BUILD_SEC);
 #endif
-    ble_printf(" uptime=%lld bat=%d mah=%u.%03u cur_ua=%d\r\n",
+    ble_printf(" uptime=%lld bat=%d mah=%u.%03u cur_ua=%d"
+               " boots=%u fwupd=%u refr=%u refrfw=%u\r\n",
                (long long)uptime_s, mv,
-               mah_x1000 / 1000, mah_x1000 % 1000, cur_ua);
+               mah_x1000 / 1000, mah_x1000 % 1000, cur_ua,
+               persist_boot_count(), persist_fw_update_count(),
+               persist_refreshes_total(), persist_refreshes_since_fw());
+}
+
+/* STATS — read persisted statistics (live RAM copy + flash record), for manual
+ * inspection and the frontend. Line 1 = live values; line 2 = flash snapshot. */
+static void cmd_stats(char *args)
+{
+    (void)args;
+    struct persist_report r;
+    persist_get_report(&r);
+
+    ble_printf("STATS:uptime=%lld wall=%lld boots=%u fwupd=%u refr=%u refrfw=%u\r\n",
+               (long long)r.uptime_total_sec, (long long)r.wall_unix,
+               r.boot_count, r.fw_update_count,
+               r.refreshes_total, r.refreshes_since_fw);
+    ble_printf("STATS:flash=%s fl_uptime=%lld fl_wall=%lld\r\n",
+               r.flash_present ? (r.flash_consumed ? "consumed" : "valid") : "none",
+               (long long)r.flash_uptime_total_sec, (long long)r.flash_wall_unix);
 }
 
 /* DFU:START — host notifies that OTA upload is beginning.
@@ -1111,6 +1136,7 @@ const struct shell_cmd commands[] = {
     /* System */
     {"REBOOT",      cmd_reboot,     "Cold reboot the device"},
     {"SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy"},
+    {"STATS",       cmd_stats,      "Persisted stats: live + flash record (present/valid/consumed)"},
     {"DFU:",        cmd_dfu,        "DFU display: DFU:START / DFU:DONE"},
     /* Debug */
     {"VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
