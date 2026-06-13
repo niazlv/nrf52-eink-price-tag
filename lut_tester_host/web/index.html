@@ -1118,6 +1118,16 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <span id="sys-cur" style="color:var(--fg);font-family:var(--mono)">—</span>
           <span style="color:var(--fg2)">Остаток:</span>
           <span id="sys-remain" style="color:var(--green);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Загрузок:</span>
+          <span id="st-boots" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Обновлений ПО:</span>
+          <span id="st-fwupd" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Обновл. экрана:</span>
+          <span id="st-refr" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">…с прошивки:</span>
+          <span id="st-refrfw" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Flash-снимок:</span>
+          <span id="st-flash" style="color:var(--fg2);font-family:var(--mono)">—</span>
         </div>
         <div class="brow" style="margin-top:10px">
           <button class="btn" onclick="requestSysinfo()">🔄 Обновить</button>
@@ -1517,6 +1527,7 @@ function onNotify(ev) {
     logR(line);
     wakeLineWaiters(line);
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
+    if (line.startsWith('STATS:')) parseStats(line);
     if (line.startsWith('SYSINFO:')) parseSysinfo(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -4245,6 +4256,30 @@ function requestSysinfo() {
   if (!connected) return;
   send('SYSINFO\n');
   send('BATT\n');
+  send('STATS\n');
+}
+
+// STATS:uptime=<s> wall=<unix> boots=<n> fwupd=<n> refr=<n> refrfw=<n>
+// STATS:flash=<none|valid|consumed> fl_uptime=<s> fl_wall=<unix>
+function parseStats(line) {
+  const d = line.slice('STATS:'.length);
+  const g = (re) => { const m = d.match(re); return m ? m[1] : null; };
+  if (/boots=/.test(d)) {
+    const set = (id, v) => { if (v !== null) $(id).textContent = v; };
+    set('st-boots',  g(/boots=(\d+)/));
+    set('st-fwupd',  g(/fwupd=(\d+)/));
+    set('st-refr',   g(/refr=(\d+)/));
+    set('st-refrfw', g(/refrfw=(\d+)/));
+  } else if (/flash=/.test(d)) {
+    const fl = g(/flash=(\w+)/);
+    if (fl) {
+      const el = $('st-flash');
+      el.textContent = fl;
+      el.style.color = fl === 'valid'    ? 'var(--green)'
+                     : fl === 'consumed' ? 'var(--orange)'
+                     :                     'var(--fg2)';
+    }
+  }
 }
 
 function parseSysinfo(line) {
