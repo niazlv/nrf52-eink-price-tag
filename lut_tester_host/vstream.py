@@ -65,6 +65,7 @@ VS_STOP  = bytes([0xCC, 0xDD])
 VS_RAW  = 0x00
 VS_RLE  = 0x01
 VS_DRLE = 0x02
+VS_CRC_FLAG = 0x40   # OR into the type byte → frame carries a CRC-16 trailer
 
 ENC_NAMES = {'raw': VS_RAW, 'rle': VS_RLE, 'drle': VS_DRLE}
 
@@ -235,23 +236,61 @@ def gray_to_1bpp(gray: "np.ndarray", dither: bool, invert: bool, threshold: int)
 
 # ── binary packet ─────────────────────────────────────────────────────────────
 
-def make_packet(frame: bytes, enc: int, prev: bytes | None) -> bytes:
+def crc16_ccitt(data: bytes) -> int:
+    """CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, MSB-first).
+    Must match the device's vs_crc16_update()."""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
+    return crc
+
+def vs_wrap(typ: int, payload: bytes, use_crc: bool) -> bytes:
+    """Frame a payload. With use_crc the type byte gets the 0x40 flag and a
+    2-byte CRC-16 over the payload is inserted before the 0xBB flush."""
+    ln = len(payload)
+    t = (typ | VS_CRC_FLAG) if use_crc else typ
+    pkt = bytes([VS_HDR1, VS_HDR2, t, (ln >> 8) & 0xFF, ln & 0xFF]) + payload
+    if use_crc:
+        c = crc16_ccitt(payload)
+        pkt += bytes([(c >> 8) & 0xFF, c & 0xFF])
+    return pkt + bytes([VS_FLUSH])
+
+def make_packet(frame: bytes, enc: int, prev: bytes | None,
+                use_crc: bool = False, force_key: bool = False) -> bytes:
     if enc == VS_DRLE:
-        if prev is None:
-            payload = packbits_encode(frame)
-            typ = VS_RLE
+        if prev is None or force_key:
+            payload, typ = packbits_encode(frame), VS_RLE
         else:
             delta = bytes(a ^ b for a, b in zip(frame, prev))
-            payload = packbits_encode(delta)
-            typ = VS_DRLE
+            payload, typ = packbits_encode(delta), VS_DRLE
     elif enc == VS_RLE:
-        payload = packbits_encode(frame)
-        typ = VS_RLE
+        payload, typ = packbits_encode(frame), VS_RLE
     else:
-        payload = frame
-        typ = VS_RAW
-    ln = len(payload)
-    return bytes([VS_HDR1, VS_HDR2, typ, (ln >> 8) & 0xFF, ln & 0xFF]) + payload + bytes([VS_FLUSH])
+        payload, typ = frame, VS_RAW
+    return vs_wrap(typ, payload, use_crc)
+
+def encode_frame(frame: bytes, prev: bytes | None, enc: int,
+                 use_crc: bool, force_key: bool, key_slack: int) -> tuple:
+    """Encode one frame; report whether it's a keyframe (full, self-contained).
+
+    A full keyframe is emitted when forced (resync / periodic / first frame) and
+    opportunistically when a full RLE frame is no larger than the XOR-delta plus
+    key_slack — which is true on cheap/static frames AND on scene cuts (both make
+    the delta about as big as a full frame). These near-free keyframes bound how
+    long any corruption can survive on the device. Returns (pkt, is_key)."""
+    if enc == VS_RAW:
+        return vs_wrap(VS_RAW, frame, use_crc), True       # RAW is always full
+    if enc == VS_RLE or prev is None or force_key:
+        return vs_wrap(VS_RLE, packbits_encode(frame), use_crc), True
+    # enc == VS_DRLE with a prev: delta vs opportunistic cheap keyframe.
+    delta = bytes(a ^ b for a, b in zip(frame, prev))
+    dpay  = packbits_encode(delta)
+    fpay  = packbits_encode(frame)
+    if len(fpay) <= len(dpay) + key_slack:
+        return vs_wrap(VS_RLE, fpay, use_crc), True
+    return vs_wrap(VS_DRLE, dpay, use_crc), False
 
 # ── ffmpeg source ─────────────────────────────────────────────────────────────
 
@@ -434,6 +473,9 @@ class VStreamSession:
         self.last_ms  = 0           # disp ms from most recent ACK
         self.acked    = 0           # total frames ACKed by device
         self.dead     = False       # set on ACK timeout
+        self.dev_crc  = False       # device advertised CRC support in ready line
+        self._resync  = False       # device asked for a keyframe (rs=1)
+        self.resync_count = 0       # resync requests seen (diagnostics)
         # Rolling diagnostics (last 20 ACKs): where does the frame cycle go?
         self._ack_t   = deque(maxlen=21)   # ACK arrival timestamps
         self._disp_h  = deque(maxlen=20)   # device-reported disp ms
@@ -457,36 +499,54 @@ class VStreamSession:
                 self._on_ack(line)
             elif line:
                 if line.startswith("VSTREAM:ready"):
+                    self.dev_crc = "crc=opt" in line
                     self._ready.set()
                 print(f"\n  dev> {line}")
 
     def _on_ack(self, line: str):
-        try:
-            self.last_ms = int(line.split("ms=")[1].split()[0])
-        except Exception:
-            pass
-        try:
-            dec = int(line.split("dec=")[1].split()[0])
-        except Exception:
-            dec = -1
-        try:
-            crc = int(line.split("crc=")[1].split()[0], 16)
-        except Exception:
-            crc = -1
+        def field(key, base=10):
+            try:
+                return int(line.split(key)[1].split()[0], base)
+            except Exception:
+                return None
+        ms = field("ms=")
+        if ms is not None:
+            self.last_ms = ms
+        dec = field("dec=")
+        crc = field("crc=", 16)            # legacy decoded-FB XOR-8
+        rs  = field("rs=") or 0            # device keyframe request
+        wc  = line.split("wc=")[1].split()[0] if "wc=" in line else None  # ok|bad|na
 
-        if dec >= 0 and dec != FB_SIZE:
-            print(f"\n  [WARN] incomplete decode: dec={dec}/{FB_SIZE}")
+        frame_no = None
         if self._pending:
             frame_no, exp_crc = self._pending.pop(0)
-            if crc >= 0 and exp_crc is not None and crc != exp_crc:
+            # The strong wire CRC (wc=) supersedes the weak XOR-8 — only fall back
+            # to the XOR-8 compare when this frame carried no wire CRC.
+            if wc is None and crc is not None and exp_crc is not None and crc != exp_crc:
                 print(f"\n  [CRC MISMATCH] frame {frame_no}: "
                       f"expected={exp_crc:02x} device={crc:02x}")
+
+        if wc == "bad":
+            print(f"\n  [WIRE CRC BAD] frame {frame_no} — payload corrupt, resyncing")
+        elif dec is not None and dec >= 0 and dec != FB_SIZE and wc != "bad":
+            print(f"\n  [WARN] incomplete decode: dec={dec}/{FB_SIZE}")
+        if rs:
+            self._resync = True
+            self.resync_count += 1
+
         self.acked += 1
         self._ack_t.append(time.time())
         self._disp_h.append(self.last_ms)
         self._credits.release()
         if not self._pending:
             self._drained.set()
+
+    def take_resync(self) -> bool:
+        """Read and clear the device's keyframe request (set by an rs=1 ACK)."""
+        if self._resync:
+            self._resync = False
+            return True
+        return False
 
     async def start(self, pre_cmds=()):
         await self.client.start_notify(NUS_TX, self._notify)
@@ -545,19 +605,26 @@ class VStreamSession:
 # ── playback engines ──────────────────────────────────────────────────────────
 
 async def play_guaranteed(session: VStreamSession, frames, total: int,
-                          enc: int, src_fps: float):
+                          enc: int, src_fps: float,
+                          use_crc: bool = False, key_interval: int = 48,
+                          key_slack: int = 64):
     """Send every frame; pace is dictated by display speed only."""
-    prev, count = None, 0
+    prev, count, since_key = None, 0, 0
     acked0 = session.acked          # session persists across --loop iterations
     t0 = time.time()
     try:
         for idx, frame in frames:
             if frame is None:
                 continue
-            pkt = make_packet(frame, enc, prev)
-            if not await session.send(pkt, expected_frame=frame):
+            force = (prev is None or session.take_resync()
+                     or (key_interval and since_key >= key_interval))
+            pkt, is_key = encode_frame(frame, prev, enc, use_crc, force, key_slack)
+            # With wire CRC the device's wc=/rs= drives recovery; without it keep
+            # the legacy XOR-8 sanity check by passing the expected frame.
+            if not await session.send(pkt, expected_frame=None if use_crc else frame):
                 break
             prev = frame
+            since_key = 0 if is_key else since_key + 1
             count += 1
             elapsed = time.time() - t0
             fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
@@ -574,11 +641,13 @@ async def play_guaranteed(session: VStreamSession, frames, total: int,
     print_bottleneck(session)
 
 async def play_sync(session: VStreamSession, frames, total: int,
-                    enc: int, src_fps: float):
+                    enc: int, src_fps: float,
+                    use_crc: bool = False, key_interval: int = 48,
+                    key_slack: int = 64):
     """Real-time sync to original timestamps; skip frames that are already late."""
     SKIP_TOL = 0.010   # 10ms tolerance before marking a frame as late
     prev = None
-    count, skipped = 0, 0
+    count, skipped, since_key = 0, 0, 0
     acked0 = session.acked          # session persists across --loop iterations
     t0 = time.time()
     try:
@@ -606,10 +675,13 @@ async def play_sync(session: VStreamSession, frames, total: int,
             if now < deadline:
                 await asyncio.sleep(deadline - now)
 
-            pkt = make_packet(frame, enc, prev)
-            if not await session.send(pkt, expected_frame=frame):
+            force = (prev is None or session.take_resync()
+                     or (key_interval and since_key >= key_interval))
+            pkt, is_key = encode_frame(frame, prev, enc, use_crc, force, key_slack)
+            if not await session.send(pkt, expected_frame=None if use_crc else frame):
                 break
             prev = frame
+            since_key = 0 if is_key else since_key + 1
             count += 1
             elapsed = time.time() - t0
             fps = (session.acked - acked0) / elapsed if elapsed > 0 else 0
@@ -709,6 +781,10 @@ async def run_play(args):
             pre_cmds.append(b"LUTUSE:0\n")   # builtin TURBO (112ms wave)
         # 'keep': don't touch whatever LUT the device currently uses
         await session.start(pre_cmds)
+        use_crc = (not args.no_crc) and session.dev_crc
+        print(f"  wire-CRC {'ON' if use_crc else 'off'}"
+              f"{'' if session.dev_crc else ' — device has no CRC support'}"
+              f"  key-interval={args.key_interval}  key-slack={args.key_slack}\n")
 
         loop_n = 0
         try:
@@ -744,9 +820,11 @@ async def run_play(args):
                     gen_total = n_frames
 
                 if args.mode == 'guaranteed':
-                    await play_guaranteed(session, frame_gen, gen_total, enc, override_fps)
+                    await play_guaranteed(session, frame_gen, gen_total, enc, override_fps,
+                                          use_crc, args.key_interval, args.key_slack)
                 else:
-                    await play_sync(session, frame_gen, gen_total, enc, override_fps)
+                    await play_sync(session, frame_gen, gen_total, enc, override_fps,
+                                    use_crc, args.key_interval, args.key_slack)
 
                 if is_ebf:
                     pass  # EBFReader is reusable
@@ -929,6 +1007,14 @@ def build_parser():
                          "  video=120ms, experiments only"
                          "  keep=use whatever device has")
     pl.add_argument("--loop",       action="store_true", help="Loop forever")
+    pl.add_argument("--key-interval", type=int, default=48,
+                    help="Force a full keyframe at least every N frames as a "
+                         "corruption-recovery safety net (default 48, 0=never)")
+    pl.add_argument("--key-slack",  type=int, default=64,
+                    help="Also send a full keyframe when it is within this many "
+                         "bytes of the delta (cheap/scene-cut resync, default 64)")
+    pl.add_argument("--no-crc",     action="store_true",
+                    help="Disable wire CRC-16 even if the device advertises support")
 
     return p
 

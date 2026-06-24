@@ -1173,6 +1173,15 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
         <div style="font-size:10px;color:var(--fg2);margin-top:6px" id="dfu-server-status">
           Укажи URL, где лежит manifest.json и app_update.bin
         </div>
+        <div class="brow" style="gap:6px;margin-top:10px">
+          <input type="password" id="dfu-pass" placeholder="пароль ценника (если задан)" style="flex:1;font-size:11px">
+          <button class="btn" onclick="dfuUnlock()">🔓 Разблокировать</button>
+        </div>
+        <div style="font-size:10px;margin-top:4px" id="dfu-auth-status"><span style="color:var(--fg2)">—</span></div>
+        <div style="font-size:9px;color:var(--fg2);margin-top:4px;line-height:1.4">
+          Пусто = общий ключ по умолчанию. Работает со старыми (без пароля) и новыми ценниками;
+          запароленные — введи пароль. · <a href="#" onclick="dfuSetPassword();return false" style="color:var(--acc)">сменить пароль</a>
+        </div>
       </div>
     </div>
 
@@ -1286,6 +1295,9 @@ const VS_TYPE_DRLE = 2;
 const VS_TYPE_RAW2  = 3;
 const VS_TYPE_RLE2  = 4;
 const VS_TYPE_DRLE2 = 5;
+const VS_CRC_FLAG   = 0x40;  // OR into type byte → frame carries a CRC-16 trailer
+const VS_KEY_INTERVAL = 48;  // force a full keyframe at least every N frames
+const VS_KEY_SLACK    = 64;  // prefer a keyframe when full ≤ delta + this many bytes
 
 const LUT_SZ   = 70;
 const N_GROUPS = 5;
@@ -1352,15 +1364,26 @@ const vs = {
   creditWaiters: [],
   drainWaiters: [],
   readyWaiters: [],
+  devCrc: false,       // device advertised CRC support (crc=opt in ready line)
+  useCrc: false,       // emit CRC-protected frames this session
+  resync: false,       // device asked for a keyframe (rs=1 in an ACK)
+  resyncCount: 0,
+  lastWc: null,        // last ACK wire-CRC verdict: 'ok' | 'bad' | 'na' | null
+  lastRs: 0,           // last ACK resync flag
 };
 function vsReset() {
   vs.inflight=0; vs.acked=0; vs.lastMs=0;
   vs.ackTimes=[]; vs.dispHist=[];
   vs.creditWaiters=[]; vs.drainWaiters=[]; vs.readyWaiters=[];
+  vs.resync=false; vs.resyncCount=0; vs.lastWc=null; vs.lastRs=0;
+  vs.devCrc=false; vs.useCrc=false;
 }
 function vsOnAck(line) {
   const m = line.match(/ms=(\d+)/);
   vs.lastMs = m ? +m[1] : 0;
+  const wc = line.match(/wc=(\w+)/); vs.lastWc = wc ? wc[1] : null;
+  const rs = line.match(/rs=(\d+)/); vs.lastRs = rs ? +rs[1] : 0;
+  if (vs.lastRs) { vs.resync = true; vs.resyncCount++; }
   vs.acked++;
   vs.ackTimes.push(performance.now()); if (vs.ackTimes.length>21) vs.ackTimes.shift();
   vs.dispHist.push(vs.lastMs);          if (vs.dispHist.length>20) vs.dispHist.shift();
@@ -1512,6 +1535,8 @@ window.addEventListener('pagehide', () => {
 function onBleDisc() {
   connected = false;
   smpChar = null;
+  sysState.authed = false; sysState.secOn = false;
+  autoAuthTried = false; authBusy = false;
   setStatus('Не подключено', false);
   $('btn-conn').textContent = 'Подключить';
   logI('Disconnected');
@@ -1529,12 +1554,17 @@ function onNotify(ev) {
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
     if (line.startsWith('STATS:')) parseStats(line);
     if (line.startsWith('SYSINFO:')) parseSysinfo(line);
+    if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
     if (line.startsWith('TELE:vs')) vsOnAck(line);
     if (line.startsWith('VSTREAM:')) {
       logI(line);
-      if (line.startsWith('VSTREAM:ready')) vsOnReady();
+      if (line.startsWith('VSTREAM:ready')) {
+        vs.devCrc = line.includes('crc=opt');
+        vs.useCrc = vs.devCrc;   // enable wire CRC when the device supports it
+        vsOnReady();
+      }
     }
   }
 }
@@ -1577,7 +1607,14 @@ function updateMtuDisplay() {
   if (e2) e2.textContent = label;
 }
 
-let _bleParallelWriteSupported = true; // cleared on first failure, avoids repeated attempts
+// Parallel chunk writes (Promise.all of writeValueWithoutResponse) are fast but
+// race on flaky controllers: Web Bluetooth rejects overlapping ops with "GATT
+// operation already in progress", and a partial-success fallback re-sends the
+// whole packet → duplicate bytes that desync the device parser. Single-chunk
+// packets (every DRLE delta) gain nothing from it; only multi-chunk keyframes/
+// RAW do, and those are exactly the racy case. Default OFF → sequential writes,
+// matching the proven bleak/vstream.py host. Flip to true only on a solid stack.
+let _bleParallelWriteSupported = false;
 
 async function sendBytes(data, noResponse=false, abortRef=null) {
   if (!connected || !rxChar) return;
@@ -1593,11 +1630,17 @@ async function sendBytes(data, noResponse=false, abortRef=null) {
       chunks.push(buf.slice(i, Math.min(i + chunkSz, buf.length)));
     }
     let retry = false;
+    let promises = [];
     try {
-      const promises = chunks.map(chunk => rxChar.writeValueWithoutResponse(chunk));
+      promises = chunks.map(chunk => rxChar.writeValueWithoutResponse(chunk));
       await Promise.all(promises);
       return; // success
     } catch (e) {
+      // Promise.all rejects on the FIRST failing chunk but leaves the other
+      // chunk writes in flight. Let them all settle before any sequential retry,
+      // otherwise the retry races them → another "GATT operation already in
+      // progress" that the sequential path would re-throw and kill the stream.
+      await Promise.allSettled(promises);
       if (e.name === 'InvalidModificationError' && chunkSz > 20) {
         chunkSz = chunkSz > 244 ? 244 : Math.max(20, chunkSz >> 1);
         mtu = chunkSz + 3;
@@ -1616,6 +1659,7 @@ async function sendBytes(data, noResponse=false, abortRef=null) {
     // Fall through to sequential
   }
   if (noResponse) {
+    let gattBusyRetries = 0;
     for (let i = 0; i < buf.length; ) {
       if (abortRef?.abort) throw new Error(abortRef.reason ?? 'stopped');
       const sz = Math.min(chunkSz, buf.length - i);
@@ -1628,6 +1672,12 @@ async function sendBytes(data, noResponse=false, abortRef=null) {
           chunkSz = chunkSz > 244 ? 244 : Math.max(20, chunkSz >> 1);
           mtu = chunkSz + 3;
           updateMtuDisplay();
+        } else if (e.message?.includes('GATT operation already in progress') && gattBusyRetries < 30) {
+          // Transient: a previous write hasn't drained on a flaky controller.
+          // Back off briefly and retry the SAME chunk instead of killing the
+          // stream — the next keyframe/photo pass recovers cleanly.
+          gattBusyRetries++;
+          await sleep(8);
         } else {
           throw e;
         }
@@ -2334,6 +2384,41 @@ async function sendCanvas() {
   await sendBWR(bw, red, 'canvas');
 }
 
+// ── L2: guaranteed photo pass ─────────────────────────────────────────────
+// Send one tone pass and confirm it actually landed. Stop-and-wait (drain after
+// each frame) so vs.lastWc/lastRs describe THIS frame; on a corrupt/poisoned
+// verdict resend the pass as a full keyframe (absolute RLE — self-healing, no
+// dependence on device FB state) until the device confirms or retries run out.
+// Slower than the pipelined video path but the image lands without stuck stripes.
+// Without device CRC support it degrades to one best-effort send (nothing to
+// verify). Returns {bytes, ok, tries}, or null if the stream must stop.
+async function sendPhotoPassGuaranteed(frame, prev, label, retries=4) {
+  if (!await vsAcquireCredit(15000)) {
+    if (streamStop) return null;
+    throw new Error('нет ACK/credit (' + label + ')');
+  }
+  let { pkt } = encodeVSFrame(frame, prev, 2, vs.useCrc, false, VS_KEY_SLACK);
+  await sendBytesStream(pkt);
+  await vsDrain(20000);
+  let bytes = pkt.length, tries = 0;
+  if (!vs.useCrc) return { bytes, ok: true, tries };   // can't verify → best-effort
+  while ((vs.lastWc === 'bad' || vs.lastRs) && tries < retries && !streamStop) {
+    tries++;
+    logI(`  ↺ ${label}: CRC bad/poison — дослать keyframe #${tries}`);
+    if (!await vsAcquireCredit(15000)) {
+      if (streamStop) return null;
+      throw new Error('нет ACK/credit (resync ' + label + ')');
+    }
+    pkt = encodeVSFrame(frame, null, 2, vs.useCrc, true, VS_KEY_SLACK).pkt; // full RLE
+    await sendBytesStream(pkt);
+    await vsDrain(20000);
+    bytes = pkt.length;
+  }
+  const ok = !(vs.lastWc === 'bad' || vs.lastRs);
+  if (!ok) logE(`  ✗ ${label}: не подтверждён после ${retries} попыток`);
+  return { bytes, ok, tries };
+}
+
 async function sendCanvasTone() {
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
@@ -2381,17 +2466,14 @@ async function sendCanvasTone() {
     }
 
     for (let pass = 0; pass < maxPulse && !streamStop; pass++) {
-      if (!await vsAcquireCredit(15000)) {
-        throw new Error('нет ACK/credit для tone frame');
-      }
-
       const frame = toneLevelsToFrame(levels, pass);
-      const pkt = makeVSPkt(frame, 2, prev);
-      await sendBytesStream(pkt);
+      const res = await sendPhotoPassGuaranteed(frame, prev, `dark ${pass + 1}/${maxPulse}`);
+      if (!res) break;
       prev = frame;
 
       const pct = Math.round((pass + 1) * 100 / (maxPulse + lightPasses));
-      logI(`  dark pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${pkt.length}B`);
+      logI(`  dark pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${res.bytes}B` +
+           (res.tries ? ` · resync×${res.tries}` : '') + (res.ok ? '' : ' · ✗'));
     }
 
     await vsDrain(20000);
@@ -2416,19 +2498,16 @@ async function sendCanvasTone() {
 
       prev = null;
       for (let lp = 0; lp < lightPasses && !streamStop; lp++) {
-        if (!await vsAcquireCredit(15000)) {
-          throw new Error('нет ACK/credit для light frame');
-        }
-
         // Белый проход: осветляем пиксели у которых мало тёмных импульсов.
         // С каждым проходом расширяем зону осветления (порог растёт).
         const frame = toneLevelsToFrameLight(levels, maxPulse, lp);
-        const pkt = makeVSPkt(frame, 2, prev);
-        await sendBytesStream(pkt);
+        const res = await sendPhotoPassGuaranteed(frame, prev, `light ${lp + 1}/${lightPasses}`);
+        if (!res) break;
         prev = frame;
 
         const pct = Math.round((maxPulse + lp + 1) * 100 / (maxPulse + lightPasses));
-        logI(`  light pass ${lp + 1}/${lightPasses} · ${pct}% · pkt=${pkt.length}B`);
+        logI(`  light pass ${lp + 1}/${lightPasses} · ${pct}% · pkt=${res.bytes}B` +
+             (res.tries ? ` · resync×${res.tries}` : '') + (res.ok ? '' : ' · ✗'));
       }
 
       await vsDrain(20000);
@@ -2532,15 +2611,14 @@ async function sendCanvasToneSoft() {
     if (!await readyWait) logI('  нет VSTREAM:ready за 12с, продолжаю');
 
     for (let pass = 0; pass < maxPulse && !streamStop; pass++) {
-      if (!await vsAcquireCredit(15000)) throw new Error('нет ACK/credit для soft-tone frame');
-
       const frame = toneLevelsToFrame(levels, pass);
-      const pkt   = makeVSPkt(frame, 2, prev);
-      await sendBytesStream(pkt);
+      const res = await sendPhotoPassGuaranteed(frame, prev, `soft ${pass + 1}/${maxPulse}`);
+      if (!res) break;
       prev = frame;
 
       const pct = Math.round((pass + 1) * 100 / maxPulse);
-      logI(`  soft pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${pkt.length}B`);
+      logI(`  soft pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${res.bytes}B` +
+           (res.tries ? ` · resync×${res.tries}` : '') + (res.ok ? '' : ' · ✗'));
     }
 
     await vsDrain(20000);
@@ -3093,10 +3171,11 @@ async function startStream() {
   // Запускаем аудио-сопровождение если включено
   await startStreamAudio(syncMode, fps);
 
-  let prev=null, loop_n=0;
+  let prev=null, loop_n=0, sinceKey=0;
   const t0 = performance.now();
   let framesDone=0;  // frames sent (vs.acked = frames confirmed by device)
   let resyncs=0;
+  let sendErrs=0;    // consecutive transient BLE send errors → resync, don't abort
   let lastUiUpdate=0; // throttle DOM updates to ~8fps to avoid layout thrashing
 
   const statusTxt = (head, pktLen, extra='') => {
@@ -3124,18 +3203,35 @@ async function startStream() {
       animLog('↺ нет ACK 15с — resync RLE-кадром');
       vs.inflight = 0;
       await vsAcquireCredit(1); // grants instantly at inflight=0
-      try { await sendBytesStream(makeVSPkt(fr, 1/*RLE*/, null)); }
+      try { await sendBytesStream(encodeVSFrame(fr, null, 1/*RLE*/, vs.useCrc, true, VS_KEY_SLACK).pkt); }
       catch(e) { animLog('⚠ resync: '+e.message); return null; }
-      prev = fr; framesDone++;
+      prev = fr; sinceKey = 0; framesDone++;
       return 0;
     }
-    const pkt = makeVSPkt(fr, encType, prev);
+    // Force a keyframe when the device asked to resync (rs=1 / wire CRC bad) or
+    // the periodic safety net is due; encodeVSFrame also picks a keyframe when a
+    // full frame is as cheap as the delta (scene cut / static area).
+    const wantResync = vs.resync; vs.resync = false;
+    const force = wantResync || (VS_KEY_INTERVAL>0 && sinceKey>=VS_KEY_INTERVAL);
+    const { pkt, isKey } = encodeVSFrame(fr, prev, encType, vs.useCrc, force, VS_KEY_SLACK);
     try { await sendBytesStream(pkt); }
     catch(e) {
-      if (e.message !== 'stopped') animLog(`↺ send error: ${e.message}`);
-      return null;
+      if (e.message === 'stopped' || streamStop) return null;   // genuine Stop
+      // Transient BLE error (e.g. "GATT operation already in progress"): a single
+      // hiccup must NOT kill a multi-thousand-frame stream. Drop the stale
+      // in-flight accounting and force the NEXT frame to be a full keyframe —
+      // it overwrites the whole FB and heals any partial write. Give Chrome's
+      // GATT queue a moment to drain, then continue. Abort only if errors pile
+      // up consecutively (device really gone).
+      if (++sendErrs > 5) { animLog(`⚠ send error: ${e.message} — слишком много подряд, стоп`); return null; }
+      animLog(`↺ send error: ${e.message} — resync #${sendErrs}`);
+      vs.resync = true;
+      vs.inflight = 0;
+      await sleep(150);
+      return 0;   // non-null → loop continues; this frame is skipped, next is a keyframe
     }
-    prev = fr; framesDone++;
+    sendErrs = 0;   // a clean send clears the consecutive-error streak
+    prev = fr; sinceKey = isKey ? 0 : sinceKey+1; framesDone++;
     return pkt.length;
   }
 
@@ -3837,7 +3933,34 @@ function packBits(data) {
   return new Uint8Array(out);
 }
 
-function makeVSPkt(frame, enc, prev) {
+// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, MSB-first). Must match the
+// device's vs_crc16_update() and the Python host's crc16_ccitt().
+function crc16ccitt(data) {
+  let crc = 0xFFFF;
+  for (let n=0; n<data.length; n++) {
+    crc ^= data[n] << 8;
+    for (let i=0; i<8; i++)
+      crc = (crc & 0x8000) ? ((crc<<1) ^ 0x1021) & 0xFFFF : (crc<<1) & 0xFFFF;
+  }
+  return crc;
+}
+
+// Frame a payload. With useCrc the type byte gets the 0x40 flag and a 2-byte
+// CRC-16 over the payload is inserted before the 0xBB flush.
+function vsWrap(type, payload, useCrc) {
+  const t = useCrc ? (type | VS_CRC_FLAG) : type;
+  const ln = payload.length, extra = useCrc ? 2 : 0;
+  const pkt = new Uint8Array(6 + ln + extra);
+  pkt[0]=0xAA; pkt[1]=0x55; pkt[2]=t;
+  pkt[3]=(ln>>8)&0xFF; pkt[4]=ln&0xFF;
+  pkt.set(payload, 5);
+  let o = 5 + ln;
+  if (useCrc) { const c = crc16ccitt(payload); pkt[o++]=(c>>8)&0xFF; pkt[o++]=c&0xFF; }
+  pkt[o] = 0xBB;
+  return pkt;
+}
+
+function makeVSPkt(frame, enc, prev, useCrc=false) {
   let payload, type;
   const dual = frame.length === FB_SIZE * 2;
   if (enc===2) { // DRLE
@@ -3849,12 +3972,26 @@ function makeVSPkt(frame, enc, prev) {
     }
   } else if (enc===1) { payload=packBits(frame); type=dual ? VS_TYPE_RLE2 : VS_TYPE_RLE; }
   else { payload=frame; type=dual ? VS_TYPE_RAW2 : VS_TYPE_RAW; }
-  const ln=payload.length;
-  const pkt=new Uint8Array(6+ln);
-  pkt[0]=0xAA; pkt[1]=0x55; pkt[2]=type;
-  pkt[3]=(ln>>8)&0xFF; pkt[4]=ln&0xFF;
-  pkt.set(payload,5); pkt[5+ln]=0xBB;
-  return pkt;
+  return vsWrap(type, payload, useCrc);
+}
+
+// Encode one frame; report whether it's a keyframe (full, self-contained). A
+// full keyframe is emitted when forced (resync/periodic/first) and when a full
+// RLE frame is no larger than the XOR-delta plus keySlack (cheap/static frames
+// AND scene cuts) — near-free resync points that bound corruption lifetime.
+// Returns {pkt, isKey}.
+function encodeVSFrame(frame, prev, enc, useCrc, forceKey, keySlack) {
+  const dual = frame.length === FB_SIZE * 2;
+  if (enc===0) return { pkt: vsWrap(dual?VS_TYPE_RAW2:VS_TYPE_RAW, frame, useCrc), isKey:true };
+  if (enc===1 || !prev || forceKey)
+    return { pkt: vsWrap(dual?VS_TYPE_RLE2:VS_TYPE_RLE, packBits(frame), useCrc), isKey:true };
+  // enc===2 DRLE with a prev: choose delta vs opportunistic cheap keyframe.
+  const d = new Uint8Array(frame.length);
+  for (let i=0;i<frame.length;i++) d[i]=frame[i]^prev[i];
+  const dpay = packBits(d), fpay = packBits(frame);
+  if (fpay.length <= dpay.length + keySlack)
+    return { pkt: vsWrap(dual?VS_TYPE_RLE2:VS_TYPE_RLE, fpay, useCrc), isKey:true };
+  return { pkt: vsWrap(dual?VS_TYPE_DRLE2:VS_TYPE_DRLE, dpay, useCrc), isKey:false };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4244,6 +4381,9 @@ const sysState = {
   mahUsed: 0,       // mAh × 1000
   curUa: 0,
   lastUpdate: null,
+  layout: null,     // 1=legacy, 2=v2; null = old fw that doesn't report it
+  secOn: false,     // device access gate active
+  authed: false,    // this connection authenticated
 };
 
 const BATT_CAPACITY_MAH = 350;
@@ -4291,6 +4431,9 @@ function parseSysinfo(line) {
   const batM = data.match(/bat=(\d+)/);
   const mahM = data.match(/mah=(\d+)\.(\d+)/);
   const curM = data.match(/cur_ua=(\d+)/);
+  const layoutM = data.match(/layout=(\d+)/);
+  const secM = data.match(/\bsec=(\d+)/);
+  const authedM = data.match(/authed=(\d+)/);
 
   if (fwM) sysState.fwVersion = fwM[1];
   if (buildM) sysState.buildDate = buildM[1];
@@ -4298,10 +4441,17 @@ function parseSysinfo(line) {
   if (batM) sysState.battMv = +batM[1];
   if (mahM) sysState.mahUsed = +mahM[1] * 1000 + +mahM[2];
   if (curM) sysState.curUa = +curM[1];
+  if (layoutM) sysState.layout = +layoutM[1];
+  if (secM) sysState.secOn = secM[1] === '1';
+  if (authedM) sysState.authed = authedM[1] === '1';
   sysState.lastUpdate = new Date();
 
   updateSysUI();
+  updateAuthUI();
   checkVersionMismatch();
+
+  // Gate is on and we're not authed yet → kick off the handshake (once).
+  if (sysState.secOn && !sysState.authed) maybeAutoAuth();
 }
 
 function updateSysUI() {
@@ -4376,7 +4526,135 @@ function parseBattAlert(line) {
 }
 
 // --- Firmware update server ---
-let serverManifest = null;  // {version, file, size, notes, sha256}
+let serverManifest = null;  // {version, file, size, notes, sha256, variants:[...]}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Basic device auth (shared-key challenge-response) + variant select
+//  Mirrors src/app/secauth.c. Deliberately basic — it stops random peers /
+//  garbage; the hard firmware-authenticity guarantee is the MCUboot key.
+// ═══════════════════════════════════════════════════════════════════
+
+// Must match the compiled default in src/app/secauth.c — the shared "base"
+// fleet key common to all un-rotated devices. It lives in the sources on
+// purpose; rotate per-device with a password (SETKEY) when you need isolation.
+const SECAUTH_DEFAULT_KEY = new Uint8Array([
+  0x9e,0x1c,0x47,0xb3,0x52,0xa8,0x0f,0xd6,
+  0x71,0x2b,0xc4,0x88,0x3a,0xe5,0x96,0x10,
+]);
+let authKeyBytes = SECAUTH_DEFAULT_KEY;  // key for the next handshake
+let authBusy = false;
+let autoAuthTried = false;               // default-key auto-try is once-per-connection
+
+function hexToBytes(h) {
+  h = (h || '').trim();
+  const out = new Uint8Array(h.length >> 1);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+  return out;
+}
+function bytesToHex(b) {
+  return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+}
+
+// AES-128-ECB of one 16-byte block via WebCrypto AES-CBC with IV=0 (the first
+// ciphertext block equals ECB of the first plaintext block). Matches the
+// device's bt_encrypt_be(key, nonce).
+async function aesEcbBlock(keyBytes, block16) {
+  const k = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['encrypt']);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: new Uint8Array(16) }, k, block16));
+  return ct.slice(0, 16);
+}
+
+// A user "password" → 16-byte key. An exact 32-hex string is used verbatim;
+// anything else becomes key = SHA-256(password)[:16]. dfuSetPassword sets the
+// device key the same way, so a password round-trips.
+async function deriveKeyFromInput(input) {
+  const s = (input || '').trim();
+  if (/^[0-9a-fA-F]{32}$/.test(s)) return hexToBytes(s);
+  const dig = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  return dig.slice(0, 16);
+}
+
+function doAuth() { if (connected) { authBusy = true; send('AUTH\n'); } }
+
+async function maybeAutoAuth() {
+  if (authBusy || sysState.authed || autoAuthTried) return;
+  autoAuthTried = true;
+  authKeyBytes = SECAUTH_DEFAULT_KEY;
+  logI('🔒 Ценник запаролен — пробую общий ключ по умолчанию…');
+  doAuth();
+}
+
+async function handleAuthLine(line) {
+  if (line.startsWith('AUTH:CHAL ')) {
+    const nonceHex = line.slice('AUTH:CHAL '.length).trim();
+    try {
+      const resp = await aesEcbBlock(authKeyBytes, hexToBytes(nonceHex));
+      send('AUTH ' + bytesToHex(resp) + '\n');
+    } catch (e) { logE('AUTH: ' + e.message); authBusy = false; }
+    return;
+  }
+  if (line.startsWith('AUTH:OK')) {
+    authBusy = false; sysState.authed = true;
+    logI('🔓 Авторизация пройдена');
+    updateAuthUI();
+    requestSysinfo();   // re-read: gated commands (BATT/STATS) now allowed
+    return;
+  }
+  if (line.startsWith('AUTH:FAIL') || line.startsWith('AUTH:ERR')) {
+    authBusy = false; sysState.authed = false;
+    logI('🔒 Ключ не подошёл — введи пароль ценника и нажми «Разблокировать»');
+    updateAuthUI();
+    return;
+  }
+}
+
+// Manual unlock: take the password field (or prompt), derive the key, retry.
+async function dfuUnlock() {
+  const el = $('dfu-pass');
+  const pw = el ? el.value : prompt('Пароль ценника:');
+  if (pw == null) return;
+  authKeyBytes = await deriveKeyFromInput(pw);
+  logI('🔑 Пробую введённый пароль…');
+  doAuth();
+}
+
+// Rotate the device key to a new password (requires being authed first).
+async function dfuSetPassword() {
+  if (!sysState.authed) { alert('Сначала разблокируй ценник — нужно знать текущий ключ.'); return; }
+  const el = $('dfu-pass');
+  const pw = el ? el.value : prompt('Новый пароль:');
+  if (!pw) { alert('Пустой пароль. Введи новый пароль в поле и повтори.'); return; }
+  const k = await deriveKeyFromInput(pw);
+  send('SETKEY ' + bytesToHex(k) + '\n');
+  authKeyBytes = k;   // subsequent handshakes use the new key
+  logI('🔑 Новый ключ отправлён (SETKEY). Сохрани пароль — он общий для этого ценника.');
+}
+
+function updateAuthUI() {
+  const el = $('dfu-auth-status');
+  if (!el) return;
+  if (!sysState.secOn)        el.innerHTML = '<span style="color:var(--fg2)">🔓 без пароля (или старая прошивка)</span>';
+  else if (sysState.authed)   el.innerHTML = '<span style="color:var(--green)">🔓 разблокировано</span>';
+  else                        el.innerHTML = '<span style="color:var(--orange)">🔒 запаролено — введи пароль</span>';
+}
+
+// Pick the OTA image variant matching this device's layout. Falls back to the
+// legacy single-image manifest for old devices / old manifests. Returns null
+// when the device's layout has no image (so we never push a wrong-variant one).
+function pickVariant(manifest, layout) {
+  if (!manifest) return null;
+  if (Array.isArray(manifest.variants) && manifest.variants.length) {
+    if (layout != null) return manifest.variants.find(v => v.layout === layout) || null;
+    return manifest.variants.find(v => v.layout === 1) || null;  // old fw → legacy
+  }
+  // Legacy single-image manifest: valid only for legacy/unknown devices.
+  if (layout == null || layout === 1) {
+    return { layout: 1, file: manifest.file, version: manifest.version,
+             size: manifest.size, sha256: manifest.sha256,
+             date: manifest.date, notes: manifest.notes };
+  }
+  return null;
+}
 let dfuFirmwareData = null;
 let dfuFileName = '';
 
@@ -4421,10 +4699,10 @@ async function checkForUpdate() {
 
 function checkVersionMismatch() {
   if (!serverManifest || !sysState.fwVersion) return;
-  const remote = serverManifest.version;
-  const local = sysState.fwVersion;
-  if (versionCompare(remote, local) > 0) {
-    showUpdateBanner(remote, serverManifest.size, serverManifest.notes);
+  const v = pickVariant(serverManifest, sysState.layout);
+  if (!v || !v.version) { $('dfu-banner').style.display = 'none'; return; }
+  if (versionCompare(v.version, sysState.fwVersion) > 0) {
+    showUpdateBanner(v.version, v.size, v.notes);
   } else {
     $('dfu-banner').style.display = 'none';
   }
@@ -4450,9 +4728,15 @@ function showUpdateBanner(version, size, notes) {
 
 async function startOtaUpdate() {
   if (!serverManifest) return;
+  const v = pickVariant(serverManifest, sysState.layout);
+  if (!v || !v.file) {
+    dfuLog('Для layout=' + (sysState.layout ?? '?') + ' нет образа в манифесте — обновление отменено', 'err');
+    return;
+  }
   tab('sys');
-  // Download firmware from server
-  const url = serverManifest._baseUrl + '/' + serverManifest.file;
+  // Download the image matching THIS device's layout.
+  const url = serverManifest._baseUrl + '/' + v.file;
+  dfuLog('Образ для layout=' + v.layout + ': ' + v.file, 'inf');
   dfuLog('Скачивание с сервера: ' + url, 'inf');
   $('dfu-prog-text').textContent = 'Скачивание…';
 
@@ -4461,7 +4745,7 @@ async function startOtaUpdate() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const blob = await resp.blob();
     dfuFirmwareData = new Uint8Array(await blob.arrayBuffer());
-    dfuFileName = serverManifest.file;
+    dfuFileName = v.file;
     $('dfu-file-info').textContent = `${dfuFileName} — ${dfuFirmwareData.length} B (${(dfuFirmwareData.length/1024).toFixed(1)} KB) · с сервера`;
     dfuLog(`✓ Скачано: ${dfuFirmwareData.length} байт`, 'ok');
     $('dfu-btn-upload').disabled = !connected;
@@ -4645,6 +4929,10 @@ function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
 
 async function dfuStartUpload() {
   if (!dfuFirmwareData || dfuUploading) return;
+  if (sysState.secOn && !sysState.authed) {
+    dfuLog('Ценник запаролен — сначала разблокируй (введи пароль → 🔓 Разблокировать)', 'wrn');
+    return;
+  }
   if (!await dfuEnsureSmp()) return;
 
   dfuUploading = true;

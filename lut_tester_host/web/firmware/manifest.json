@@ -1,9 +1,23 @@
 {
-  "version": "3.3.0",
+  "version": "3.3.1",
   "file": "app_update.bin",
-  "size": 192980,
-  "sha256": "66bc7858fdfc331a1dd263a07267990a70c89609ef3148457ef927a27ebf59ad",
+  "size": 195220,
+  "sha256": "7b90531363806022158ea2bd2e0195a37d35d14d1dd6a0c929bbb784ab155c12",
   "notes": "",
-  "date": "2026-06-14",
-  "min_version": "1.0.0"
+  "date": "2026-06-24",
+  "min_version": "1.0.0",
+  "variants": [
+    {
+      "layout": 1,
+      "name": "legacy",
+      "file": "app_update.bin",
+      "version": "3.3.1",
+      "size": 195220,
+      "sha256": "7b90531363806022158ea2bd2e0195a37d35d14d1dd6a0c929bbb784ab155c12",
+      "date": "2026-06-24",
+      "key": "default-rsa2048",
+      "ota_max": 229376,
+      "min_version": "1.0.0"
+    }
+  ]
 }
