@@ -47,16 +47,42 @@ WEB_VERSION      := $(shell cat lut_tester_host/web/WEB_VERSION 2>/dev/null | tr
 # ----------------------------------------------------------
 SIGNED_BIN   := $(BUILD_DIR)/peripheral_uart/zephyr/zephyr.signed.bin
 FW_DIR       := $(ROOT_DIR)/lut_tester_host/web/firmware
-FW_BIN       := $(FW_DIR)/app_update.bin
 FW_MANIFEST  := $(FW_DIR)/manifest.json
 
-# OTA size ceiling for MCUboot swap-using-move (nrf52dk/nrf52832).
-# Slot = 58 sectors x 4096 B. The top 2 sectors are reserved (trailer + the
-# "move" sector), so the signed app must fit in 56 sectors = 229376 B. Above
-# this, OTA uploads and marks the image "test", but MCUboot can NOT perform the
-# swap — it silently keeps booting the old image. (If MCUboot is switched to
-# overwrite-only, raise this to 57*4096 = 233472.)
-OTA_MAX_SIGNED := 229376
+# ----------------------------------------------------------
+# Build-variant matrix — one source tree, N OTA images.
+#   legacy : fielded batch. Current layout, DEFAULT MCUboot key, app_update.bin.
+#   v2     : new batch. 12K settings + 4K factory_data, its OWN signing key,
+#            its own image (app_update_v2.bin). A wrong-variant image is
+#            rejected by MCUboot before swap (different key) — that is the hard
+#            cross-flash lock; the host just picks the right file by SYSINFO
+#            layout=.
+#
+#   make            -> legacy
+#   make VARIANT=v2 -> v2 (run `make v2-genkey` once first)
+#   make release    -> both, merged into one manifest.json
+#
+# OTA size ceiling (swap-using-move) = slot sectors minus 2 reserved (trailer +
+# move). legacy 58->56 sectors = 229376 B; v2 57->55 sectors = 225280 B. Over
+# the ceiling MCUboot marks the image "test" but silently never swaps.
+# ----------------------------------------------------------
+VARIANT ?= legacy
+ifeq ($(VARIANT),v2)
+  PM_FILE        := $(ROOT_DIR)/pm_static_nrf52dk_nrf52832_v2.yml
+  LAYOUT_ID      := 2
+  SIGN_KEY       := $(ROOT_DIR)/keys/v2_signing_rsa2048.pem
+  OTA_MAX_SIGNED := 225280
+  OTA_BIN_NAME   := app_update_v2.bin
+  KEY_LABEL      := v2-prod-rsa2048
+else
+  PM_FILE        := $(ROOT_DIR)/pm_static_nrf52dk_nrf52832.yml
+  LAYOUT_ID      := 1
+  SIGN_KEY       :=
+  OTA_MAX_SIGNED := 229376
+  OTA_BIN_NAME   := app_update.bin
+  KEY_LABEL      := default-rsa2048
+endif
+FW_BIN := $(FW_DIR)/$(OTA_BIN_NAME)
 
 # ----------------------------------------------------------
 # Deploy target (rsync to web server)
@@ -93,13 +119,21 @@ CMAKE_EXTRA := \
 	-DAPP_BUILD_MIN=$(BUILD_MIN)     \
 	-DAPP_BUILD_SEC=$(BUILD_SEC)
 
-.PHONY: build flash clean pristine publish deploy web
+.PHONY: build flash clean pristine publish deploy web release v2-genkey
 
 build:
+	@echo ">>> Build variant: $(VARIANT) (layout $(LAYOUT_ID), key $(KEY_LABEL))"
 	@echo ">>> Build timestamp: $(BUILD_YEAR)-$(BUILD_MONTH)-$(BUILD_DAY) $(BUILD_HOUR):$(BUILD_MIN):$(BUILD_SEC)"
+	@if [ -n "$(SIGN_KEY)" ] && [ ! -f "$(SIGN_KEY)" ]; then \
+		echo "!!! VARIANT=$(VARIANT) needs signing key $(SIGN_KEY)."; \
+		echo "    Run 'make v2-genkey' once (and back the key up offline)."; \
+		exit 1; \
+	fi
 	@mkdir -p "$(LOCAL_HOME)/Library/Caches/zephyr/ToolchainCapabilityDatabase"
 	"$(WEST)" build -p always -b "$(BOARD)" "$(APP_DIR)" -d "$(BUILD_DIR)" \
-		-- $(CMAKE_EXTRA)
+		-- $(CMAKE_EXTRA) \
+		-DPM_STATIC_YML_FILE="$(PM_FILE)" \
+		$(if $(SIGN_KEY),-DSB_CONFIG_BOOT_SIGNATURE_KEY_FILE=\"$(SIGN_KEY)\")
 	@echo ">>> HEX ready: $(BUILD_DIR)/merged.hex"
 	@# --- OTA size guard: fail loudly BEFORE publishing an image MCUboot can't swap ---
 	@SIGNED_SZ=$$(wc -c < "$(SIGNED_BIN)" | tr -d ' '); \
@@ -113,24 +147,24 @@ build:
 		exit 1; \
 	fi; \
 	echo ">>> OTA size OK: $$SIGNED_SZ / $(OTA_MAX_SIGNED) B ($$(( $(OTA_MAX_SIGNED) - SIGNED_SZ )) B headroom)"
-	@# --- Auto-publish firmware for OTA ---
+	@# --- Auto-publish firmware for OTA (per-variant) ---
 	@mkdir -p "$(FW_DIR)/history"
 	@if [ -f "$(FW_BIN)" ]; then \
 		PREV_SHA=$$(shasum -a 256 "$(FW_BIN)" | cut -d' ' -f1); \
 		NEW_SHA=$$(shasum -a 256 "$(SIGNED_BIN)" | cut -d' ' -f1); \
-		if [ "$$PREV_SHA" != "$$NEW_SHA" ] && [ -f "$(FW_MANIFEST)" ]; then \
-			PREV_VER=$$(python3 -c "import json;print(json.load(open('$(FW_MANIFEST)'))['version'])" 2>/dev/null || echo "unknown"); \
-			PREV_DATE=$$(python3 -c "import json;print(json.load(open('$(FW_MANIFEST)'))['date'])" 2>/dev/null || echo "unknown"); \
-			cp "$(FW_BIN)" "$(FW_DIR)/history/app_update_v$${PREV_VER}_$${PREV_DATE}.bin"; \
-			echo ">>> Archived previous: v$$PREV_VER ($$PREV_DATE)"; \
+		if [ "$$PREV_SHA" != "$$NEW_SHA" ]; then \
+			cp "$(FW_BIN)" "$(FW_DIR)/history/$(VARIANT)_$$(date +%Y%m%d_%H%M%S).bin"; \
+			echo ">>> Archived previous $(VARIANT) image"; \
 		fi; \
 	fi
 	@cp "$(SIGNED_BIN)" "$(FW_BIN)"
 	@FW_SIZE=$$(stat -f%z "$(FW_BIN)" 2>/dev/null || stat -c%s "$(FW_BIN)"); \
 	FW_SHA=$$(shasum -a 256 "$(FW_BIN)" | cut -d' ' -f1); \
 	FW_DATE=$$(date "+%Y-%m-%d"); \
-	printf '{\n  "version": "$(FW_VERSION)",\n  "file": "app_update.bin",\n  "size": %s,\n  "sha256": "%s",\n  "notes": "",\n  "date": "%s",\n  "min_version": "1.0.0"\n}\n' \
-		"$$FW_SIZE" "$$FW_SHA" "$$FW_DATE" > "$(FW_MANIFEST)"
+	MF="$(FW_MANIFEST)" LAYOUT="$(LAYOUT_ID)" VNAME="$(VARIANT)" \
+	  VFILE="$(OTA_BIN_NAME)" VER="$(FW_VERSION)" VSIZE="$$FW_SIZE" VSHA="$$FW_SHA" \
+	  VDATE="$$FW_DATE" VKEY="$(KEY_LABEL)" VOTA="$(OTA_MAX_SIGNED)" \
+	  python3 "$(ROOT_DIR)/scripts/update_manifest.py"
 	@# Keep only last 10 history files
 	@cd "$(FW_DIR)/history" && ls -t *.bin 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null; true
 	@echo ">>> OTA firmware: v$(FW_VERSION) → $(FW_BIN) ($$(du -h "$(FW_BIN)" | cut -f1))"
@@ -185,6 +219,34 @@ web:
 # publish — alias for build (build already packages OTA)
 # ----------------------------------------------------------
 publish: build
+
+# ----------------------------------------------------------
+# release — build ALL OTA variants into one manifest.json.
+# Run `make v2-genkey` once beforehand (the v2 build needs its signing key).
+# ----------------------------------------------------------
+release:
+	@echo ">>> Building ALL OTA variants (legacy + v2)…"
+	$(MAKE) build VARIANT=legacy
+	$(MAKE) build VARIANT=v2
+	@echo ">>> Release variants in $(FW_DIR):"
+	@python3 -c "import json;d=json.load(open('$(FW_MANIFEST)'));[print('   layout',v['layout'],v['name'],v['file'],'v'+v['version'],str(v['size'])+'B','key='+v['key']) for v in d.get('variants',[])]"
+
+# ----------------------------------------------------------
+# v2-genkey — generate the v2 batch's MCUboot signing key (RSA-2048), ONE TIME.
+# Never overwrite an existing key (would orphan every v2 device already signed
+# with it). The key is committed to this (internal) repo so it can't be lost.
+# ----------------------------------------------------------
+v2-genkey:
+	@mkdir -p "$(ROOT_DIR)/keys"
+	@if [ -f "$(ROOT_DIR)/keys/v2_signing_rsa2048.pem" ]; then \
+		echo "!!! keys/v2_signing_rsa2048.pem already exists — refusing to overwrite."; \
+		exit 1; \
+	fi
+	python3 "$(NCS_DIR)/bootloader/mcuboot/scripts/imgtool.py" keygen \
+		-k "$(ROOT_DIR)/keys/v2_signing_rsa2048.pem" -t rsa-2048
+	@echo ">>> Generated keys/v2_signing_rsa2048.pem — COMMIT it (internal repo)."
+	@echo "    It is the v2 batch MCUboot key; keep it in version control so it"
+	@echo "    can't be lost. If the repo ever goes public, rotate it + move it out."
 
 # ----------------------------------------------------------
 # deploy — upload entire web app to server via rsync

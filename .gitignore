@@ -16,3 +16,8 @@ lut_tester_host/web/firmware/*.bin
 lut_tester_host/web/firmware/history/*.bin
 lut_tester_host/web/firmware/manifest.json
 lut_tester_host/web/version.json
+
+# MCUboot signing keys live in this (internal) repo ON PURPOSE — security here
+# is basic/formal and an offline-only key would be a single point of loss. The
+# v2 batch key (keys/v2_signing_rsa2048.pem) is committed so it can't be lost.
+# If this repo is ever made public, rotate that key and move it out of tree.

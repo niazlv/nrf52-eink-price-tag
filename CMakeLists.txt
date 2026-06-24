@@ -36,6 +36,8 @@ target_sources(app PRIVATE
   src/app/commands.c
   src/app/system_time.c
   src/app/persist.c
+  src/app/factory.c
+  src/app/secauth.c
   src/ble/ble_service.c
 )
 

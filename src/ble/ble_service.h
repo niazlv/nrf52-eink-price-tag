@@ -58,4 +58,16 @@ bool ble_service_get_streaming_mode(void);
  */
 const char *ble_service_get_device_name(void);
 
+/**
+ * @brief Set a user-defined name. The immutable per-device id (FICR/addr hex)
+ * is always appended in parentheses and cannot be removed. Persists to NVS.
+ * Pass NULL or "" to clear back to the default name. Returns bt_set_name() rc.
+ */
+int ble_service_set_custom_name(const char *name);
+
+/**
+ * @brief Current user-defined name part ("" if none set).
+ */
+const char *ble_service_get_custom_name(void);
+
 #endif // BLE_SERVICE_H

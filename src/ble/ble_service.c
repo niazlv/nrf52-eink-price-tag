@@ -37,6 +37,9 @@ static bool ble_streaming_mode = false;
 static bool adv_running = false;
 static bool advertising_allowed = false;
 static char device_name[CONFIG_BT_DEVICE_NAME_MAX + 1];
+/* User-settable name part; "" = use the default. The immutable per-device id
+ * (FICR/addr hex) is always appended in parentheses and cannot be removed. */
+static char custom_name[CONFIG_BT_DEVICE_NAME_MAX + 1];
 
 static const struct bt_le_adv_param adv_param_fast =
 	BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONN, ADV_FAST_INT_MIN, ADV_FAST_INT_MAX, NULL);
@@ -104,10 +107,19 @@ static void build_device_name(void)
 		build_suffix_from_ficr(suffix);
 	}
 
-	prefix_len = device_name_prefix_len();
-	snprintk(device_name, sizeof(device_name), "%.*s-%02X%02X%02X",
-		 (int)prefix_len, CONFIG_BT_DEVICE_NAME,
-		 suffix[0], suffix[1], suffix[2]);
+	if (custom_name[0] != '\0') {
+		/* "<user name> (XXXXXX)" — the parenthesised id is permanent. */
+		const size_t tail = sizeof(" (XXXXXX)") - 1;   /* 9 chars */
+		size_t max_user = sizeof(device_name) - 1 - tail;
+		snprintk(device_name, sizeof(device_name), "%.*s (%02X%02X%02X)",
+			 (int)max_user, custom_name,
+			 suffix[0], suffix[1], suffix[2]);
+	} else {
+		prefix_len = device_name_prefix_len();
+		snprintk(device_name, sizeof(device_name), "%.*s-%02X%02X%02X",
+			 (int)prefix_len, CONFIG_BT_DEVICE_NAME,
+			 suffix[0], suffix[1], suffix[2]);
+	}
 }
 
 static void apply_connection_params(void)
@@ -321,6 +333,26 @@ static struct bt_nus_cb nus_cb = {
 	.received = bt_receive_cb,
 };
 
+/* Persisted user name under "cfg/name". */
+static int cfg_settings_set(const char *name, size_t len,
+			    settings_read_cb read_cb, void *cb_arg)
+{
+	if (settings_name_steq(name, "name", NULL)) {
+		if (len >= sizeof(custom_name)) {
+			len = sizeof(custom_name) - 1;
+		}
+		int rc = read_cb(cb_arg, custom_name, len);
+		if (rc >= 0) {
+			custom_name[rc] = '\0';
+			return 0;
+		}
+		return rc;
+	}
+	return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(blecfg, "cfg", NULL, cfg_settings_set, NULL, NULL);
+
 int ble_service_init(ble_rx_callback_t rx_cb) {
     int err;
     app_rx_cb = rx_cb;
@@ -406,4 +438,29 @@ bool ble_service_get_streaming_mode(void)
 const char *ble_service_get_device_name(void)
 {
 	return device_name;
+}
+
+int ble_service_set_custom_name(const char *name)
+{
+	if (!name) {
+		name = "";
+	}
+	strncpy(custom_name, name, sizeof(custom_name) - 1);
+	custom_name[sizeof(custom_name) - 1] = '\0';
+
+	/* Persist including the NUL so an empty string clears the entry cleanly. */
+	(void)settings_save_one("cfg/name", custom_name, strlen(custom_name) + 1);
+
+	build_device_name();
+	int err = bt_set_name(device_name);
+
+	if (!current_conn && advertising_allowed) {
+		advertising_start();   /* re-advertise with the new name */
+	}
+	return err;
+}
+
+const char *ble_service_get_custom_name(void)
+{
+	return custom_name;
 }

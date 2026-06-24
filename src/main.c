@@ -13,6 +13,7 @@
 #include "app/commands.h"
 #include "app/system_time.h"
 #include "app/persist.h"
+#include "app/secauth.h"
 #include "ble/ble_service.h"
 #include "lib/graphics.h"
 #include <dk_buttons_and_leds.h>
@@ -63,6 +64,10 @@ int main(void)
         LOG_ERR("BLE Init failed: %d", err);
         return 0;
     }
+
+    // Settings are now loaded (ble_service_init -> settings_load). Resolve the
+    // effective auth key: NVS override > factory_data > compiled default.
+    secauth_init();
 
     // Settings are now loaded (ble_service_init -> settings_load): finalize
     // stats — restore from flash if RAM was lost, adopt saved clock, count boot.

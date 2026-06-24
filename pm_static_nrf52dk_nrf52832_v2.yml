@@ -1,0 +1,65 @@
+# v2 partition layout — NEW BATCH ONLY (nrf52dk/nrf52832, 512 KB).
+#
+# Differs from the legacy layout (pm_static_nrf52dk_nrf52832.yml, used by the
+# fielded devices) only BELOW the two firmware slots:
+#   * settings_storage  8K -> 12K  (3 NVS sectors instead of the 2-sector
+#                                   minimum -> real garbage-collection headroom)
+#   * factory_data      NEW 4K read-only provisioning partition (serial + auth
+#                                   key). A partition cannot be added later by
+#                                   OTA, which is exactly why it must exist from
+#                                   the first flash.
+# To fund those 8K the two slots shrink 232K -> 228K (57 sectors each).
+#
+# !!! NOT OTA-compatible with the legacy batch (different slot sizes + settings
+# offset). Flashed only on the new batch and served its own OTA image stream,
+# cryptographically locked by a distinct MCUboot signing key (see Makefile,
+# VARIANT=v2). The wrong-variant image is rejected by MCUboot before swap.
+#
+# swap-using-move ceiling: 55 of 57 usable sectors = 225280 B signed image.
+app:
+  address: 0xa200
+  end_address: 0x43000
+  region: flash_primary
+  size: 0x38e00
+mcuboot:
+  address: 0x0
+  end_address: 0xa000
+  region: flash_primary
+  size: 0xa000
+mcuboot_pad:
+  address: 0xa000
+  end_address: 0xa200
+  region: flash_primary
+  size: 0x200
+mcuboot_primary:
+  address: 0xa000
+  end_address: 0x43000
+  orig_span: &id001
+  - mcuboot_pad
+  - app
+  region: flash_primary
+  size: 0x39000
+  span: *id001
+mcuboot_primary_app:
+  address: 0xa200
+  end_address: 0x43000
+  orig_span: &id002
+  - app
+  region: flash_primary
+  size: 0x38e00
+  span: *id002
+mcuboot_secondary:
+  address: 0x43000
+  end_address: 0x7c000
+  region: flash_primary
+  size: 0x39000
+settings_storage:
+  address: 0x7c000
+  end_address: 0x7f000
+  region: flash_primary
+  size: 0x3000
+factory_data:
+  address: 0x7f000
+  end_address: 0x80000
+  region: flash_primary
+  size: 0x1000
