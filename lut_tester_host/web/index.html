@@ -474,6 +474,23 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
 }
 #sw-toast[hidden]{display:none}
 
+/* Firmware-update toast (свайпом смахивается; см. fwToast* в JS) */
+#fw-toast{
+  position:fixed;left:50%;top:calc(10px + env(safe-area-inset-top));
+  transform:translateX(-50%);z-index:100;
+  display:flex;gap:11px;align-items:center;
+  background:linear-gradient(180deg,#101830,#0c1220);
+  border:1px solid #2a4a80;border-radius:13px;
+  padding:9px 9px 9px 14px;font-size:12px;color:var(--fg);
+  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,420px);
+  animation:tfade .2s ease;touch-action:pan-y;cursor:grab;user-select:none;
+}
+#fw-toast[hidden]{display:none}
+#fw-toast .fwt-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+#fw-toast .fwt-ver{font-weight:700}
+#fw-toast .fwt-sub{font-size:10px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#fw-toast .fwt-x{padding:4px 8px}
+
 #pwa-warn{
   display:flex;align-items:center;gap:9px;flex-shrink:0;
   padding:7px 12px;font-size:11px;line-height:1.45;color:#f5c98a;
@@ -1563,10 +1580,13 @@ async function bleConnect() {
     await txChar.startNotifications();
     txChar.addEventListener('characteristicvaluechanged', onNotify);
     connected = true;
+    autoTimeDoneThisConn = false;   // новая сессия → снова можно авто-выставить время
+    sysState.wallUnix = null;
     mtu = 498; // reset to optimistic; sendBytes will shrink on first oversized write
     updateMtuDisplay();
     setStatus(`Подключено → ${bleDevice.name}`, true);
     $('btn-conn').textContent = 'Отключить';
+    currentDeviceName = bleDevice.name || '';   // стартовое имя; NAME: уточнит/обновит
     nfcRefresh();   // имя ценника теперь известно → построить ссылку для метки
     logI(`Connected to ${bleDevice.name}`);
     await sleep(400);
@@ -1594,9 +1614,11 @@ function onBleDisc() {
   connected = false;
   smpChar = null;
   sysState.authed = false; sysState.secOn = false;
+  sysState.wallUnix = null; autoTimeDoneThisConn = false;
   autoAuthTried = false; authBusy = false;
   setStatus('Не подключено', false);
   $('btn-conn').textContent = 'Подключить';
+  currentDeviceName = '';
   nfcRefresh();
   logI('Disconnected');
 }
@@ -1876,6 +1898,45 @@ function parseLget(line) {
 function sendTime() {
   const n = new Date();
   sendRaw_(`TIME=${n.getHours()}:${n.getMinutes()}:${n.getSeconds()}`);
+}
+// Полная установка: время + дата (нужно после прошивки/первой загрузки, когда
+// на устройстве стоит только build-дата). Прошивка хранит компоненты «как есть»
+// (mktime/gmtime без TZ), поэтому шлём ЛОКАЛЬНЫЕ числа — на экране ценника они
+// и отобразятся как местное время.
+function sendFullTime() {
+  const n = new Date();
+  sendRaw_(`TIME ${n.getHours()}:${n.getMinutes()}:${n.getSeconds()} ` +
+           `${n.getDate()}.${n.getMonth() + 1}.${n.getFullYear()}`);
+}
+// Часы ценника отсчитываются от build-времени, пока их кто-то не выставит, и
+// НЕ переживают потерю питания. После OTA/первой загрузки они показывают build —
+// тогда выставляем реальное время автоматически, без участия пользователя.
+//
+// Признак «никто не выставлял»: текущие часы ушли от build-времени не дальше,
+// чем на uptime (+запас). Если бы время выставляли, wall был бы ≈ «сейчас», т.е.
+// намного больше build+uptime. Сравнение идёт в одной шкале (mktime/gmtime на
+// устройстве ≙ Date.UTC компонентов), поэтому от часового пояса браузера не зависит.
+function buildDateToUnix(s) {
+  // s = "2025-06-12_14:30:00"
+  const m = s && s.match(/^(\d+)-(\d+)-(\d+)_(\d+):(\d+):(\d+)$/);
+  if (!m) return null;
+  return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000);
+}
+function maybeAutoSetTime() {
+  if (autoTimeDoneThisConn) return;
+  if (!connected) return;
+  if (sysState.secOn && !sysState.authed) return;   // защищён → TIME проигнорируется
+  if (sysState.wallUnix == null || !sysState.buildDate) return;
+  const buildUnix = buildDateToUnix(sysState.buildDate);
+  if (buildUnix == null) return;
+
+  const advanced = sysState.wallUnix - buildUnix;        // на сколько часы ушли от build
+  const neverSet = advanced <= (sysState.uptimeSec + 300); // +5 мин запаса
+  if (!neverSet) return;                                  // время уже выставлено вручную
+
+  autoTimeDoneThisConn = true;
+  logI('Время на ценнике не выставлено (стоит build) — выставляю текущее автоматически');
+  sendFullTime();
 }
 function sendText() {
   const t = $('txt-inp').value.trim();
@@ -4446,7 +4507,12 @@ const sysState = {
   layout: null,     // 1=legacy, 2=v2; null = old fw that doesn't report it
   secOn: false,     // device access gate active
   authed: false,    // this connection authenticated
+  wallUnix: null,   // device wall clock (unix sec), из STATS wall=
 };
+
+// Авто-выставление времени делаем не больше раза за подключение
+// (TIME=… дёргает полную перерисовку e-ink — не хочется зря жечь refresh).
+let autoTimeDoneThisConn = false;
 
 const BATT_CAPACITY_MAH = 350;
 // ADC ceiling is 3600 mV (gain 1/6, ref 0.6V). Above that = "full/charging".
@@ -4467,6 +4533,7 @@ function requestSysinfo() {
 // рекламируется как «<пользовательское> (XXXXXX)» — хвост несъёмный.
 function parseName(line) {
   const full = line.slice('NAME:'.length).trim();
+  if (full) currentDeviceName = full;   // живое имя (в т.ч. после переименования)
   const el = $('sys-name');
   if (el) el.textContent = full || '—';
   // Подставляем в поле редактирования только пользовательскую часть.
@@ -4505,6 +4572,11 @@ function parseStats(line) {
     set('st-fwupd',  g(/fwupd=(\d+)/));
     set('st-refr',   g(/refr=(\d+)/));
     set('st-refrfw', g(/refrfw=(\d+)/));
+    const wall = g(/\bwall=(\d+)/);
+    if (wall !== null) {
+      sysState.wallUnix = +wall;
+      maybeAutoSetTime();   // часы устройства известны → можно проверить «не выставлены ли»
+    }
   } else if (/flash=/.test(d)) {
     const fl = g(/flash=(\w+)/);
     if (fl) {
@@ -4544,6 +4616,7 @@ function parseSysinfo(line) {
   updateSysUI();
   updateAuthUI();
   checkVersionMismatch();
+  maybeAutoSetTime();   // build/uptime могли прийти позже STATS — пробуем и тут
 
   // Gate is on and we're not authed yet → kick off the handshake (once).
   if (sysState.secOn && !sysState.authed) maybeAutoAuth();
@@ -4655,6 +4728,11 @@ const deepLink = (() => {
 })();
 let pendingDeepKey = '';     // пароль из метки для авто-AUTH (см. maybeAutoAuth)
 let deepLinkExactName = '';  // имя из метки → точный фильтр chooser (см. bleConnect)
+// Единственный источник истины для имени подключённого ценника. bleDevice.name
+// «замораживается» в момент выбора и НЕ меняется при переименовании по GATT;
+// поэтому ссылку метки строим отсюда: init из bleDevice.name, далее обновляем
+// каждым ответом NAME: (parseName), сбрасываем при отключении (onBleDisc).
+let currentDeviceName = '';
 
 function applyDeepLink() {
   if (!deepLink) return;
@@ -4787,8 +4865,10 @@ function nfcStatus(msg, color) {
 // Ссылка на это же приложение + полное имя ценника (+ опц. пароль) в hash.
 // bleDevice.name — рекламируемое имя «Имя (КОД)», известно сразу после коннекта.
 function nfcBuildUrl() {
-  let fullName = '';
-  if (typeof bleDevice !== 'undefined' && bleDevice && bleDevice.name) fullName = bleDevice.name.trim();
+  // currentDeviceName — единственный достоверный источник (обновляется при
+  // переименовании и переключении ценников). bleDevice.name тут не годится: он
+  // заморожен на момент выбора в chooser и после NAME <new> остаётся старым.
+  let fullName = (currentDeviceName || '').trim();
   if (!fullName) { const sn = $('sys-name'); if (sn) fullName = (sn.textContent || '').trim(); }
   if (!fullName || fullName === '—') return null;
   const p = new URLSearchParams();
@@ -4914,11 +4994,13 @@ async function checkForUpdate() {
 function checkVersionMismatch() {
   if (!serverManifest || !sysState.fwVersion) return;
   const v = pickVariant(serverManifest, sysState.layout);
-  if (!v || !v.version) { $('dfu-banner').style.display = 'none'; return; }
+  if (!v || !v.version) { $('dfu-banner').style.display = 'none'; hideFwToast(); return; }
   if (versionCompare(v.version, sysState.fwVersion) > 0) {
     showUpdateBanner(v.version, v.size, v.notes);
+    showFwToast(v.version, v.size, v.notes);
   } else {
     $('dfu-banner').style.display = 'none';
+    hideFwToast();
   }
 }
 
@@ -4939,6 +5021,74 @@ function showUpdateBanner(version, size, notes) {
   $('dfu-banner-size').textContent = size ? (size / 1024).toFixed(1) + ' KB' : '';
   $('dfu-banner-notes').textContent = notes || '';
 }
+
+// ── Мини-тост «доступно обновление прошивки» ────────────────────────
+// Всплывает сверху, когда на сервере есть версия новее установленной.
+// Смахивается в сторону (или ✕). Смахнутую версию запоминаем, чтобы
+// не дёргать пользователя повторно тем же обновлением.
+let fwToastDismissedVer = null;
+function showFwToast(version, size, notes) {
+  if (fwToastDismissedVer === version) return;     // эту версию уже смахнули
+  const el = $('fw-toast');
+  $('fw-toast-ver').textContent = `Обновление ценника v${version}`;
+  const sizeKb = size ? (size / 1024).toFixed(1) + ' KB' : '';
+  $('fw-toast-sub').textContent = [notes, sizeKb].filter(Boolean).join(' · ') || 'Нажми «Обновить»';
+  el._fwVer = version;
+  el.hidden = false;
+  el.style.transition = '';
+  el.style.transform = 'translateX(-50%)';
+  el.style.opacity = '1';
+}
+function hideFwToast() {
+  $('fw-toast').hidden = true;
+}
+function dismissFwToast() {
+  const el = $('fw-toast');
+  fwToastDismissedVer = el._fwVer || null;   // не показывать снова эту же версию
+  el.hidden = true;
+}
+function wireFwToast() {
+  const el = $('fw-toast');
+  if (!el) return;   // #fw-toast объявлен ниже по документу — ждём DOMContentLoaded
+  $('fw-toast-go').addEventListener('click', () => { hideFwToast(); startOtaUpdate(); });
+  $('fw-toast-x').addEventListener('click', dismissFwToast);
+
+  // Свайп-в-сторону для скрытия (pointer = mouse + touch).
+  let startX = 0, dx = 0, dragging = false;
+  const onDown = e => {
+    if (e.target.closest('button')) return;   // клики по кнопкам не перехватываем
+    dragging = true; startX = e.clientX; dx = 0;
+    el.style.transition = '';
+    el.setPointerCapture?.(e.pointerId);
+  };
+  const onMove = e => {
+    if (!dragging) return;
+    dx = e.clientX - startX;
+    el.style.transform = `translateX(calc(-50% + ${dx}px))`;
+    el.style.opacity = String(Math.max(0, 1 - Math.abs(dx) / 240));
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (Math.abs(dx) > 90) {                   // достаточно далеко — смахнуть
+      el.style.transition = 'transform .2s ease, opacity .2s ease';
+      el.style.transform = `translateX(calc(-50% + ${dx > 0 ? 500 : -500}px))`;
+      el.style.opacity = '0';
+      setTimeout(dismissFwToast, 200);
+    } else {                                    // вернуть на место
+      el.style.transition = 'transform .2s ease, opacity .2s ease';
+      el.style.transform = 'translateX(-50%)';
+      el.style.opacity = '1';
+    }
+  };
+  el.addEventListener('pointerdown', onDown);
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerup', onUp);
+  el.addEventListener('pointercancel', onUp);
+}
+// #fw-toast в DOM появляется ниже этого скрипта → откладываем подключение.
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireFwToast);
+else wireFwToast();
 
 async function startOtaUpdate() {
   if (!serverManifest) return;
@@ -5212,7 +5362,20 @@ async function dfuStartUpload() {
     // Auto-test new image. Пауза: после DFU:DONE устройство несколько секунд
     // занято полной перерисовкой e-ink; dfuTest дополнительно ретраит.
     await sleep(1500);
-    await dfuTest();
+    const marked = await dfuTest();
+
+    // Авто-перезагрузка: иначе ценник «висит» на экране пост-обновления
+    // (прогресс-бар + «Reboot to apply») и ждёт ручного Reboot. После
+    // перезагрузки MCUboot свапнет образ, а новый main.c сам его confirm-нёт.
+    if (marked) {
+      dfuLog('Авто-перезагрузка для применения обновления через 2с…', 'inf');
+      $('dfu-prog-text').textContent = '✓ Готово — перезагрузка…';
+      await sleep(2000);
+      await dfuReset();   // REBOOT по NUS → BLE отвалится (onBleDisc)
+      dfuLog('Ценник перезагружается. Переподключись через ~10с — время выставится автоматически.', 'ok');
+    } else {
+      dfuLog('Слот не помечен — авто-перезагрузка пропущена. Проверь лог и при необходимости нажми Test/Reboot вручную.', 'wrn');
+    }
   } catch (e) {
     dfuLog('✕ ' + e.message, 'err');
     $('dfu-prog-text').textContent = 'Ошибка: ' + e.message;
@@ -5285,22 +5448,25 @@ async function dfuTest() {
     }
     if (!hash) {
       dfuLog('Нет образа в slot 1. Сначала скачай и загрузи прошивку.', 'wrn');
-      return;
+      return false;
     }
     const resp = await smpRequest(2, 1, 0, { hash, confirm: true });
     const rc = resp.rc || 0;
     if (rc === 0) {
       dfuLog(`✓ Slot 1${verNote} помечен для постоянного обновления — жми Reboot`, 'ok');
+      return true;
     } else if (rc === 8) {
       // EMSGSIZE: устройство пометило слот ДО кодирования ответа (см.
       // img_mgmt_state_write), не влез только сам ответ. Помечено успешно.
       dfuLog('✓ Slot 1 помечен для постоянного обновления (ответ не влез в буфер — норма для прошивки ≤3.0.3). Жми Reboot.', 'ok');
+      return true;
     } else if (rc === 5 || rc === 3) {
       dfuLog(`Ошибка test: rc=${rc} — образ с таким hash не найден в slot 1. Загрузи прошивку заново.`, 'err');
     } else if (rc !== 0) {
       dfuLog(`Ошибка test: rc=${rc}`, 'err');
     }
   } catch (e) { dfuLog('Ошибка: ' + e.message, 'err'); }
+  return false;
 }
 
 // Verify: диагностика — image list + hash comparison + raw CBOR dump
@@ -5462,6 +5628,17 @@ try {
 <div id="sw-toast" hidden>
   <span>Доступна новая версия приложения</span>
   <button class="btn acc" id="sw-reload">Обновить</button>
+</div>
+
+<!-- Тост обновления прошивки ценника (смахни, чтобы скрыть) -->
+<div id="fw-toast" hidden>
+  <span style="font-size:16px">⬆</span>
+  <div class="fwt-txt">
+    <span class="fwt-ver" id="fw-toast-ver">Доступно обновление ценника</span>
+    <span class="fwt-sub" id="fw-toast-sub"></span>
+  </div>
+  <button class="btn acc big" id="fw-toast-go">Обновить</button>
+  <button class="btn fwt-x" id="fw-toast-x" title="Скрыть">✕</button>
 </div>
 
 <script>
