@@ -36,6 +36,12 @@ void persist_add_refresh(void);
 /* Cumulative device uptime in seconds (survives DFU / warm reboot). */
 uint64_t persist_uptime_sec(void);
 
+/* Cumulative estimated energy (µAh×1000), survives DFU like uptime. The power
+ * estimator in display_manager owns the rate model and pushes increments via
+ * persist_add_energy_uah_x1000(); persist owns the persisted total. */
+void persist_add_energy_uah_x1000(uint64_t delta);
+uint64_t persist_get_energy_uah_x1000(void);
+
 /* Write the current stats to flash as a FRESH (unconsumed) snapshot. RARE —
  * called on low-battery/shutdown and right before a DFU reboot, when the live
  * RAM copy may be about to be lost. Keeps flash wear minimal. */
@@ -57,6 +63,7 @@ struct persist_report {
 	uint32_t fw_update_count;
 	uint32_t refreshes_total;
 	uint32_t refreshes_since_fw;
+	uint64_t energy_uah_x1000; /* cumulative power estimate (µAh×1000) */
 	/* Flash record state. */
 	bool     flash_present;   /* a blob was loaded from flash */
 	bool     flash_consumed;  /* spent after a real firmware update */

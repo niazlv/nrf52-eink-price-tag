@@ -54,7 +54,9 @@ static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 #define POWER_DISPLAY_PARTIAL_UA     25000
 #define POWER_DISPLAY_FULL_UA        32000
 
-static uint64_t power_estimate_uah_x1000 = 0;
+/* The cumulative energy total lives in persist (retained RAM + flash) so it
+ * survives a DFU reboot just like uptime; only the rate model and the
+ * last-accounted timestamp are session-local here. */
 static int64_t power_estimate_last_ms = 0;
 static int power_estimate_current_ua = POWER_BASE_SLEEP_UA;
 
@@ -138,10 +140,18 @@ static void power_estimate_account_now(void)
 
     int64_t dt_ms = now - power_estimate_last_ms;
     if (dt_ms > 0) {
-        power_estimate_uah_x1000 +=
-            ((uint64_t)power_estimate_current_ua * (uint64_t)dt_ms) / 3600U;
+        persist_add_energy_uah_x1000(
+            ((uint64_t)power_estimate_current_ua * (uint64_t)dt_ms) / 3600U);
         power_estimate_last_ms = now;
     }
+}
+
+/* Roll the energy accrued since the last accounting point into the persisted
+ * total. Cheap; call before a snapshot (tick / pre-reboot save) so it captures
+ * the final interval. */
+void display_manager_flush_energy(void)
+{
+    power_estimate_account_now();
 }
 
 static void power_estimate_set_current(int current_ua)
@@ -158,7 +168,7 @@ static void power_estimate_resync_idle(void)
 static uint32_t power_estimate_get_mah_x1000(void)
 {
     power_estimate_account_now();
-    return (uint32_t)(power_estimate_uah_x1000 / 1000U);
+    return (uint32_t)(persist_get_energy_uah_x1000() / 1000U);
 }
 
 static void stop_streaming_if_active(void) {
@@ -670,6 +680,7 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
         battery_state_t bstate = battery_monitor_update(mv);
 
         /* Roll cumulative stats forward in retained RAM (~1/min). RAM-only. */
+        power_estimate_account_now();   /* fold the idle interval's energy in too */
         persist_tick();
 
         if (bstate == BATT_CRITICAL || bstate == BATT_SHUTDOWN) {

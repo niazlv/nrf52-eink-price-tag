@@ -1083,7 +1083,9 @@ static void cmd_reboot(char *args)
     ble_printf("REBOOT\r\n");
     /* Save to flash before the (DFU) reboot: carries stats across even when
      * retained RAM does not survive (old MCUboot / power blip). The new
-     * firmware consumes this snapshot and marks it spent. */
+     * firmware consumes this snapshot and marks it spent. Flush the energy
+     * estimator first so the final interval is captured in the snapshot. */
+    display_manager_flush_energy();
     persist_save_to_flash();
     k_sleep(K_MSEC(100));   /* flush BLE TX + let flash write settle before reset */
     sys_reboot(SYS_REBOOT_COLD);
@@ -1131,10 +1133,12 @@ static void cmd_stats(char *args)
     struct persist_report r;
     persist_get_report(&r);
 
-    ble_printf("STATS:uptime=%lld wall=%lld boots=%u fwupd=%u refr=%u refrfw=%u\r\n",
+    uint32_t mah_x1000 = (uint32_t)(r.energy_uah_x1000 / 1000U);
+    ble_printf("STATS:uptime=%lld wall=%lld boots=%u fwupd=%u refr=%u refrfw=%u mah=%u.%03u\r\n",
                (long long)r.uptime_total_sec, (long long)r.wall_unix,
                r.boot_count, r.fw_update_count,
-               r.refreshes_total, r.refreshes_since_fw);
+               r.refreshes_total, r.refreshes_since_fw,
+               mah_x1000 / 1000, mah_x1000 % 1000);
     ble_printf("STATS:flash=%s fl_uptime=%lld fl_wall=%lld\r\n",
                r.flash_present ? (r.flash_consumed ? "consumed" : "valid") : "none",
                (long long)r.flash_uptime_total_sec, (long long)r.flash_wall_unix);

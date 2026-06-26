@@ -32,8 +32,18 @@ struct persist_data {
 	uint32_t refreshes_total;   /* full display refreshes, all time */
 	uint32_t refreshes_since_fw;/* full refreshes since last firmware change */
 	uint32_t flags;             /* PERSIST_F_* — meaningful only in the flash copy */
-	uint32_t reserved[7];
+	uint32_t _pad0;             /* (was reserved[0]) keeps energy 8-byte aligned */
+	uint64_t energy_uah_x1000;  /* cumulative power estimate (µAh×1000), all boots */
+	uint32_t reserved[4];
 };
+
+/* Layout is frozen for OTA compatibility: an old firmware writes this blob into
+ * retained RAM / flash and a new firmware reads it back, so byte offsets and the
+ * total size must not change. New fields are carved out of reserved[] only. */
+BUILD_ASSERT(sizeof(struct persist_data) == 80,
+	     "persist_data layout changed — breaks OTA carry-over");
+BUILD_ASSERT(offsetof(struct persist_data, energy_uah_x1000) == 56,
+	     "energy_uah_x1000 not where an old blob's zeroed reserved[] sits");
 
 #define CRC_OFFSET offsetof(struct persist_data, uptime_total_sec)
 
@@ -187,6 +197,30 @@ uint64_t persist_uptime_sec(void)
 	return (uint64_t)(session_base_sec + k_uptime_get() / 1000);
 }
 
+/* The power estimator (display_manager) computes energy increments and pushes
+ * them here, so the cumulative total rides the same retained-RAM / flash carrier
+ * as uptime and survives a DFU reboot. */
+void persist_add_energy_uah_x1000(uint64_t delta)
+{
+	if (delta == 0) {
+		return;
+	}
+	K_SPINLOCK(&lock) {
+		rd->energy_uah_x1000 += delta;
+		reseal_locked();
+	}
+}
+
+uint64_t persist_get_energy_uah_x1000(void)
+{
+	uint64_t v;
+
+	K_SPINLOCK(&lock) {
+		v = rd->energy_uah_x1000;
+	}
+	return v;
+}
+
 void persist_save_to_flash(void)
 {
 	struct persist_data snap;
@@ -227,6 +261,7 @@ void persist_get_report(struct persist_report *out)
 		out->fw_update_count = rd->fw_update_count;
 		out->refreshes_total = rd->refreshes_total;
 		out->refreshes_since_fw = rd->refreshes_since_fw;
+		out->energy_uah_x1000 = rd->energy_uah_x1000;
 	}
 
 	out->flash_present = flash_copy_valid;
