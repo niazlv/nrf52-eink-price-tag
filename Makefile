@@ -119,7 +119,7 @@ CMAKE_EXTRA := \
 	-DAPP_BUILD_MIN=$(BUILD_MIN)     \
 	-DAPP_BUILD_SEC=$(BUILD_SEC)
 
-.PHONY: build flash clean pristine publish deploy web release v2-genkey
+.PHONY: build flash flash-gdb flash-openocd flash-retry clean pristine publish deploy web release v2-genkey
 
 build:
 	@echo ">>> Build variant: $(VARIANT) (layout $(LAYOUT_ID), key $(KEY_LABEL))"
@@ -192,6 +192,19 @@ flash-openocd:
 	@echo ">>> Flashing merged.hex via openocd CLI…"
 	openocd -f interface/jlink.cfg -f target/nrf52.cfg \
 		-c "program $(BUILD_DIR)/merged.hex verify reset exit"
+
+# ----------------------------------------------------------
+# flash-retry — keep re-flashing until it VERIFIES OK. For tags with
+# flaky SWD connections. Auto-uses a running OpenOCD telnet (localhost:4444,
+# like flash-gdb) or spawns its own openocd per attempt (like flash-openocd).
+#   make flash-retry                       # build/merged.hex, retry forever
+#   make flash-retry HEX=path/to.hex
+#   make flash-retry FLASH_MAX_RETRIES=20  # give up after 20 tries
+#   make flash-retry CONTINUOUS=1          # flash tag after tag, forever
+# ----------------------------------------------------------
+HEX ?= $(BUILD_DIR)/merged.hex
+flash-retry:
+	@bash "$(ROOT_DIR)/scripts/flash-retry.sh" "$(HEX)"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

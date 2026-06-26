@@ -502,10 +502,11 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
     E·INK <small>nRF52 controller</small>
   </div>
   <div class="hdr-sep">│</div>
-  <select id="dev-name" style="width:210px">
-    <option>nrf52-E-ink-clock-*</option>
-    <option>nrf52-E-ink-clock-DEV</option>
-    <option>LUT-Tester</option>
+  <select id="dev-name" style="width:210px" title="Фильтр выбора устройства. «Любой ценник» находит и переименованные — по сервису NUS.">
+    <option value="">🔍 Любой ценник (по UUID)</option>
+    <option value="nrf52-E-ink-clock-*">nrf52-E-ink-clock-*</option>
+    <option value="nrf52-E-ink-clock-DEV">nrf52-E-ink-clock-DEV</option>
+    <option value="LUT-Tester">LUT-Tester</option>
   </select>
   <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Подключить</button>
   <span class="dot" id="dot"></span>
@@ -1136,6 +1137,51 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
         </div>
       </div>
 
+      <!-- Device name -->
+      <div class="card">
+        <div class="ctitle">Имя ценника</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;align-items:center;margin-bottom:8px">
+          <span style="color:var(--fg2)">Сейчас:</span>
+          <span id="sys-name" style="color:var(--yellow);font-family:var(--mono);word-break:break-all">—</span>
+        </div>
+        <div class="brow" style="gap:6px">
+          <input type="text" id="name-inp" maxlength="16" placeholder="напр. Молоко 3.2%" style="flex:1;font-size:11px"
+                 onkeydown="if(event.key==='Enter')applyName()">
+          <button class="btn acc" onclick="applyName()">Применить</button>
+          <button class="btn" onclick="resetName()" title="Вернуть имя по умолчанию">Сбросить</button>
+        </div>
+        <div style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
+          К имени всегда добавляется неизменяемый «(XXXXXX)» — уникальный код устройства; по нему ценник
+          находится в списке даже после переименования. Максимум 16 символов. Сохраняется в ценнике, переживает перезагрузку.
+        </div>
+      </div>
+
+      <!-- NFC метка -->
+      <div class="card">
+        <div class="ctitle">NFC-метка · быстрое подключение</div>
+        <div style="font-size:9px;color:var(--fg2);margin-bottom:8px;line-height:1.4">
+          Зашивает в метку ссылку на это приложение с именем подключённого ценника
+          (имя + неизменяемый код = ровно один ценник в списке) и, по желанию, паролем.
+          Тап телефоном по метке → открывается приложение, остаётся нажать «Подключить».
+          <b>Запись метки — только Chrome на Android.</b> Открытие готовой метки работает и на iPhone.
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;margin-bottom:6px">
+          <input type="checkbox" id="nfc-include-pass" style="accent-color:var(--accent)" onchange="nfcRefresh()">
+          Зашить пароль в метку
+          <span style="color:var(--fg2);font-size:9px">(виден любому, кто приложит телефон)</span>
+        </label>
+        <input type="text" id="nfc-pass" placeholder="пароль для метки (пусто = взять из поля разблокировки)"
+               oninput="nfcRefresh()" style="width:100%;font-size:11px;margin-bottom:6px;display:none">
+        <input type="text" id="nfc-url" readonly placeholder="подключись к ценнику — здесь появится ссылка"
+               onclick="this.select()" style="width:100%;font-size:10px;font-family:var(--mono);color:var(--fg2);margin-bottom:6px">
+        <div class="brow" style="gap:6px;flex-wrap:wrap">
+          <button class="btn acc" onclick="nfcWrite()">📲 Записать метку</button>
+          <button class="btn" onclick="nfcRead()">Проверить</button>
+          <button class="btn" onclick="nfcCopy()">Копировать URL</button>
+        </div>
+        <div style="font-size:10px;margin-top:6px;word-break:break-all" id="nfc-status"><span style="color:var(--fg2)">—</span></div>
+      </div>
+
       <!-- Battery estimation -->
       <div class="card">
         <div class="ctitle">Батарея · оценка ресурса</div>
@@ -1489,13 +1535,24 @@ async function bleConnect() {
     return;
   }
   const name = $('dev-name').value.trim();
-  const nameFilter = name.endsWith('*')
-    ? {namePrefix: name.slice(0, -1)}
-    : {name};
+  // Полное имя «Имя (КОД)» уникально (несъёмный 6-hex код) → точный фильтр
+  // сводит chooser к одному ценнику. Так приходит deep-link из NFC-метки.
+  // Иначе: имя/префикс ИЛИ сервис NUS (находит и переименованные); пусто = по NUS.
+  let filters;
+  // Точный фильтр (ровно один ценник), когда имя пришло из метки, либо это
+  // полное имя «Имя (КОД)» с несъёмным кодом.
+  if (name && (name === deepLinkExactName || /^.+ \([0-9A-Fa-f]{6}\)$/.test(name))) {
+    filters = [{name}];
+  } else if (name) {
+    filters = [name.endsWith('*') ? {namePrefix: name.slice(0, -1)} : {name},
+               {services: [NUS_SVC]}];
+  } else {
+    filters = [{services: [NUS_SVC]}];
+  }
   setStatus('Сканирую…', false);
   try {
     bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [nameFilter, {services: [NUS_SVC]}],
+      filters,
       optionalServices: [NUS_SVC, SMP_SVC_UUID],
     });
     bleDevice.addEventListener('gattserverdisconnected', onBleDisc);
@@ -1510,6 +1567,7 @@ async function bleConnect() {
     updateMtuDisplay();
     setStatus(`Подключено → ${bleDevice.name}`, true);
     $('btn-conn').textContent = 'Отключить';
+    nfcRefresh();   // имя ценника теперь известно → построить ссылку для метки
     logI(`Connected to ${bleDevice.name}`);
     await sleep(400);
     sendRaw_('HOST:1');
@@ -1539,6 +1597,7 @@ function onBleDisc() {
   autoAuthTried = false; authBusy = false;
   setStatus('Не подключено', false);
   $('btn-conn').textContent = 'Подключить';
+  nfcRefresh();
   logI('Disconnected');
 }
 
@@ -1554,6 +1613,7 @@ function onNotify(ev) {
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
     if (line.startsWith('STATS:')) parseStats(line);
     if (line.startsWith('SYSINFO:')) parseSysinfo(line);
+    if (line.startsWith('NAME:')) parseName(line);
     if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -4264,6 +4324,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const ro=new ResizeObserver(()=>drawWf());
   ro.observe($('wf-canvas'));
   initBotResize();
+  applyDeepLink();   // принять #n=…&k=… из NFC-метки
+  nfcRefresh();
 });
 
 // ── Bottom console resize + collapse ─────────────────────────────
@@ -4397,6 +4459,39 @@ function requestSysinfo() {
   send('SYSINFO\n');
   send('BATT\n');
   send('STATS\n');
+  send('NAME\n');
+}
+
+// ── Имя ценника (NAME) ────────────────────────────────────────────
+// Прошивка отвечает «NAME:<полное имя в эфире>». Кастомное имя всегда
+// рекламируется как «<пользовательское> (XXXXXX)» — хвост несъёмный.
+function parseName(line) {
+  const full = line.slice('NAME:'.length).trim();
+  const el = $('sys-name');
+  if (el) el.textContent = full || '—';
+  // Подставляем в поле редактирования только пользовательскую часть.
+  const m = full.match(/^(.*) \([0-9A-Fa-f]{6}\)$/);
+  const inp = $('name-inp');
+  if (inp && document.activeElement !== inp) inp.value = m ? m[1] : '';
+  nfcRefresh();   // имя обновилось → пересобрать ссылку метки
+}
+
+async function applyName() {
+  if (!connected) { alert('Не подключено'); return; }
+  const v = $('name-inp').value.trim();
+  if (!v) { resetName(); return; }
+  send(`NAME ${v}\n`);
+  const reply = await waitForLine(/^NAME:/, 4000);
+  if (reply) logI('Имя обновлено: ' + reply.slice('NAME:'.length));
+  else logE('Имя: нет ответа (включена защита SEC? разблокируй ценник)');
+}
+
+async function resetName() {
+  if (!connected) { alert('Не подключено'); return; }
+  send('NAME -\n');
+  const reply = await waitForLine(/^NAME:/, 4000);
+  if (reply) logI('Имя сброшено к стандартному: ' + reply.slice('NAME:'.length));
+  else logE('Имя: нет ответа (включена защита SEC? разблокируй ценник)');
 }
 
 // STATS:uptime=<s> wall=<unix> boots=<n> fwupd=<n> refr=<n> refrfw=<n>
@@ -4545,6 +4640,44 @@ let authKeyBytes = SECAUTH_DEFAULT_KEY;  // key for the next handshake
 let authBusy = false;
 let autoAuthTried = false;               // default-key auto-try is once-per-connection
 
+// ── Deep-link из NFC-метки ──────────────────────────────────────────
+// Метка несёт hash «#n=<полное имя (КОД)>&k=<пароль>». n → точный фильтр
+// chooser (имя+уникальный код = один ценник); k → авто-разблокировка.
+const deepLink = (() => {
+  try {
+    const h = (location.hash || '').replace(/^#/, '');
+    if (!h) return null;
+    const p = new URLSearchParams(h);
+    const n = (p.get('n') || '').trim();
+    const k = (p.get('k') || '').trim();
+    return (n || k) ? { name: n, key: k } : null;
+  } catch { return null; }
+})();
+let pendingDeepKey = '';     // пароль из метки для авто-AUTH (см. maybeAutoAuth)
+let deepLinkExactName = '';  // имя из метки → точный фильтр chooser (см. bleConnect)
+
+function applyDeepLink() {
+  if (!deepLink) return;
+  if (deepLink.name) {
+    deepLinkExactName = deepLink.name;
+    const sel = $('dev-name');
+    if (sel) {
+      const opt = document.createElement('option');
+      opt.value = deepLink.name;
+      opt.textContent = '🔗 ' + deepLink.name;
+      sel.insertBefore(opt, sel.firstChild);
+      sel.value = deepLink.name;
+    }
+  }
+  if (deepLink.key) {
+    pendingDeepKey = deepLink.key;
+    const pf = $('dfu-pass');
+    if (pf) pf.value = deepLink.key;
+  }
+  logI('🔗 Параметры из NFC-метки приняты — нажми «Подключить».');
+  setStatus('🔗 Ценник из метки готов — нажми «Подключить»', false);
+}
+
 function hexToBytes(h) {
   h = (h || '').trim();
   const out = new Uint8Array(h.length >> 1);
@@ -4579,8 +4712,13 @@ function doAuth() { if (connected) { authBusy = true; send('AUTH\n'); } }
 async function maybeAutoAuth() {
   if (authBusy || sysState.authed || autoAuthTried) return;
   autoAuthTried = true;
-  authKeyBytes = SECAUTH_DEFAULT_KEY;
-  logI('🔒 Ценник запаролен — пробую общий ключ по умолчанию…');
+  if (pendingDeepKey) {
+    authKeyBytes = await deriveKeyFromInput(pendingDeepKey);
+    logI('🔑 Ценник запаролен — пробую пароль из NFC-метки…');
+  } else {
+    authKeyBytes = SECAUTH_DEFAULT_KEY;
+    logI('🔒 Ценник запаролен — пробую общий ключ по умолчанию…');
+  }
   doAuth();
 }
 
@@ -4636,6 +4774,82 @@ function updateAuthUI() {
   if (!sysState.secOn)        el.innerHTML = '<span style="color:var(--fg2)">🔓 без пароля (или старая прошивка)</span>';
   else if (sysState.authed)   el.innerHTML = '<span style="color:var(--green)">🔓 разблокировано</span>';
   else                        el.innerHTML = '<span style="color:var(--orange)">🔒 запаролено — введи пароль</span>';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  NFC-метка — записать deep-link на конкретный ценник (Web NFC, Android)
+// ═══════════════════════════════════════════════════════════════════
+function nfcStatus(msg, color) {
+  const el = $('nfc-status');
+  if (el) el.innerHTML = '<span style="color:var(--' + (color || 'fg2') + ')">' + msg + '</span>';
+}
+
+// Ссылка на это же приложение + полное имя ценника (+ опц. пароль) в hash.
+// bleDevice.name — рекламируемое имя «Имя (КОД)», известно сразу после коннекта.
+function nfcBuildUrl() {
+  let fullName = '';
+  if (typeof bleDevice !== 'undefined' && bleDevice && bleDevice.name) fullName = bleDevice.name.trim();
+  if (!fullName) { const sn = $('sys-name'); if (sn) fullName = (sn.textContent || '').trim(); }
+  if (!fullName || fullName === '—') return null;
+  const p = new URLSearchParams();
+  p.set('n', fullName);
+  if ($('nfc-include-pass') && $('nfc-include-pass').checked) {
+    const np = $('nfc-pass'), dp = $('dfu-pass');
+    const pw = ((np && np.value) || (dp && dp.value) || '').trim();
+    if (pw) p.set('k', pw);
+  }
+  return location.origin + location.pathname + '#' + p.toString();
+}
+
+// Пересобрать предпросмотр ссылки + показать/скрыть поле пароля.
+function nfcRefresh() {
+  const inc = $('nfc-include-pass'), pf = $('nfc-pass'), u = $('nfc-url');
+  if (pf) pf.style.display = (inc && inc.checked) ? '' : 'none';
+  if (u) u.value = nfcBuildUrl() || '';
+}
+
+async function nfcWrite() {
+  const url = nfcBuildUrl();
+  if (!url) { nfcStatus('Сначала подключись к ценнику — нужно его имя.', 'orange'); return; }
+  if (!('NDEFReader' in window)) {
+    nfcStatus('Запись метки доступна только в Chrome на Android. Скопируй URL и запиши приложением (напр. NFC Tools).', 'orange');
+    return;
+  }
+  try {
+    nfcStatus('Поднеси телефон к метке…', 'fg2');
+    const ndef = new NDEFReader();
+    await ndef.write({ records: [{ recordType: 'url', data: url }] });
+    nfcStatus('✅ Метка записана: ' + url, 'green');
+  } catch (e) {
+    nfcStatus('Ошибка записи: ' + e.message, 'red');
+  }
+}
+
+async function nfcRead() {
+  if (!('NDEFReader' in window)) { nfcStatus('Чтение метки — только Chrome на Android.', 'orange'); return; }
+  try {
+    nfcStatus('Поднеси телефон к метке для проверки…', 'fg2');
+    const ndef = new NDEFReader();
+    await ndef.scan();
+    ndef.onreading = ev => {
+      for (const r of ev.message.records) {
+        if (r.recordType === 'url' || r.recordType === 'text') {
+          nfcStatus('На метке: ' + new TextDecoder().decode(r.data), 'green');
+          return;
+        }
+      }
+      nfcStatus('На метке нет URL-записи.', 'orange');
+    };
+  } catch (e) {
+    nfcStatus('Ошибка чтения: ' + e.message, 'red');
+  }
+}
+
+async function nfcCopy() {
+  const url = nfcBuildUrl();
+  if (!url) { nfcStatus('Сначала подключись к ценнику.', 'orange'); return; }
+  try { await navigator.clipboard.writeText(url); nfcStatus('URL скопирован в буфер.', 'green'); }
+  catch { prompt('Скопируй URL:', url); }
 }
 
 // Pick the OTA image variant matching this device's layout. Falls back to the
