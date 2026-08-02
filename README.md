@@ -12,13 +12,24 @@ streaming path — was reverse-engineered on the bench and written up in
 The story of how the tags were opened up, in Russian:
 [Как я купил кота в мешке: реверс-инжиниринг электронных ценников](https://habr.com/ru/articles/1044406/).
 
+> **Once a tag runs this firmware, you never need a toolchain again:**
+> <https://pwa.price-tag.sorewa.ru/> is a live web app that drives it over Web
+> Bluetooth — images, animation, the waveform editor, OTA updates. Chrome or
+> Edge on desktop or Android.
+>
+> The catch is the first flash: a stock tag ships with the vendor's firmware and
+> advertises nothing this app can talk to, so it has to be programmed once over
+> SWD ([see below](#building)). After that, everything else is wireless.
+
 ## What it does
 
 - Renders clock / status / screensaver screens on a 128×296 black-white-red panel
 - Streams animation and video to the panel over BLE at ~110 ms per frame, after
   a stock full refresh took ~9 s
-- Takes commands over the Nordic UART Service, from a CLI, a GUI or a browser
-- Updates itself over the air (MCUboot, dual-variant signing) from a PWA
+- Takes commands over the Nordic UART Service, from a CLI, a desktop GUI or a
+  [live web app](https://pwa.price-tag.sorewa.ru/)
+- Updates itself over the air (MCUboot, dual-variant signing) from that same
+  web app
 - Relays commands tag-to-tag over a connectionless flood mesh, so one phone
   connection reaches a whole fleet
 
@@ -99,6 +110,25 @@ make release        # both, merged into one manifest
 An OTA size guard fails the build before publishing an image MCUboot would
 accept but silently refuse to swap.
 
+### The first flash
+
+A stock tag has to be programmed once over SWD — there is no wireless way in
+until this firmware is on it. The nRF52832 is a Cortex-M4, so any CMSIS-DAP
+probe works; a WCH-LinkE in CMSIS-DAP mode or a genuine ST-Link/J-Link are all
+fine, and none of them needs Nordic's own programmer. Solder to the SWDIO/SWCLK
+pads (they differ between board revisions — ring them out).
+
+```sh
+make flash            # west flash, for probes west knows about
+make flash-openocd    # openocd CLI, spawns its own session
+make flash-gdb        # a running OpenOCD on telnet localhost:4444
+make flash-retry      # keep retrying until it verifies — for flaky SWD contact
+```
+
+`make flash-retry` exists because pogo-pin contact on these boards is
+unreliable; it re-flashes until verification passes. After this, every further
+update goes over BLE.
+
 ## Talking to the tag
 
 Commands arrive over the Nordic UART Service as text lines (`MODE:3`,
@@ -106,7 +136,27 @@ Commands arrive over the Nordic UART Service as text lines (`MODE:3`,
 registry in [`src/app/cmd_opcodes.h`](src/app/cmd_opcodes.h), so a command is
 implemented exactly once. `HELP` lists everything the running firmware knows.
 
-Host-side tooling lives in [`lut_tester_host/`](lut_tester_host/):
+### From a browser — no install
+
+[`lut_tester_host/web/`](lut_tester_host/web/) is deployed and open to anyone at
+**<https://pwa.price-tag.sorewa.ru/>**. It is the same app that is in this
+repository, with everything it can do: images with dithering, text, animation
+and video streaming, the 70-byte waveform editor with its live plot and
+DC-balance bars, screensaver and display modes, time, battery and stats, and
+OTA updates at [`/dfu.html`](https://pwa.price-tag.sorewa.ru/dfu.html).
+
+It talks to a tag over Web Bluetooth straight from the browser — nothing to
+build or install on the host side. **It only finds tags that already run this
+firmware**, so a stock tag needs one wired flash over SWD first; the stock
+vendor firmware advertises nothing this app can connect to. It is a PWA, so it
+installs and keeps working offline once loaded. The interface is in Russian.
+Web Bluetooth means Chrome, Edge or Opera on desktop and Android; Safari, iOS
+and Firefox do not implement it.
+
+It is a static bundle, so it runs from any host you point it at — `make deploy`
+publishes it.
+
+### From a terminal
 
 ```sh
 pip install -r lut_tester_host/requirements.txt
@@ -114,9 +164,6 @@ python3 lut_tester_host/lut_tester.py          # LUT editor + device control GUI
 python3 lut_tester_host/vstream_player.py …    # stream video to the panel
 python3 lut_tester_host/dfu_upload.py …        # OTA from the command line
 ```
-
-`lut_tester_host/web/` is a PWA that does the same over Web Bluetooth,
-including OTA updates.
 
 ## Reusing the display code
 
