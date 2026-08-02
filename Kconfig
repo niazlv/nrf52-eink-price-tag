@@ -6,32 +6,17 @@
 
 source "Kconfig.zephyr"
 
-menu "Nordic UART BLE GATT service sample"
-
-config BT_NUS_THREAD_STACK_SIZE
-	int "Thread stack size"
-	default 1024
-	help
-	  Stack size used in each of the two threads
-
-config BT_NUS_UART_BUFFER_SIZE
-	int "UART payload buffer element size"
-	default 40
-	help
-	  Size of the payload buffer in each RX and TX FIFO element
+menu "E-ink tag firmware"
 
 config BT_NUS_SECURITY_ENABLED
-	bool "Enable security"
-	default y
+	bool "Require link-layer security on the NUS characteristics"
+	default n
 	select BT_SMP
 	help
-	  "Enable BLE security for the UART service"
-
-config BT_NUS_UART_RX_WAIT_TIME
-	int "Timeout for UART RX complete event"
-	default 50000
-	help
-	  Wait for RX complete event time in microseconds
+	  Gate the Nordic UART Service behind BLE pairing. Off by default:
+	  SMP plus P-256 ECDH costs roughly 31 KB of flash and 6.4 KB of RAM,
+	  which the mesh scanner needs, and access is already gated by the
+	  app-level challenge-response in src/app/secauth.c.
 
 config SETTINGS
 	default y

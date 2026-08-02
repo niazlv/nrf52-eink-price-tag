@@ -51,7 +51,7 @@ esac
 if [ ! -f "$HEX" ]; then
   echo "!!! HEX not found: $HEX"
   echo "    Build it first ('make'), or pass an existing one, e.g.:"
-  echo "      scripts/flash-retry.sh build_display_square_demo/merged.hex"
+  echo "      scripts/flash-retry.sh build_eink_demo/merged.hex"
   exit 2
 fi
 

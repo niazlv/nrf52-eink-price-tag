@@ -4,7 +4,7 @@ SSD1675A LUT Tester + Device Controller — macOS BLE companion.
 
 Supports both:
   • LUT-Tester   (lut_tester sub-project firmware)
-  • nrf52-E-ink-clock-*    (root peripheral_uart firmware with unique suffix)
+  • nrf52-E-ink-clock-*    (root eink_tag firmware with unique suffix)
 
 Layout:
   Top bar   — BLE connect + LUT actions + test patterns

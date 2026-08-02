@@ -1,5 +1,5 @@
 # ============================================================
-# peripheral_uart — top-level build Makefile
+# eink_tag — top-level build Makefile
 # ============================================================
 # Usage:
 #   make              — build + package OTA + sync versions
@@ -45,7 +45,11 @@ WEB_VERSION      := $(shell cat lut_tester_host/web/WEB_VERSION 2>/dev/null | tr
 # ----------------------------------------------------------
 # OTA firmware paths
 # ----------------------------------------------------------
-SIGNED_BIN   := $(BUILD_DIR)/peripheral_uart/zephyr/zephyr.signed.bin
+# sysbuild names the application image after the source DIRECTORY, not after
+# the CMake project(), so derive it instead of hardcoding — the path stays
+# correct whatever the repository is cloned as.
+APP_IMAGE    := $(notdir $(APP_DIR))
+SIGNED_BIN   := $(BUILD_DIR)/$(APP_IMAGE)/zephyr/zephyr.signed.bin
 FW_DIR       := $(ROOT_DIR)/lut_tester_host/web/firmware
 FW_MANIFEST  := $(FW_DIR)/manifest.json
 
