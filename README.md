@@ -82,6 +82,27 @@ boards/           board overlays
 | Bus   | bit-banged 9-bit SPI (the panel puts the D/C bit inside the frame) |
 | Board | `nrf52dk/nrf52832` target                                          |
 
+### Identifying these tags
+
+If you have a bag of the same tags, these are the markings to look for. They are
+reproduced here verbatim because they are what you end up pasting into a search
+engine at 2 a.m.
+
+| Where | Marking |
+| ----- | ------- |
+| Display FPC ribbon | `HINK-E029A10-A3` |
+| Display FPC, second line | `CLSL H1938`, `Date: 20160809` |
+| Mainboard silkscreen | `ESL.CB-LR.010-00C.203` |
+
+`HINK-E029A10-A3` is the 2.9" black/white/red panel; its controller behaves as
+an SSD1675A (SSD1680-family register set). `ESL.CB-LR.010-00C.203` is the
+carrier board that holds the nRF52832 and the panel FFC connector.
+
+Board revisions differ even when the tags look identical from the outside — the
+SWD pads and the panel connector are not in the same place across them. Ring
+yours out before soldering rather than trusting a photo. The GPIO assignment
+below is what this particular revision uses.
+
 Default pin assignment (override `SSD1675A_PIN_*` from the build system):
 
 | Signal | Pin |
