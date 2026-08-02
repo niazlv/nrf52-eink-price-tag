@@ -14,6 +14,7 @@
 #include "app/system_time.h"
 #include "app/persist.h"
 #include "app/secauth.h"
+#include "app/mesh.h"
 #include "ble/ble_service.h"
 #include "lib/graphics.h"
 #include <dk_buttons_and_leds.h>
@@ -68,6 +69,11 @@ int main(void)
     // Settings are now loaded (ble_service_init -> settings_load). Resolve the
     // effective auth key: NVS override > factory_data > compiled default.
     secauth_init();
+
+    // Connectionless flood-mesh: needs the resolved node id (ble_service_init)
+    // and the effective key (secauth_init) for PDU signing. Starts scanning +
+    // the dispatch thread.
+    mesh_init();
 
     // Settings are now loaded (ble_service_init -> settings_load): finalize
     // stats — restore from flash if RAM was lost, adopt saved clock, count boot.

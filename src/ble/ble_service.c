@@ -1,5 +1,6 @@
 #include "ble_service.h"
 #include "../app/commands.h"
+#include "../app/mesh.h"
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
 #include <zephyr/logging/log.h>
@@ -26,6 +27,8 @@ LOG_MODULE_REGISTER(ble_service, LOG_LEVEL_INF);
 #define ADV_FAST_INT_MAX 240   /* 150 ms */
 #define ADV_IDLE_INT_MIN 800   /* 500 ms */
 #define ADV_IDLE_INT_MAX 1280  /* 800 ms */
+#define ADV_BEACON_INT_MIN 48  /* 30 ms — fast so a flooded PDU is caught quickly */
+#define ADV_BEACON_INT_MAX 80  /* 50 ms */
 #define CON_STATUS_LED DK_LED2
 
 static struct bt_conn *current_conn;
@@ -45,6 +48,15 @@ static const struct bt_le_adv_param adv_param_fast =
 	BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONN, ADV_FAST_INT_MIN, ADV_FAST_INT_MAX, NULL);
 static const struct bt_le_adv_param adv_param_idle =
 	BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONN, ADV_IDLE_INT_MIN, ADV_IDLE_INT_MAX, NULL);
+/* Non-connectable, non-scannable beacon for mesh PDUs. opts=0 → no CONN bit, so
+ * it never forms a connection and is legal to run even while connected to the
+ * phone (the single legacy adv instance is idle during a connection). */
+static const struct bt_le_adv_param adv_param_beacon =
+	BT_LE_ADV_PARAM_INIT(0, ADV_BEACON_INT_MIN, ADV_BEACON_INT_MAX, NULL);
+
+/* True while the adv instance is borrowed for a mesh beacon. adv_work_handler
+ * must not clobber it; ble_service_beacon_end() restores normal advertising. */
+static bool beacon_active;
 
 /* Apple accessory guidelines: Interval Min >= 15 ms and
  * Interval Max >= Interval Min + 15 ms, otherwise macOS/iOS rejects the
@@ -89,12 +101,14 @@ static void build_suffix_from_ficr(uint8_t suffix[3])
 #endif
 }
 
-static void build_device_name(void)
+/* The immutable 3-byte node id: BLE identity address high bytes, or a FICR mix
+ * if the address is unusable. Same bytes shown in the device name (XXXXXX) and
+ * used as the mesh PDU source/destination address. */
+static void get_node_id3(uint8_t out[3])
 {
 	bt_addr_le_t addrs[1];
 	size_t count = ARRAY_SIZE(addrs);
 	uint8_t suffix[3] = {0};
-	size_t prefix_len;
 
 	bt_id_get(addrs, &count);
 	if (count > 0) {
@@ -106,6 +120,23 @@ static void build_device_name(void)
 	if (!device_name_suffix_valid(suffix)) {
 		build_suffix_from_ficr(suffix);
 	}
+
+	out[0] = suffix[0];
+	out[1] = suffix[1];
+	out[2] = suffix[2];
+}
+
+void ble_service_get_node_id(uint8_t out[3])
+{
+	get_node_id3(out);
+}
+
+static void build_device_name(void)
+{
+	uint8_t suffix[3];
+	size_t prefix_len;
+
+	get_node_id3(suffix);
 
 	if (custom_name[0] != '\0') {
 		/* "<user name> (XXXXXX)" — the parenthesised id is permanent. */
@@ -157,6 +188,10 @@ static void adv_work_handler(struct k_work *work)
 		BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
 	};
 	int err;
+
+	if (beacon_active) {
+		return;   /* a mesh beacon owns the adv instance; it will restore us */
+	}
 
 	if (!advertising_allowed || current_conn) {
 		return;
@@ -400,7 +435,50 @@ int ble_service_send(const char *data, uint16_t len) {
     return -ENOTCONN;
 }
 
+int ble_service_beacon_set(const uint8_t *mfg, uint8_t len)
+{
+    /* Borrow the single legacy adv instance for a non-connectable beacon.
+     * `mfg` is the manufacturer-specific data payload (company id + mesh PDU);
+     * BT_DATA wraps it with the length + 0xFF AD type. Safe while connected:
+     * non-connectable adv never forms a second connection. */
+    struct bt_data ad[] = {
+        BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg, len),
+    };
+    int err;
+
+    if (adv_running || beacon_active) {
+        bt_le_adv_stop();
+        adv_running = false;
+    }
+    beacon_active = true;
+    err = bt_le_adv_start(&adv_param_beacon, ad, ARRAY_SIZE(ad), NULL, 0);
+    if (err) {
+        beacon_active = false;
+        LOG_WRN("Beacon start failed (err %d)", err);
+    }
+    return err;
+}
+
+void ble_service_beacon_end(void)
+{
+    if (!beacon_active) {
+        return;
+    }
+    bt_le_adv_stop();
+    beacon_active = false;
+    /* Restore the normal connectable adv if we're idle and allowed to. */
+    if (advertising_allowed && !current_conn) {
+        advertising_start();
+    }
+}
+
 void ble_printf(const char *fmt, ...) {
+    /* Commands dispatched from a mesh flood run on the mesh thread; their replies
+     * are meaningless to a locally-connected phone (they belong to the remote
+     * originator), so drop them. Phase 2 will route them back into the mesh. */
+    if (mesh_is_dispatch_thread()) {
+        return;
+    }
     char buf[128];
     va_list args;
     va_start(args, fmt);

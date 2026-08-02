@@ -78,6 +78,7 @@ void secauth_init(void)
 
 bool secauth_enforced(void)  { return enforce; }
 bool secauth_is_authed(void) { return authed; }
+const uint8_t *secauth_key(void) { return key; }
 
 void secauth_session_reset(void)
 {

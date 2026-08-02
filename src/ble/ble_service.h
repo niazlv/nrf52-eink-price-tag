@@ -70,4 +70,28 @@ int ble_service_set_custom_name(const char *name);
  */
 const char *ble_service_get_custom_name(void);
 
+/**
+ * @brief The immutable 3-byte node id (same hex shown as (XXXXXX) in the name).
+ *        Used as the mesh PDU source/destination address.
+ */
+void ble_service_get_node_id(uint8_t out[3]);
+
+/**
+ * @brief Borrow the legacy adv instance for a non-connectable mesh beacon.
+ *
+ * Time-shares the single advertiser: stops normal advertising and broadcasts
+ * the given manufacturer-data payload. Legal while connected (non-connectable
+ * adv forms no connection). Call ble_service_beacon_end() to restore normal
+ * advertising. Returns 0 on success.
+ *
+ * @param mfg  Manufacturer-data bytes (company id + mesh PDU), <= 29 bytes.
+ * @param len  Length of @p mfg.
+ */
+int ble_service_beacon_set(const uint8_t *mfg, uint8_t len);
+
+/**
+ * @brief Stop the mesh beacon and restore normal connectable advertising.
+ */
+void ble_service_beacon_end(void);
+
 #endif // BLE_SERVICE_H

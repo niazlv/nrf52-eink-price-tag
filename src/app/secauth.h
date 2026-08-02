@@ -21,8 +21,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define SECAUTH_KEY_LEN 16
+
 /* Resolve the effective key from NVS/factory/default. Call AFTER settings_load(). */
 void secauth_init(void);
+
+/* The 16-byte effective shared key (resolved by secauth_init). Used by the mesh
+ * layer to authenticate broadcast PDUs with the same fleet key. */
+const uint8_t *secauth_key(void);
 
 bool secauth_enforced(void);    /* is the access gate active? */
 bool secauth_is_authed(void);   /* did the current connection authenticate? */

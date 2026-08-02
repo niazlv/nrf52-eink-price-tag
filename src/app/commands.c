@@ -1,4 +1,6 @@
 #include "commands.h"
+#include "cmd_opcodes.h"
+#include "mesh.h"
 #include "ble/ble_service.h"
 #include "display_manager.h"
 #include "display_screens.h"
@@ -34,14 +36,25 @@ BUILD_ASSERT(PM_SETTINGS_STORAGE_SIZE == 0x2000,
 typedef void (*cmd_handler_t)(char *args);
 /* flags bits for struct shell_cmd */
 #define CMD_NOAUTH 0x01  /* runnable even when the access gate is on and unauthed */
+#define CMD_MESH   0x02  /* broadcast-safe: may be invoked via a mesh flood */
 
+/* A registry entry is identified by its stable `opcode` (cmd_opcodes.h); the
+ * text `name` is just a human-typeable alias for the same opcode. Aliases that
+ * map to one handler (UPDATE/APPLY, TIME/TIME=, VCOM=/DEBUG:VCOM=) deliberately
+ * share an opcode. */
 struct shell_cmd {
+    uint8_t opcode;
     const char *name;
     cmd_handler_t handler;
     const char *help;
     uint8_t flags;
 };
 extern const struct shell_cmd commands[];
+
+/* Origin of the command currently being dispatched. Set around every dispatch;
+ * the mesh reply sink (Phase 1) consults it to route replies. Phase 0 leaves it
+ * at NUS. */
+static enum cmd_origin g_cmd_origin = CMD_ORIGIN_NUS;
 
 /* ── Line accumulator ───────────────────────────────────────────────────────
  * BLE NUS delivers raw chunks; we buffer until '\n' to guarantee whole commands
@@ -50,6 +63,22 @@ extern const struct shell_cmd commands[];
 #define RX_BUF_SIZE 256
 static char rx_buf[RX_BUF_SIZE];
 static int  rx_len;
+
+/* ── Binary opcode frame parser (NUS) ───────────────────────────────────────
+ * A host may send a command as [OPC_MAGIC][opcode][len][payload] instead of a
+ * text line, to save channel — this is the same inner PDU the mesh layer will
+ * carry. The sentinel is only honored at a line boundary (rx_len == 0); the
+ * payload accumulates into rx_buf (free while no text line is buffered). */
+enum opc_state {
+    OPC_NONE = 0,     /* not inside an opcode frame */
+    OPC_WANT_OP,      /* expecting the opcode byte */
+    OPC_WANT_LEN,     /* expecting the payload length byte */
+    OPC_WANT_PAYLOAD, /* accumulating payload bytes */
+};
+static enum opc_state opc_state;
+static uint8_t opc_opcode;
+static uint8_t opc_len;
+static uint8_t opc_idx;
 
 /* ── Frame buffer ────────────────────────────────────────────────────────── */
 #define FB_SIZE 4736   /* 128 × 296 / 8 */
@@ -396,9 +425,10 @@ static void vs_process_byte(uint8_t b) {
 
 void cmd_help(char *args)
 {
-    ble_printf("cmds:\r\n");
+    ble_printf("cmds (op A5 <op> <len> <payload>):\r\n");
     for (int i = 0; commands[i].name != NULL; i++) {
-        ble_printf("  %s — %s\r\n", commands[i].name, commands[i].help);
+        ble_printf("  %02X %s — %s\r\n",
+                   commands[i].opcode, commands[i].name, commands[i].help);
     }
 }
 
@@ -1237,67 +1267,198 @@ static void cmd_name(char *args)
     ble_printf("NAME:%s\r\n", ble_service_get_device_name());
 }
 
+/* Defined with the dispatch core below; BCAST re-uses it to turn the trailing
+ * command line into an opcode + payload. */
+static const struct shell_cmd *match_line(const char *line, const char **args_out);
+
+static int mesh_hexnib(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    c |= 0x20;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static void cmd_group(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("group=%u\r\n", mesh_get_group());
+        return;
+    }
+    int g = atoi(args);
+    if (g < 0 || g > 255) {
+        ble_printf("group: 0..255\r\n");
+        return;
+    }
+    mesh_set_group((uint8_t)g);
+    ble_printf("group=%u\r\n", mesh_get_group());
+}
+
+/* BCAST <all|g<N>|<6hex-id>> <CMD...> — flood a command to the fleet.
+ * The trailing CMD is parsed exactly like a typed command, so the same opcode +
+ * argument handling is reused (no duplicated command logic). */
+static void cmd_bcast(char *args)
+{
+    if (!args || !*args) {
+        ble_printf("usage: BCAST <all|g<N>|<6hex>> <CMD...>\r\n");
+        return;
+    }
+
+    char *sp = strchr(args, ' ');
+    if (!sp) {
+        ble_printf("BCAST: need a command after target\r\n");
+        return;
+    }
+    *sp = '\0';
+    char *tok = args;
+    char *cmdline = sp + 1;
+    while (*cmdline == ' ') cmdline++;
+
+    enum mesh_dst dst;
+    uint8_t dstval[3] = {0};
+    if (strcasecmp(tok, "all") == 0) {
+        dst = MESH_DST_ALL;
+    } else if ((tok[0] == 'g' || tok[0] == 'G') && tok[1]) {
+        dst = MESH_DST_GROUP;
+        dstval[0] = (uint8_t)atoi(tok + 1);
+    } else if (strlen(tok) == 6) {
+        for (int i = 0; i < 3; i++) {
+            int hi = mesh_hexnib(tok[i * 2]);
+            int lo = mesh_hexnib(tok[i * 2 + 1]);
+            if (hi < 0 || lo < 0) {
+                ble_printf("BCAST: bad id '%s'\r\n", tok);
+                return;
+            }
+            dstval[i] = (uint8_t)((hi << 4) | lo);
+        }
+        dst = MESH_DST_ID;
+    } else {
+        ble_printf("BCAST: bad target '%s'\r\n", tok);
+        return;
+    }
+
+    const char *payload = "";
+    const struct shell_cmd *c = match_line(cmdline, &payload);
+    if (!c) {
+        ble_printf("BCAST: unknown cmd\r\n");
+        return;
+    }
+    if (!(c->flags & CMD_MESH)) {
+        ble_printf("BCAST: '%s' not broadcast-safe\r\n", c->name);
+        return;
+    }
+
+    int rc = mesh_originate(dst, dstval, c->opcode,
+                            (const uint8_t *)payload, (uint8_t)strlen(payload));
+    ble_printf("BCAST op=%02X -> %s\r\n", c->opcode, rc == 0 ? "queued" : "full");
+}
+
 /* ── Command table ───────────────────────────────────────────────────────── */
 
 const struct shell_cmd commands[] = {
     /* General */
-    {"HELP",        cmd_help,       "List commands"},
-    {"BATT",        cmd_batt,       "Read battery mV"},
-    {"TIME",        cmd_time,       "Set time: HH:MM:SS DD.MM.YYYY"},
-    {"TIME=",       cmd_time_eq,    "Set time: TIME=HH:MM:SS (host compat)"},
+    {OP_HELP,      "HELP",        cmd_help,       "List commands"},
+    {OP_BATT,      "BATT",        cmd_batt,       "Read battery mV"},
+    {OP_TIME,      "TIME",        cmd_time,       "Set time: HH:MM:SS DD.MM.YYYY", CMD_MESH},
+    {OP_TIME,      "TIME=",       cmd_time_eq,    "Set time: TIME=HH:MM:SS (host compat)", CMD_MESH},
     /* Display */
-    {"SAVER",       cmd_saver,      "Enable screensaver"},
-    {"SS:",         cmd_ss,         "Screensaver: SS:0/1"},
-    {"DSAVER",      cmd_dsaver,     "Dynamic saver: DSAVER 0/1"},
-    {"CLEAR",       cmd_cls,        "Clear display buffer"},
-    {"CLEAN",       cmd_clean,      "Run clean cycle (7×B/W/R)"},
-    {"NUKE:",       cmd_nuke,       "Deep ghost clear: NUKE:20 (default 20 cycles, ~15min)"},
-    {"UPDATE",      cmd_update,     "Full display refresh"},
-    {"APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)"},
-    {"FAST",        cmd_fast,       "Fast/partial update"},
-    {"FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display"},
-    {"MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight 6=ToneBidirFast 7=ToneBidir 8=SoftDark 9=SoftLight"},
-    {"PALTEST",     cmd_paltest,    "Render B/W/R palette and spatial dither test"},
-    {"TONETEST",    cmd_tonetest,   "Render physical gray accumulation test"},
-    {"TEXT:",       cmd_text,       "Draw text on display"},
-    {"ROT:",        cmd_rot,        "Set rotation 0-3"},
-    {"ANIM",        cmd_anim,       "Run bouncing-ball animation"},
-    {"TEST",        cmd_test,       "Infinite partial stress test"},
-    {"VSTREAM:",    cmd_vstream,    "Binary stream: VSTREAM:start[:preset]|stop (then binary frames)"},
+    {OP_SAVER,     "SAVER",       cmd_saver,      "Enable screensaver", CMD_MESH},
+    {OP_SS,        "SS:",         cmd_ss,         "Screensaver: SS:0/1", CMD_MESH},
+    {OP_DSAVER,    "DSAVER",      cmd_dsaver,     "Dynamic saver: DSAVER 0/1", CMD_MESH},
+    {OP_CLEAR,     "CLEAR",       cmd_cls,        "Clear display buffer", CMD_MESH},
+    {OP_CLEAN,     "CLEAN",       cmd_clean,      "Run clean cycle (7×B/W/R)"},
+    {OP_NUKE,      "NUKE:",       cmd_nuke,       "Deep ghost clear: NUKE:20 (default 20 cycles, ~15min)"},
+    {OP_UPDATE,    "UPDATE",      cmd_update,     "Full display refresh", CMD_MESH},
+    {OP_UPDATE,    "APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)", CMD_MESH},
+    {OP_FAST,      "FAST",        cmd_fast,       "Fast/partial update", CMD_MESH},
+    {OP_FAPPLY,    "FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display", CMD_MESH},
+    {OP_MODE,      "MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight 6=ToneBidirFast 7=ToneBidir 8=SoftDark 9=SoftLight", CMD_MESH},
+    {OP_PALTEST,   "PALTEST",     cmd_paltest,    "Render B/W/R palette and spatial dither test"},
+    {OP_TONETEST,  "TONETEST",    cmd_tonetest,   "Render physical gray accumulation test"},
+    {OP_TEXT,      "TEXT:",       cmd_text,       "Draw text on display"},
+    {OP_ROT,       "ROT:",        cmd_rot,        "Set rotation 0-3", CMD_MESH},
+    {OP_ANIM,      "ANIM",        cmd_anim,       "Run bouncing-ball animation"},
+    {OP_TEST,      "TEST",        cmd_test,       "Infinite partial stress test"},
+    {OP_VSTREAM,   "VSTREAM:",    cmd_vstream,    "Binary stream: VSTREAM:start[:preset]|stop (then binary frames)"},
     /* LUT editor */
-    {"LUTW:",       cmd_lutw,       "Write full LUT: LUTW:HH..HH (140 hex)"},
-    {"LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
-    {"L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
-    {"LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1"},
-    {"LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR|TONE_SOFT_DARK|TONE_SOFT_LIGHT"},
-    {"VLUT:",       cmd_vlut,       "Virtual LUT: VLUT:slot:base:off=val,... | VLUT:slot | VLUT:OFF | VLUT:LIST | VLUT:CLEAR"},
-    {"LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
-    {"LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
-    {"HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},
-    {"STAT",        cmd_stat,       "Telemetry snapshot: frame/last/min/max ms"},
+    {OP_LUTW,      "LUTW:",       cmd_lutw,       "Write full LUT: LUTW:HH..HH (140 hex)"},
+    {OP_LW,        "LW:",         cmd_lw,         "Write N LUT bytes: LW:idx:HH.."},
+    {OP_LBYTE,     "L:",          cmd_l_byte,     "LUT byte: L:n=HH / L:DUMP / L:RESET"},
+    {OP_LUTUSE,    "LUTUSE:",     cmd_lutuse,     "Custom LUT toggle: LUTUSE:0/1", CMD_MESH},
+    {OP_LUTSET,    "LUTSET:",     cmd_lutset,     "Select preset: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR|TONE_SOFT_DARK|TONE_SOFT_LIGHT", CMD_MESH},
+    {OP_VLUT,      "VLUT:",       cmd_vlut,       "Virtual LUT: VLUT:slot:base:off=val,... | VLUT:slot | VLUT:OFF | VLUT:LIST | VLUT:CLEAR"},
+    {OP_LGET,      "LGET",        cmd_lget,       "Dump current LUT: replies LUT:0: + LUT:1: lines"},
+    {OP_LTEST,     "LTEST",       cmd_ltest,      "LUT test animation: LTEST / LTEST 0"},
+    {OP_HOST,      "HOST:",       cmd_host,       "Machine mode: HOST:1 (TELE: replies) HOST:0"},
+    {OP_STAT,      "STAT",        cmd_stat,       "Telemetry snapshot: frame/last/min/max ms"},
     /* Frame buffers */
-    {"FW:",         cmd_fw,         "Write BW frame: FW:offset:HH.."},
-    {"RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.."},
+    {OP_FW,        "FW:",         cmd_fw,         "Write BW frame: FW:offset:HH.."},
+    {OP_RW,        "RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.."},
     /* System */
-    {"REBOOT",      cmd_reboot,     "Cold reboot the device"},
-    {"SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy", CMD_NOAUTH},
-    {"STATS",       cmd_stats,      "Persisted stats: live + flash record (present/valid/consumed)"},
-    {"DFU:",        cmd_dfu,        "DFU display: DFU:START / DFU:DONE"},
+    {OP_REBOOT,    "REBOOT",      cmd_reboot,     "Cold reboot the device", CMD_MESH},
+    {OP_SYSINFO,   "SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy", CMD_NOAUTH},
+    {OP_STATS,     "STATS",       cmd_stats,      "Persisted stats: live + flash record (present/valid/consumed)"},
+    {OP_DFU,       "DFU:",        cmd_dfu,        "DFU display: DFU:START / DFU:DONE"},
+    /* Mesh broadcast */
+    {OP_BCAST,     "BCAST",       cmd_bcast,      "Flood a command: BCAST <all|g<N>|<6hex>> <CMD...>"},
+    {OP_GROUP,     "GROUP",       cmd_group,      "Mesh group id: GROUP / GROUP <0-255>", CMD_MESH},
     /* Security / identity */
-    {"AUTH",        cmd_auth,       "Auth: AUTH (get challenge) / AUTH <resp-hex>", CMD_NOAUTH},
-    {"SETKEY",      cmd_setkey,     "Replace shared key: SETKEY <32 hex> (must be authed)"},
-    {"SEC",         cmd_sec,        "Access gate: SEC / SEC ON / SEC OFF"},
-    {"NAME",        cmd_name,       "Device name: NAME / NAME <text> / NAME - (clear)"},
+    {OP_AUTH,      "AUTH",        cmd_auth,       "Auth: AUTH (get challenge) / AUTH <resp-hex>", CMD_NOAUTH},
+    {OP_SETKEY,    "SETKEY",      cmd_setkey,     "Replace shared key: SETKEY <32 hex> (must be authed)"},
+    {OP_SEC,       "SEC",         cmd_sec,        "Access gate: SEC / SEC ON / SEC OFF", CMD_MESH},
+    {OP_NAME,      "NAME",        cmd_name,       "Device name: NAME / NAME <text> / NAME - (clear)", CMD_MESH},
     /* Debug */
-    {"VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
-    {"DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (legacy)"},
-    {"DEBUG:LUT=",  cmd_debug_lut,  "Set LUT byte: DEBUG:LUT=idx:HH"},
-    {NULL, NULL, NULL}
+    {OP_VCOM,      "VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
+    {OP_VCOM,      "DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (legacy)"},
+    {OP_DEBUG_LUT, "DEBUG:LUT=",  cmd_debug_lut,  "Set LUT byte: DEBUG:LUT=idx:HH"},
+    {OP_INVALID, NULL, NULL, NULL}
 };
 
-/* ── Dispatch a single complete line ─────────────────────────────────────── */
+/* ── Shared dispatch core ─────────────────────────────────────────────────
+ * Both the text protocol and the binary opcode frame resolve to a registry
+ * entry and then run it here, so the access gate and the handler call live in
+ * exactly one place. */
 
-static void dispatch_line(const char *line)
+static const struct shell_cmd *find_by_opcode(uint8_t opcode)
+{
+    if (opcode == OP_INVALID) {
+        return NULL;
+    }
+    for (int i = 0; commands[i].name != NULL; i++) {
+        if (commands[i].opcode == opcode) {
+            return &commands[i];   /* first match wins (aliases share an opcode) */
+        }
+    }
+    return NULL;
+}
+
+static void run_command(const struct shell_cmd *c, char *args)
+{
+    if (mesh_is_dispatch_thread()) {
+        /* Over the air: the PDU's CMAC already proved fleet membership, so the
+         * per-connection secauth gate does not apply. Only commands explicitly
+         * marked broadcast-safe may run from a flood. */
+        if (c->flags & CMD_MESH) {
+            c->handler(args);
+        }
+        return;
+    }
+
+    /* Access gate: when enforcement is on, only NOAUTH commands (AUTH, SYSINFO)
+     * run until the peer authenticates this connection. */
+    if (secauth_enforced() && !secauth_is_authed() &&
+        !(c->flags & CMD_NOAUTH)) {
+        ble_printf("ERR:auth required (send AUTH)\r\n");
+        return;
+    }
+
+    c->handler(args);
+}
+
+/* Prefix-match a text line to a registry entry, returning the entry and the
+ * argument substring. Shared by the text dispatcher and BCAST (which re-uses it
+ * to turn "BCAST all MODE:3" into the MODE opcode + "3" payload). */
+static const struct shell_cmd *match_line(const char *line, const char **args_out)
 {
     for (int i = 0; commands[i].name != NULL; i++) {
         const char *cmd = commands[i].name;
@@ -1305,27 +1466,47 @@ static void dispatch_line(const char *line)
 
         if (strncmp(line, cmd, cmd_len) != 0) continue;
 
-        char *args = (char *)(line + cmd_len);
-        char last  = cmd[cmd_len - 1];
+        const char *args = line + cmd_len;
+        char last = cmd[cmd_len - 1];
 
-        /* Commands ending with ':' or '=' consume everything after the separator.
-         * Others require args to be absent or space-separated. */
+        /* Commands ending with ':' or '=' consume everything after the
+         * separator; others require args to be absent or space-separated. */
         if (last != ':' && last != '=' && *args != '\0' && *args != ' ') continue;
 
         while (*args == ' ') args++;
-
-        /* Access gate: when enforcement is on, only NOAUTH commands (AUTH,
-         * SYSINFO) run until the peer authenticates this connection. */
-        if (secauth_enforced() && !secauth_is_authed() &&
-            !(commands[i].flags & CMD_NOAUTH)) {
-            ble_printf("ERR:auth required (send AUTH)\r\n");
-            return;
-        }
-
-        commands[i].handler(args);
-        return;
+        *args_out = args;
+        return &commands[i];
     }
-    ble_printf("unknown cmd\r\n");
+    return NULL;
+}
+
+/* Resolve a binary opcode frame to its handler. The single dispatch point that
+ * the mesh layer (Phase 1) will also call for flooded commands. */
+void cmd_dispatch_opcode(uint8_t opcode, char *args, enum cmd_origin origin)
+{
+    g_cmd_origin = origin;
+
+    const struct shell_cmd *c = find_by_opcode(opcode);
+    if (c) {
+        run_command(c, args ? args : "");
+    } else {
+        ble_printf("ERR:bad opcode %02X\r\n", opcode);
+    }
+
+    g_cmd_origin = CMD_ORIGIN_NUS;
+}
+
+/* ── Dispatch a single complete text line ────────────────────────────────── */
+
+static void dispatch_line(const char *line)
+{
+    const char *args = "";
+    const struct shell_cmd *c = match_line(line, &args);
+    if (c) {
+        run_command(c, (char *)args);   /* text is an alias for the entry's opcode */
+    } else {
+        ble_printf("unknown cmd\r\n");
+    }
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
@@ -1360,6 +1541,48 @@ void commands_on_disconnect(void) {
 
     /* Drop the per-connection auth so the next peer must authenticate again. */
     secauth_session_reset();
+
+    /* Discard any half-received text line or opcode frame from the old link. */
+    rx_len = 0;
+    opc_state = OPC_NONE;
+}
+
+/* Feed one byte into the binary opcode-frame state machine. On the final byte
+ * the frame is dispatched through the shared opcode path. */
+static void opc_feed_byte(uint8_t b)
+{
+    switch (opc_state) {
+    case OPC_WANT_OP:
+        opc_opcode = b;
+        opc_state = OPC_WANT_LEN;
+        break;
+    case OPC_WANT_LEN:
+        opc_len = b;
+        opc_idx = 0;
+        if (opc_len == 0) {
+            rx_buf[0] = '\0';
+            opc_state = OPC_NONE;
+            cmd_dispatch_opcode(opc_opcode, rx_buf, CMD_ORIGIN_NUS);
+        } else {
+            opc_state = OPC_WANT_PAYLOAD;
+        }
+        break;
+    case OPC_WANT_PAYLOAD:
+        if (opc_idx < RX_BUF_SIZE - 1) {
+            rx_buf[opc_idx] = (char)b;
+        }
+        opc_idx++;
+        if (opc_idx >= opc_len) {
+            uint8_t n = MIN(opc_len, (uint8_t)(RX_BUF_SIZE - 1));
+            rx_buf[n] = '\0';
+            opc_state = OPC_NONE;
+            cmd_dispatch_opcode(opc_opcode, rx_buf, CMD_ORIGIN_NUS);
+        }
+        break;
+    default:
+        opc_state = OPC_NONE;
+        break;
+    }
 }
 
 void commands_process(const void *data, uint16_t len)
@@ -1368,6 +1591,16 @@ void commands_process(const void *data, uint16_t len)
     for (uint16_t i = 0; i < len; i++) {
         if (vstream_active) {
             vs_process_byte(p[i]);
+            continue;
+        }
+        if (opc_state != OPC_NONE) {
+            opc_feed_byte(p[i]);
+            continue;
+        }
+        /* A frame sentinel is only valid at a line boundary, so it can never be
+         * mistaken for a byte inside a half-typed text command. */
+        if (rx_len == 0 && p[i] == OPC_MAGIC) {
+            opc_state = OPC_WANT_OP;
             continue;
         }
         char c = (char)p[i];

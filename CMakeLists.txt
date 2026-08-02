@@ -38,6 +38,7 @@ target_sources(app PRIVATE
   src/app/persist.c
   src/app/factory.c
   src/app/secauth.c
+  src/app/mesh.c
   src/ble/ble_service.c
 )
 
