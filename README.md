@@ -3,11 +3,16 @@
 Firmware for a repurposed 2.9" BWR electronic shelf label — an nRF52832 driving
 an SSD1675A e-paper panel over BLE, with no vendor documentation to work from.
 
-The panel came out of a bag of surplus price tags. Everything here — the
-waveform tables, the refresh modes, the streaming path — was reverse-engineered
-on the bench and written up in [`docs/`](docs/).
+The panel came out of a bag of surplus price tags bought off a classifieds site
+for pennies, with no documentation, no SDK and no vendor willing to answer.
+Everything here — the pinout, the waveform tables, the refresh modes, the
+streaming path — was reverse-engineered on the bench and written up in
+[`docs/`](docs/).
 
-**What it does**
+The story of how the tags were opened up, in Russian:
+[Как я купил кота в мешке: реверс-инжиниринг электронных ценников](https://habr.com/ru/articles/1044406/).
+
+## What it does
 
 - Renders clock / status / screensaver screens on a 128×296 black-white-red panel
 - Streams animation and video to the panel over BLE at ~110 ms per frame, after
@@ -17,7 +22,7 @@ on the bench and written up in [`docs/`](docs/).
 - Relays commands tag-to-tag over a connectionless flood mesh, so one phone
   connection reaches a whole fleet
 
-**Highlights**
+## Highlights
 
 - [`lib/`](lib/) — the display driver and drawing code as a **portable,
   dependency-free C99 library**. No Zephyr, no nRF SDK: six functions separate
@@ -34,7 +39,7 @@ on the bench and written up in [`docs/`](docs/).
 
 ## Repository layout
 
-```
+```text
 lib/              portable library — see lib/README.md
   eink/           SSD1675A driver, waveform presets, platform ports
   gfx/            1-bpp canvas, text, dithering, Game of Life
@@ -51,12 +56,12 @@ boards/           board overlays
 
 ## Hardware
 
-| Part    | Value |
-| ------- | ----- |
-| MCU     | nRF52832 (512 KB flash, 64 KB RAM) |
-| Panel   | SSD1675A-class, 128×296, black/white/red |
-| Bus     | bit-banged 9-bit SPI (the panel puts the D/C bit inside the frame) |
-| Board   | `nrf52dk/nrf52832` target |
+| Part  | Value                                                              |
+| ----- | ------------------------------------------------------------------ |
+| MCU   | nRF52832 (512 KB flash, 64 KB RAM)                                 |
+| Panel | SSD1675A-class, 128×296, black/white/red                           |
+| Bus   | bit-banged 9-bit SPI (the panel puts the D/C bit inside the frame) |
+| Board | `nrf52dk/nrf52832` target                                          |
 
 Default pin assignment (override `SSD1675A_PIN_*` from the build system):
 
