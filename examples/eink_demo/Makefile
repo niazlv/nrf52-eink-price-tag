@@ -1,6 +1,6 @@
 APP_DIR := $(CURDIR)
-ROOT_DIR := $(abspath $(APP_DIR)/..)
-BUILD_DIR := $(ROOT_DIR)/build_display_square_demo
+ROOT_DIR := $(abspath $(APP_DIR)/../..)
+BUILD_DIR := $(ROOT_DIR)/build_eink_demo
 
 BOARD ?= nrf52dk/nrf52832
 NCS_DIR ?= /opt/nordic/ncs/v3.0.1

@@ -1,20 +1,36 @@
+/*
+ * Example: drive an SSD1675A e-paper panel with lib/eink + lib/gfx.
+ *
+ * Shows three things:
+ *   1. the raw path — build the two RAM planes by hand, no graphics library
+ *      (display_square_without_graphics_library)
+ *   2. the normal path — draw with lib/gfx, flush with a full refresh
+ *   3. waveform tuning — patch the working LUT through the public byte editor
+ *      to over-drive the red phase, and optionally abort the refresh part-way
+ *
+ * Nothing here is copied from the library; it builds against ../../lib.
+ */
+
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/gpio.h>
 #include <string.h>
 
-#include <drivers/ssd1675a.h>
-#include <lib/graphics.h>
-#include <lib/mandelbrot.h>
+#include <eink/ssd1675a.h>
+#include <gfx/graphics.h>
+#include "mandelbrot.h"
 
-static const struct device *gpio_dev;
-
-#define EINK_WIDTH        128
-#define EINK_HEIGHT       296
+#define EINK_WIDTH         SSD1675A_WIDTH
+#define EINK_HEIGHT        SSD1675A_HEIGHT
 #define EINK_BYTES_PER_ROW (EINK_WIDTH / 8)
-#define EINK_BUFFER_SIZE  (EINK_BYTES_PER_ROW * EINK_HEIGHT)
-#define COVER_VIVID_PASSES 1
+#define EINK_BUFFER_SIZE   SSD1675A_RAM_BYTES
+
+/* Which screen to draw: 0 = system-info cover, 1 = Mandelbrot fractal. */
+#define DEMO_SCREEN_MANDELBROT 0
+
+/* Over-drive the red phase, then cut the refresh short so the pigment freezes
+ * at its most saturated instead of settling to pale red. Set to 0 for a normal,
+ * fully settled refresh. */
 #define COVER_USE_RED_CUTOFF 1
+#define COVER_VIVID_PASSES   1
 
 static void set_bw_pixel(uint8_t *bw_buffer, uint8_t *red_buffer,
                          int x, int y, bool black)
@@ -55,7 +71,7 @@ static void __maybe_unused display_square_without_graphics_library(void)
 
     draw_filled_square(bw_buffer, red_buffer, 40, 84, 48);
 
-    ssd1675a_init(gpio_dev);
+    ssd1675a_init();
     ssd1675a_display_buffer(bw_buffer, red_buffer);
     ssd1675a_update_display();
 }
@@ -207,21 +223,59 @@ static void draw_cover_screen(void)
 
 static void flush_full_update(void)
 {
-    ssd1675a_init(gpio_dev);
+    ssd1675a_init();
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
 }
 
+/* Same waveform shape as the library default, with only the red phase pushed
+ * harder: level 0x08 -> 0x0F, duration 0x3C -> 0xB0, repeat 0x07 -> 0x14.
+ * Byte layout is documented in docs/eink-lut-reference.md — bytes 0..34 are the
+ * five voltage LUTs, 35..69 the seven {TA TB TC TD RP} timing groups. */
+static const uint8_t lut_vivid_cover[EINK_LUT_SIZE] = {
+    0x22, 0x11, 0x10, 0x00, 0x10, 0x00, 0x00,   /* LUT0 black */
+    0x11, 0x88, 0x80, 0x80, 0x80, 0x00, 0x00,   /* LUT1 white */
+    0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00,   /* LUT2 red   */
+    0x6A, 0x9B, 0x9B, 0x9B, 0x9B, 0x00, 0x00,   /* LUT3 red   */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   /* LUT4 VCOM  */
+    0x04, 0x18, 0x04, 0x16, 0x01,               /* Ph0 */
+    0x0A, 0x0A, 0x0A, 0x0A, 0x02,               /* Ph1 */
+    0x00, 0x00, 0x00, 0x00, 0x00,               /* Ph2 */
+    0x00, 0x00, 0x00, 0x00, 0x00,               /* Ph3 */
+    0x04, 0x04, 0x0F, 0xB0, 0x14,               /* Ph4 — the red drive */
+    0x00, 0x00, 0x00, 0x00, 0x00,               /* Ph5 */
+    0x00, 0x00, 0x00, 0x00, 0x00,               /* Ph6 */
+};
+
+/* How long the over-driven red phase runs before we freeze it. */
+#define COVER_RED_CUTOFF_MS 6400
+
+static void load_vivid_lut(void)
+{
+    for (int i = 0; i < EINK_LUT_SIZE; i++) {
+        ssd1675a_set_lut_byte(i, lut_vivid_cover[i]);
+    }
+}
+
 static void flush_vivid_update(void)
 {
-    ssd1675a_init(gpio_dev);
+    ssd1675a_init();
+    load_vivid_lut();
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
 
 #if COVER_USE_RED_CUTOFF
-    ssd1675a_update_display_red_cutoff();
+    /* Start the refresh, then kill it mid-phase: the red pigment stops where it
+     * is most saturated instead of being washed back to pale red by the last
+     * waves. Purely a photogenic hack — the image is not DC-balanced and will
+     * ghost, so the panel needs a normal full refresh afterwards. */
+    ssd1675a_trigger_update_nowait();
+    k_msleep(COVER_RED_CUTOFF_MS);
+    ssd1675a_port_reset(true);
+    k_msleep(20);
+    ssd1675a_power_off();
 #else
     for (int i = 0; i < COVER_VIVID_PASSES; i++) {
-        ssd1675a_update_display_vivid();
+        ssd1675a_update_display();
         k_msleep(300);
     }
 #endif
@@ -236,23 +290,30 @@ static void display_clean_cycle(void)
 
 int main(void)
 {
-    gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-
-    if (!device_is_ready(gpio_dev)) {
-        return 0;
+    if (!ssd1675a_init()) {
+        return 0;   /* no panel on the bus — nothing to demo */
     }
 
     graphics_init();
-    graphics_set_rotation(1);
+    graphics_set_rotation(1);   /* landscape: 296x128 */
 
     display_clean_cycle();
+
+#if DEMO_SCREEN_MANDELBROT
+    mandelbrot_draw();
+    flush_full_update();
+    ssd1675a_sleep();
+    ssd1675a_power_off();
+#else
     draw_cover_screen();
     flush_vivid_update();
 
 #if !COVER_USE_RED_CUTOFF
+    /* The cutoff path already reset and powered the panel down. */
     ssd1675a_sleep();
     ssd1675a_power_off();
 #endif
+#endif /* DEMO_SCREEN_MANDELBROT */
 
     while (1) {
         k_sleep(K_FOREVER);

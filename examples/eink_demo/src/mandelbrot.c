@@ -1,5 +1,5 @@
 #include "mandelbrot.h"
-#include <lib/graphics.h>
+#include <gfx/graphics.h>
 
 #define MANDELBROT_MAX_ITER 32
 

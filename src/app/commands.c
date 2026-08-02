@@ -9,8 +9,8 @@
 #include "persist.h"
 #include "secauth.h"
 #include "factory.h"
-#include "lib/graphics.h"
-#include <drivers/ssd1675a.h>
+#include <gfx/graphics.h>
+#include <eink/ssd1675a.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>

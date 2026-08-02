@@ -16,7 +16,7 @@
 #include "app/secauth.h"
 #include "app/mesh.h"
 #include "ble/ble_service.h"
-#include "lib/graphics.h"
+#include <gfx/graphics.h>
 #include <dk_buttons_and_leds.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -52,8 +52,7 @@ int main(void)
     persist_init();     // Validate retained-RAM stats (survives DFU reboot)
     
     // 2. Init Graphics & Display
-    // graphics_init is from lib/graphics.h
-    graphics_init(); 
+    graphics_init();
     display_manager_init();
 
     // 3. Init commands module (watchdog work item, etc.)

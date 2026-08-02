@@ -5,16 +5,18 @@
 #include "persist.h"
 #include "ble/ble_service.h"
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/poweroff.h>
-#include <drivers/ssd1675a.h>
-#include <lib/graphics.h>
+#include <eink/ssd1675a.h>
+#include <gfx/graphics.h>
 #include <zephyr/logging/log.h>
 #include <limits.h>
 
 LOG_MODULE_REGISTER(display_manager, LOG_LEVEL_INF);
 
-static const struct device *gpio_dev_dm;
+/* Cleared when the display port fails to come up; every entry point below
+ * bails out on it so a missing panel degrades to "no picture" instead of a
+ * thread stuck in a busy-wait. */
+static bool display_ready;
 
 static bool screensaver_enabled = true;
 static bool keep_display_on = false;
@@ -228,21 +230,21 @@ static int maintenance_countdown(int current_count, int interval)
 }
 
 void display_manager_init(void) {
-    gpio_dev_dm = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-    if (!device_is_ready(gpio_dev_dm)) {
-        LOG_ERR("GPIO_0 not found!");
+    display_ready = ssd1675a_port_init();
+    if (!display_ready) {
+        LOG_ERR("Display port unavailable");
         return;
     }
     power_estimate_resync_idle();
 }
 
 static void perform_display_update(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
 
     // k_mutex_lock(&display_lock, K_FOREVER);
 
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
-    ssd1675a_init(gpio_dev_dm);
+    ssd1675a_init();
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display();
 
@@ -258,9 +260,9 @@ static void perform_display_update(void) {
 // channel) to actively drive red pigment away.  Called after clean/nuke cycles
 // to eliminate the reddish tint left by the "red fixation" phases of the main LUT.
 static void perform_display_update_flush_red(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
-    ssd1675a_init(gpio_dev_dm);
+    ssd1675a_init();
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display_flush_red();
     power_down_after_idle_update();
@@ -285,7 +287,7 @@ static void display_manager_update_static_saver(bool full_refresh)
 }
 
 void display_manager_update_partial(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
 
     if (keep_display_on) {
         stream_partial_count++;
@@ -295,7 +297,7 @@ void display_manager_update_partial(void) {
         if (streaming_active && (stream_partial_count % STREAM_REFRESH_INTERVAL == 0)) {
             stop_streaming_if_active();
             power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
-            ssd1675a_init_partial(gpio_dev_dm);
+            ssd1675a_init_partial();
             write_partial_stream_buffers();
             ssd1675a_update_partial();  // 0xC7: full HV cycle with current LUT
             power_estimate_resync_idle();
@@ -304,7 +306,7 @@ void display_manager_update_partial(void) {
 
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         if (!streaming_active) {
-            ssd1675a_init_partial(gpio_dev_dm);
+            ssd1675a_init_partial();
             write_partial_stream_buffers();
             ssd1675a_begin_streaming();
             streaming_active = true;
@@ -316,7 +318,7 @@ void display_manager_update_partial(void) {
     } else {
         stop_streaming_if_active();
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
-        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_init_partial();
         write_partial_stream_buffers();
         ssd1675a_update_partial();
         power_down_after_idle_update();
@@ -327,7 +329,7 @@ void display_manager_update_partial(void) {
 
 
 void display_manager_update_partial_nowait(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
 
     /* Non-streaming path must always block — fall back to regular update. */
     if (!keep_display_on) {
@@ -342,7 +344,7 @@ void display_manager_update_partial_nowait(void) {
     if (streaming_active && (stream_partial_count % STREAM_REFRESH_INTERVAL == 0)) {
         stop_streaming_if_active();
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
-        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_init_partial();
         write_partial_stream_buffers();
         ssd1675a_update_partial();
         power_estimate_resync_idle();
@@ -351,7 +353,7 @@ void display_manager_update_partial_nowait(void) {
 
     power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     if (!streaming_active) {
-        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_init_partial();
         write_partial_stream_buffers();
         ssd1675a_begin_streaming();
         streaming_active = true;
@@ -433,7 +435,7 @@ void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
 }
 
 void display_manager_update_lut_test(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
 
     int64_t now = k_uptime_get();
     int32_t delta_ms = 0;
@@ -457,7 +459,7 @@ void display_manager_update_lut_test(void) {
      * is visible. ssd1675a_display_buffer_fast() skips the red buffer. */
     power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     if (!streaming_active) {
-        ssd1675a_init_partial(gpio_dev_dm);
+        ssd1675a_init_partial();
         ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
         ssd1675a_begin_streaming();
         streaming_active = true;
@@ -501,7 +503,7 @@ void display_manager_set_screensaver_mode(int mode) {
 }
 
 void display_manager_update_status(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
     
     int64_t start_render = k_uptime_get();
     static int32_t last_dur = 0;
@@ -565,7 +567,7 @@ void display_manager_show_palette_test(void) {
 
 void display_manager_run_tone_test(void) {
 #define TONE_TEST_PASSES 8
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
 
     bool prev_custom = ssd1675a_get_use_custom_lut();
     int prev_mode = partial_mode_current;
@@ -593,7 +595,7 @@ void display_manager_run_tone_test(void) {
 }
 
 void display_manager_clean(void) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
     stop_streaming_if_active();
     stream_partial_count = 0;
     for (int i = 0; i < 7; i++) {
@@ -612,7 +614,7 @@ void display_manager_clean(void) {
 }
 
 void display_manager_deep_clean(int cycles) {
-    if (!gpio_dev_dm) return;
+    if (!display_ready) return;
     stop_streaming_if_active();
     stream_partial_count = 0;
     // Phase 1: white-only pre-soak — repeated VSL application kills VSH1

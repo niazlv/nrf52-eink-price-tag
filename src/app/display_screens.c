@@ -1,10 +1,10 @@
 #include "display_screens.h"
 #include "display_manager.h"
 #include "system_time.h"
-#include <lib/graphics.h>
-#include <lib/life.h>
-#include <lib/dither.h>
-#include <drivers/ssd1675a.h>
+#include <gfx/graphics.h>
+#include <gfx/life.h>
+#include <gfx/dither.h>
+#include <eink/ssd1675a.h>
 #include <stdio.h>
 #include <stdbool.h>
 

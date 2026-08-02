@@ -6,7 +6,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(peripheral_uart)
+project(eink_tag)
 
 # Inject build timestamp as C preprocessor defines when passed from Makefile.
 if(DEFINED APP_BUILD_YEAR)
@@ -21,15 +21,20 @@ if(DEFINED APP_BUILD_YEAR)
   message(STATUS "Build time: ${APP_BUILD_YEAR}-${APP_BUILD_MONTH}-${APP_BUILD_DAY} ${APP_BUILD_HOUR}:${APP_BUILD_MIN}:${APP_BUILD_SEC}")
 endif()
 
-# NORDIC SDK APP START
+# Portable display library (lib/) — no Zephyr dependency except the port file.
+# See lib/README.md for reusing it outside this project.
+target_sources(app PRIVATE
+  lib/eink/ssd1675a.c
+  lib/eink/eink_lut.c
+  lib/eink/port/ssd1675a_port_zephyr_nrf.c
+  lib/gfx/graphics.c
+  lib/gfx/dither.c
+  lib/gfx/life.c
+)
+
+# Application
 target_sources(app PRIVATE
   src/main.c
-  src/drivers/soft_spi.c
-  src/drivers/ssd1675a.c
-  src/lib/eink_lut.c
-  src/lib/graphics.c
-  src/lib/dither.c
-  src/lib/life.c
   src/app/battery.c
   src/app/display_manager.c
   src/app/display_screens.c
@@ -42,7 +47,4 @@ target_sources(app PRIVATE
   src/ble/ble_service.c
 )
 
-zephyr_include_directories(src)
-
-
-# NORDIC SDK APP END
+zephyr_include_directories(src lib)
