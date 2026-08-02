@@ -1,5 +1,7 @@
 # nRF52 e-paper tag
 
+**EN** · [RU](README.ru.md)
+
 Firmware for a repurposed 2.9" BWR electronic shelf label — an nRF52832 driving
 an SSD1675A e-paper panel over BLE, with no vendor documentation to work from.
 
