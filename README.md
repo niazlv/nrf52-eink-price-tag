@@ -5,13 +5,19 @@
 Firmware for a repurposed 2.9" BWR electronic shelf label — an nRF52832 driving
 an SSD1675A e-paper panel over BLE, with no vendor documentation to work from.
 
-The panel came out of a bag of surplus price tags bought off a classifieds site
-for pennies, with no documentation, no SDK and no vendor willing to answer.
-Everything here — the pinout, the waveform tables, the refresh modes, the
-streaming path — was reverse-engineered on the bench and written up in
+It started on Avito, the Russian classifieds site. First five tags at 250 ₽
+each, half of them cracked or drowned in electrolyte. Then seventeen more from
+the same seller, of which two survived. Then an entire box of them, filled to
+the brim, for 500 ₽ — at a time when one comparable e-paper panel cost 700 ₽ on
+AliExpress.
+
+Inside each one: an nRF52832 and an e-paper panel. No SDK, no datasheet, no
+pinout, and a manufacturer who never answered the email. Everything in this
+repository — the pinout, the waveform tables, the refresh modes, the streaming
+path — came out of experiments on a live panel and is written up in
 [`docs/`](docs/).
 
-The story of how the tags were opened up, in Russian:
+How the tags were cracked open, in Russian:
 [Как я купил кота в мешке: реверс-инжиниринг электронных ценников](https://habr.com/ru/articles/1044406/).
 
 > **Once a tag runs this firmware, you never need a toolchain again:**
