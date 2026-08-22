@@ -275,7 +275,7 @@ select{cursor:pointer}
   .pscroll{overflow:visible}
   .card{padding:10px}
   #disp-canvas,
-  #anim-preview{max-width:100%;height:auto;aspect-ratio:296/128}
+  #anim-preview{max-width:100%;height:auto}
 
   #bot-con{height:180px;max-height:45vh}
   #bot-resize{height:12px;cursor:ns-resize;touch-action:none}
@@ -568,6 +568,10 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <div class="bezel-label">
             <span id="disp-label">SSD1675A · 296×128</span>
             <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i>&nbsp;BWR</span>
+          </div>
+          <div id="send-box" style="display:none;margin-top:8px">
+            <div class="pbar"><div class="pfill" id="send-prog" style="width:0%"></div></div>
+            <div id="send-info" style="font-size:10px;color:var(--fg2);text-align:center;margin-top:3px;font-variant-numeric:tabular-nums"></div>
           </div>
         </div>
         <div class="brow" style="margin-top:9px;justify-content:center">
@@ -953,7 +957,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <input type="checkbox" id="enc-inv" style="accent-color:var(--accent)"> Инверт
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
-            <input type="checkbox" id="enc-land" style="accent-color:var(--accent)" checked> Landscape (296×128)
+            <input type="checkbox" id="enc-land" style="accent-color:var(--accent)" checked> <span id="enc-land-label">Landscape (296×128)</span>
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
             <input type="checkbox" id="enc-loop" style="accent-color:var(--accent)"> Loop
@@ -985,7 +989,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
     <!-- Right: display preview -->
     <div class="pcol" style="width:330px;flex-shrink:0">
       <div class="card">
-        <div class="ctitle">Превью дисплея (296×128)</div>
+        <div class="ctitle" id="anim-prev-title">Превью дисплея (296×128)</div>
         <canvas id="anim-preview" width="296" height="128"
           style="width:296px;height:128px;border:1px solid var(--border);border-radius:4px;
                  image-rendering:pixelated;display:block;background:#fff;margin:0 auto"></canvas>
@@ -1399,7 +1403,73 @@ function setPanel(key) {
   }
   const lbl = $('disp-label'); if (lbl) lbl.textContent = `${p.ctl} · ${p.lw}×${p.lh}`;
   const sp = $('sys-panel');   if (sp)  sp.textContent  = `${p.lw}×${p.lh} (${p.ctl}${p.redPlane ? '' : ', red via FAPPLY RED'})`;
+  const ll = $('enc-land-label'); if (ll) ll.textContent = `Landscape (${p.lw}×${p.lh})`;
+  const pt = $('anim-prev-title'); if (pt) pt.textContent = `Превью дисплея (${p.lw}×${p.lh})`;
+  const ap = $('anim-preview');
+  if (ap && (ap.width !== p.lw || ap.height !== p.lh)) {
+    ap.width = p.lw; ap.height = p.lh;
+    ap.style.width = '296px';
+    ap.style.height = Math.round(296 * p.lh / p.lw) + 'px';
+  }
   if (changed && typeof IE !== 'undefined' && IE.img) { IE.oc = null; renderImg(); }
+}
+
+// Stream geometry. The UI's "landscape" flag means "rotate the frame" only on
+// a portrait-driven panel (128x296); on the 400x300 it is the native layout.
+function vsRotated(land) { return land !== (PANEL.rot === 0); }
+function vsDims(land) {
+  return vsRotated(land) ? [PANEL.ph, PANEL.pw] : [PANEL.pw, PANEL.ph];
+}
+// Logical stream pixel → [byte index, bit mask] in a physical plane.
+function vsIdx(lx, ly, land) {
+  const rotated = vsRotated(land);
+  const phx = rotated ? PANEL.pw - 1 - ly : lx;
+  const phy = rotated ? lx : ly;
+  return [phy * (PANEL.pw >> 3) + (phx >> 3), 1 << (7 - (phx & 7))];
+}
+
+// Send-progress box under the display preview: host-side bytes sent, device
+// acknowledgements (FW:rx / RW:rx lines), then the refresh wait.
+const sendProg = { total: 0, sent: 0, rx: 0, tag: '', phase: '', t0: 0 };
+function sendProgShow(total) {
+  Object.assign(sendProg, { total, sent: 0, rx: 0, tag: '', phase: 'tx', t0: Date.now() });
+  const box = $('send-box'); if (box) box.style.display = 'block';
+  sendProgRender();
+}
+function sendProgRender() {
+  const p = sendProg, bar = $('send-prog'), info = $('send-info');
+  if (!bar || !info) return;
+  const dt = ((Date.now() - p.t0) / 1000).toFixed(1);
+  if (p.phase === 'tx') {
+    bar.style.width = (p.total ? Math.round(100 * p.sent / p.total) : 0) + '%';
+    info.textContent = `${p.tag} отправлено ${p.sent}/${p.total} B · принято ${p.rx} B · ${dt}s`;
+  } else if (p.phase === 'refresh') {
+    bar.style.width = '100%';
+    info.textContent = `передано ${p.total} B за ${p.txTime}s · обновление экрана… ${dt}s`;
+  } else {
+    info.textContent = p.phase;
+  }
+}
+function sendProgRx(line) {             // "FW:rx 4096/15000"
+  const m = line.match(/^(FW|RW):rx (\d+)\/(\d+)/);
+  if (!m || sendProg.phase !== 'tx' || m[1] !== sendProg.tag) return;
+  sendProg.rx = (sendProg.planeBase || 0) + +m[2];
+  sendProgRender();
+}
+function sendProgRefresh() {
+  sendProg.txTime = ((Date.now() - sendProg.t0) / 1000).toFixed(1);
+  sendProg.phase = 'refresh'; sendProg.t0 = Date.now();
+  sendProgRender();
+  clearInterval(sendProg.timer);
+  sendProg.timer = setInterval(sendProgRender, 500);
+}
+function sendProgDone(text) {
+  clearInterval(sendProg.timer);
+  const bar = $('send-prog'), info = $('send-info');
+  if (bar) bar.style.width = '100%';
+  if (info) info.textContent = text;
+  sendProg.phase = 'done';
+  setTimeout(() => { if (sendProg.phase === 'done') { const b = $('send-box'); if (b) b.style.display = 'none'; } }, 8000);
 }
 
 // Binary VSTREAM stop escapes. The second byte is intentionally different:
@@ -1422,7 +1492,7 @@ const VS_KEY_SLACK    = 64;  // prefer a keyframe when full ≤ delta + this man
 const LUT_SZ   = 70;
 const N_GROUPS = 5;
 const N_PHASES = 7;
-const FW_CHUNK = 48;
+const FW_CHUNK = 96;   // bytes per FW:/RW: line; the firmware's RX line buffer is 256 chars
 
 const GRP_LABELS = ['BLACK (00)','WHITE (01)','RED (10)','RED (11)','VCOM (!)'];
 const GRP_COLORS = ['#d4d4d4','#98c379','#e06c75','#e06c75','#556666'];
@@ -1696,6 +1766,10 @@ function onNotify(ev) {
     if (line.startsWith('TELE:') || line.startsWith('STAT:')) parseTele(line);
     if (line.startsWith('STATS:')) parseStats(line);
     if (line.startsWith('SYSINFO:')) parseSysinfo(line);
+    if (line.startsWith('FW:rx') || line.startsWith('RW:rx')) sendProgRx(line);
+    if (line.startsWith('FAPPLY done') || line.startsWith('TELE:fapply')) {
+      if (sendProg.phase === 'refresh') sendProgDone(`готово · ${line.replace(/^TELE:fapply /, '')}`);
+    }
     if (line.startsWith('NAME:')) parseName(line);
     if (line.startsWith('meshrx=')) parseMeshrx(line);
     if (line.startsWith('AUTH:')) handleAuthLine(line);
@@ -2595,6 +2669,7 @@ async function sendPhotoPassGuaranteed(frame, prev, label, retries=4) {
 }
 
 async function sendCanvasTone() {
+  if (!PANEL.redPlane) { alert('Тоновые режимы используют красную плоскость как управляющий бит — на этой панели (B/W буфер) недоступны. Выбери «Дизер / BWR».'); return; }
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
 
@@ -2747,6 +2822,7 @@ function canvasToToneSoftLevels(maxPulse) {
 }
 
 async function sendCanvasToneSoft() {
+  if (!PANEL.redPlane) { alert('Тоновые режимы используют красную плоскость как управляющий бит — на этой панели (B/W буфер) недоступны. Выбери «Дизер / BWR».'); return; }
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
 
@@ -2814,14 +2890,18 @@ async function sendBWR(bw, red, desc) {
   await sleep(350);
   const FB = fbSize();
   const hasRed = red.some(b=>b!==0);
-  let sent=0, total=Math.ceil(FB/FW_CHUNK)*(hasRed?2:1);
+  sendProgShow(FB * (hasRed ? 2 : 1));
   const sendPlane = async (buf, tag) => {
+    sendProg.tag = tag;
+    sendProg.planeBase = sendProg.sent;          // device acks count per plane
     for (let off=0; off<FB; off+=FW_CHUNK) {
       const ch = buf.slice(off, Math.min(off+FW_CHUNK, FB));
       await sendBytes(new TextEncoder().encode(`${tag}:${off}:${hexOf(ch).toUpperCase()}\n`));
-      sent++; if(sent%20===0) logI(`  ${tag} ${off+ch.length}/${FB}B (${Math.round(sent*100/total)}%)`);
+      sendProg.sent += ch.length;
+      if ((off / FW_CHUNK) % 4 === 0) sendProgRender();
       await sleep(5);
     }
+    sendProgRender();
   };
   // A single-plane panel (400x300) has no red buffer in the firmware: the red
   // mask goes first, FAPPLY RED stages it into the controller's red RAM, then
@@ -2834,83 +2914,116 @@ async function sendBWR(bw, red, desc) {
   await sendPlane(bw, 'FW');
   if (hasRed && PANEL.redPlane) await sendPlane(red, 'RW');
   await sendBytes(new TextEncoder().encode('FAPPLY\n'));
+  sendProgRefresh();
   logI(`${desc} отправлено → FAPPLY`);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Test patterns (drawn on the 296×128 logical canvas)
+//  Test patterns (laid out from PANEL.lw × PANEL.lh at draw time)
 // ═══════════════════════════════════════════════════════════════════
 function testPat(n) {
   const c=$('disp-canvas'), ctx=c.getContext('2d');
   ieClose();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle='white'; ctx.fillRect(0,0,PANEL.lw,PANEL.lh);
-  // The patterns are authored on the 296×128 canvas; stretch them to the panel.
-  ctx.save();
-  ctx.scale(PANEL.lw/296, PANEL.lh/128);
-  if(n===1) patBands(ctx);
-  else if(n===2) patText(ctx);
-  else patGrid(ctx);
-  ctx.restore();
+  const w = PANEL.lw, h = PANEL.lh;
+  ctx.fillStyle='white'; ctx.fillRect(0,0,w,h);
+  if(n===1) patBands(ctx, w, h);
+  else if(n===2) patText(ctx, w, h);
+  else patGrid(ctx, w, h);
   sendCanvas();
 }
 
-function patBands(ctx){
-  ctx.fillStyle='black'; ctx.fillRect(0,0,99,128);
-  ctx.fillStyle='#c80000'; ctx.fillRect(198,0,98,128);
-  ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(99,0,99,128);
-  ctx.font='bold 13px monospace';
-  ctx.fillStyle='white';  ctx.fillText('BLACK',14,68);
-  ctx.fillStyle='black';  ctx.fillText('WHITE',120,68);
-  ctx.fillStyle='white';  ctx.fillText('RED',220,68);
-  ctx.fillStyle='black';  ctx.fillRect(0,0,296,14);
-  ctx.fillStyle='white';  ctx.font='10px monospace';
-  ctx.fillText('BWR COLOR BANDS TEST — SSD1675A',4,11);
+// The patterns are laid out from the panel size: a title bar ~1/9 of the
+// height, fonts from the height, columns from the width. Nothing is stretched.
+function patTitle(ctx, w, h, text) {
+  const bh = Math.max(14, Math.round(h / 9));
+  ctx.fillStyle='black'; ctx.fillRect(0,0,w,bh);
+  ctx.fillStyle='white'; ctx.font=`${Math.max(10, Math.round(bh * 0.7))}px monospace`;
+  ctx.textBaseline='middle'; ctx.textAlign='left';
+  ctx.fillText(text, 4, bh / 2);
+  ctx.textBaseline='alphabetic';
+  return bh;
 }
 
-function patText(ctx){
-  ctx.fillStyle='black'; ctx.fillRect(0,0,296,14);
-  ctx.fillStyle='white'; ctx.font='10px monospace';
-  ctx.fillText('SSD1675A — TEXT & SHAPES TEST',4,11);
-  ctx.fillStyle='black'; ctx.font='11px monospace';
-  ctx.fillText('Hello World!',4,28);
-  ctx.fillRect(4,35,85,16);
-  ctx.fillStyle='white'; ctx.fillText('FILLED',8,48);
-  ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(4,56,85,16);
-  ctx.fillStyle='black'; ctx.fillText('BORDER',8,69);
-  for(let r=0;r<4;r++) for(let c=0;c<12;c++)
-    if((r+c)%2){ ctx.fillStyle='black'; ctx.fillRect(4+c*8,80+r*6,8,6); }
-  // Red section
-  ctx.fillStyle='#c80000'; ctx.font='11px monospace';
-  ctx.fillText('Red text!',196,28);
-  ctx.fillRect(196,35,85,16);
-  ctx.fillStyle='white'; ctx.fillText('RED FILL',200,48);
-  ctx.strokeStyle='#c80000'; ctx.lineWidth=2; ctx.strokeRect(196,56,85,16);
-  ctx.fillStyle='#c80000'; ctx.fillText('RED BRD',200,69);
-  ctx.beginPath(); ctx.arc(244,100,20,0,Math.PI*2);
+function patBands(ctx, w, h){
+  const third = Math.floor(w / 3);
+  ctx.fillStyle='black';   ctx.fillRect(0, 0, third, h);
+  ctx.fillStyle='#c80000'; ctx.fillRect(w - third, 0, third, h);
+  ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(third + 1, 1, w - 2 * third - 2, h - 2);
+  const fs = Math.max(13, Math.round(h / 9));
+  ctx.font=`bold ${fs}px monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='white';  ctx.fillText('BLACK', third / 2, h / 2);
+  ctx.fillStyle='black';  ctx.fillText('WHITE', w / 2, h / 2);
+  ctx.fillStyle='white';  ctx.fillText('RED', w - third / 2, h / 2);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  patTitle(ctx, w, h, `BWR COLOR BANDS TEST — ${PANEL.ctl} ${w}×${h}`);
+}
+
+function patText(ctx, w, h){
+  const bh = patTitle(ctx, w, h, `${PANEL.ctl} ${w}×${h} — TEXT & SHAPES TEST`);
+  const fs = Math.max(11, Math.round(h / 11));          // body font
+  const rowH = Math.round(fs * 1.5);
+  const colW = Math.floor(w / 2) - 8;                   // two columns
+  const boxW = Math.min(colW - 8, Math.round(w * 0.29));
+  const boxH = Math.round(fs * 1.45);
+  const x0 = 4, x1 = Math.floor(w / 2) + 4;
+  let y = bh + rowH;
+  ctx.font=`${fs}px monospace`; ctx.textBaseline='alphabetic';
+  // Left column: black
+  ctx.fillStyle='black'; ctx.fillText('Hello World!', x0, y);
+  y += Math.round(fs * 0.6);
+  ctx.fillRect(x0, y, boxW, boxH);
+  ctx.fillStyle='white'; ctx.fillText('FILLED', x0 + 4, y + boxH - Math.round(fs * 0.35));
+  y += boxH + Math.round(fs * 0.5);
+  ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(x0, y, boxW, boxH);
+  ctx.fillStyle='black'; ctx.fillText('BORDER', x0 + 4, y + boxH - Math.round(fs * 0.35));
+  y += boxH + Math.round(fs * 0.8);
+  // Checker of cells sized from the font, as many as fit the column
+  const cw = Math.max(4, Math.round(fs * 0.7)), chh = Math.max(3, Math.round(fs * 0.55));
+  const cols = Math.floor(colW / cw), rows = Math.max(2, Math.floor((h - y - 4) / chh));
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++)
+    if((r+c)%2){ ctx.fillStyle='black'; ctx.fillRect(x0+c*cw, y+r*chh, cw, chh); }
+  // Right column: red
+  y = bh + rowH;
+  ctx.fillStyle='#c80000'; ctx.fillText('Red text!', x1, y);
+  y += Math.round(fs * 0.6);
+  ctx.fillRect(x1, y, boxW, boxH);
+  ctx.fillStyle='white'; ctx.fillText('RED FILL', x1 + 4, y + boxH - Math.round(fs * 0.35));
+  y += boxH + Math.round(fs * 0.5);
+  ctx.strokeStyle='#c80000'; ctx.lineWidth=2; ctx.strokeRect(x1, y, boxW, boxH);
+  ctx.fillStyle='#c80000'; ctx.fillText('RED BRD', x1 + 4, y + boxH - Math.round(fs * 0.35));
+  y += boxH + Math.round(fs * 0.8);
+  const r = Math.max(10, Math.min(Math.round((h - y) / 2) - 4, Math.round(w * 0.08)));
+  ctx.beginPath(); ctx.arc(x1 + boxW / 2, y + r + 2, r, 0, Math.PI*2);
   ctx.fillStyle='#c80000'; ctx.fill();
 }
 
-function patGrid(ctx){
-  ctx.fillStyle='black'; ctx.fillRect(0,0,296,14);
-  ctx.fillStyle='white'; ctx.font='10px monospace';
-  ctx.fillText('RESOLUTION & DITHER TEST — SSD1675A',4,11);
+function patGrid(ctx, w, h){
+  const bh = patTitle(ctx, w, h, `RESOLUTION & DITHER TEST — ${PANEL.ctl} ${w}×${h}`);
+  const lab = Math.max(9, Math.round(h / 14));
+  const top = bh + 2;
+  const bandH = Math.floor((h - top - lab - 4) * 0.5);   // upper test band
+  const cw = Math.floor(w / 4);                           // four columns
   // H-lines
-  for(let y=16;y<66;y+=2){ ctx.fillStyle='black'; ctx.fillRect(0,y,74,1); }
+  for(let y=top;y<top+bandH;y+=2){ ctx.fillStyle='black'; ctx.fillRect(0,y,cw,1); }
   // V-lines
-  for(let x=74;x<148;x+=2){ ctx.fillStyle='black'; ctx.fillRect(x,16,1,50); }
+  for(let x=cw;x<2*cw;x+=2){ ctx.fillStyle='black'; ctx.fillRect(x,top,1,bandH); }
   // Checkerboard
-  for(let y=16;y<66;y++) for(let x=148;x<222;x++)
+  for(let y=top;y<top+bandH;y++) for(let x=2*cw;x<3*cw;x++)
     if((x+y)%2){ ctx.fillStyle='black'; ctx.fillRect(x,y,1,1); }
-  // Density gradient
-  for(let st=0;st<8;st++){
-    const dens=st/7, x0=Math.floor(st*37);
-    for(let y=78;y<114;y++) for(let x=0;x<37;x++)
+  // Diagonal single-pixel lines in the fourth column
+  for(let x=3*cw;x<w;x++){ const y=top+((x-3*cw)%bandH); ctx.fillStyle='black'; ctx.fillRect(x,y,1,1); ctx.fillRect(x,top+bandH-1-((x-3*cw)%bandH),1,1); }
+  const ly = top + bandH + lab;
+  ctx.fillStyle='black'; ctx.font=`${lab}px monospace`; ctx.textBaseline='alphabetic';
+  ctx.fillText('H-lines',2,ly); ctx.fillText('V-lines',cw+2,ly);
+  ctx.fillText('Checker',2*cw+2,ly); ctx.fillText('Diag',3*cw+2,ly);
+  // Density gradient across the full width
+  const gy = ly + 4, gh = h - gy - 2, steps = 8, sw = Math.floor(w / steps);
+  for(let st=0;st<steps;st++){
+    const dens=st/(steps-1), x0=st*sw;
+    for(let y=gy;y<gy+gh;y++) for(let x=0;x<sw;x++)
       if(Math.random()<dens){ ctx.fillStyle='black'; ctx.fillRect(x0+x,y,1,1); }
   }
-  ctx.fillStyle='black'; ctx.font='9px monospace';
-  ctx.fillText('H-lines',2,76); ctx.fillText('V-lines',76,76);
-  ctx.fillText('Checker',150,76); ctx.fillText('Gradient',224,76);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3258,8 +3371,7 @@ async function startStream() {
   const scale    = $('enc-scale').value;
   const syncMode = $('enc-sync').value;
   const lut      = toneVideo ? $('enc-tone-lut').value : $('enc-lut').value;
-  const tw       = land ? DISP_H : DISP_W;
-  const th       = land ? DISP_W : DISP_H;
+  const [tw, th] = vsDims(land);
   const toneState = toneVideo ? createToneVideoState(tw, th, toneCell, {
     kind: toneServo ? 'servo' : 'temporal',
     step: parseFloat($('enc-tone-step')?.value) || 0.16,
@@ -3627,7 +3739,7 @@ function startVideoFrameProducer(tw, th, dith, inv, land, rot, scale, fps, onPro
     if (ready >= startBuffer || done) wakeStartWaiters(ready > 0);
     else if (failed || canceled) wakeStartWaiters(false);
   };
-  const blankFrame = () => new Uint8Array(FB_SIZE).fill(0xFF);
+  const blankFrame = () => new Uint8Array(fbSize()).fill(0xFF);
 
   function markConsumed(idx) {
     if (idx > consumed) consumed = idx;
@@ -3881,19 +3993,30 @@ function drawScaledRotated(ctx, source, srcW, srcH, tw, th, rot, scale='fit') {
   ctx.restore();
 }
 
-function updateAnimPreview(buf) {
+// Size the stream preview to the frame geometry (tw×th) the encoder uses.
+function animPreviewCtx(tw, th) {
   const canvas = $('anim-preview');
-  if (!canvas) return;
-  const pctx = canvas.getContext('2d');
-  const id = pctx.createImageData(296, 128);
+  if (!canvas) return null;
+  if (canvas.width !== tw || canvas.height !== th) {
+    canvas.width = tw; canvas.height = th;
+    canvas.style.width = '296px';
+    canvas.style.height = Math.round(296 * th / tw) + 'px';
+  }
+  return canvas.getContext('2d');
+}
+
+function updateAnimPreview(buf) {
+  const land = $('enc-land').checked;
+  const [tw, th] = vsDims(land);
+  const pctx = animPreviewCtx(tw, th);
+  if (!pctx) return;
+  const id = pctx.createImageData(tw, th);
   const data = id.data;
-  for (let cy=0; cy<128; cy++) {
-    const phx = 127-cy;
-    const byteOff = phx>>3;
-    const bitMask = 1<<(7-(phx&7));
-    for (let cx=0; cx<296; cx++) {
-      const v = (buf[cx*16+byteOff] & bitMask) ? 255 : 0;
-      const pi = (cy*296+cx)*4;
+  for (let cy=0; cy<th; cy++) {
+    for (let cx=0; cx<tw; cx++) {
+      const [bi, m] = vsIdx(cx, cy, land);
+      const v = (buf[bi] & m) ? 255 : 0;
+      const pi = (cy*tw+cx)*4;
       data[pi]=data[pi+1]=data[pi+2]=v; data[pi+3]=255;
     }
   }
@@ -3903,20 +4026,19 @@ function updateAnimPreview(buf) {
 }
 
 function updateToneEstimatePreview(state) {
-  const canvas = $('anim-preview');
-  if (!canvas || !state) return;
-  const pctx = canvas.getContext('2d');
-  const id = pctx.createImageData(296, 128);
+  if (!state) return;
+  const tw = state.tw, th = state.th;
+  const pctx = animPreviewCtx(tw, th);
+  if (!pctx) return;
+  const id = pctx.createImageData(tw, th);
   const data = id.data;
 
-  for (let cy=0; cy<128; cy++) for (let cx=0; cx<296; cx++) {
-    const lx = state.tw === 296 ? cx : 127 - cy;
-    const ly = state.tw === 296 ? cy : cx;
-    const sx = clamp(Math.floor(lx / state.cell), 0, state.cw - 1);
-    const sy = clamp(Math.floor(ly / state.cell), 0, state.ch - 1);
+  for (let cy=0; cy<th; cy++) for (let cx=0; cx<tw; cx++) {
+    const sx = clamp(Math.floor(cx / state.cell), 0, state.cw - 1);
+    const sy = clamp(Math.floor(cy / state.cell), 0, state.ch - 1);
     const dark = state.cur[sy * state.cw + sx] || 0;
     const v = 255 - Math.round(dark * 255);
-    const pi = (cy*296+cx)*4;
+    const pi = (cy*tw+cx)*4;
     data[pi]=data[pi+1]=data[pi+2]=v; data[pi+3]=255;
   }
 
@@ -3927,8 +4049,7 @@ function updateToneEstimatePreview(state) {
 async function previewFrame0() {
   if (!animFileType) { animLog('Загрузи файл'); return; }
   const land = $('enc-land').checked;
-  const tw = land ? DISP_H : DISP_W;
-  const th = land ? DISP_W : DISP_H;
+  const [tw, th] = vsDims(land);
   const rot   = parseInt($('enc-rot').value)||0;
   const scale = $('enc-scale').value;
   const renderMode = currentAnimRenderMode();
@@ -3974,7 +4095,7 @@ function encodeToneVideoFrame(ctx, tw, th, land, state, inv) {
 function canvasToToneTemporalFrame(ctx, tw, th, land, state, inv) {
   const id = ctx.getImageData(0, 0, tw, th);
   const d = id.data;
-  const buf = new Uint8Array(FB_SIZE).fill(0xFF);
+  const buf = new Uint8Array(fbSize()).fill(0xFF);
 
   for (let cy=0; cy<state.ch; cy++) {
     const y0 = cy * state.cell;
@@ -4000,9 +4121,8 @@ function canvasToToneTemporalFrame(ctx, tw, th, land, state, inv) {
 
       if (!blackPulse) continue;
       for (let ly=y0; ly<y1; ly++) for (let lx=x0; lx<x1; lx++) {
-        const phx = land ? DISP_W - 1 - ly : lx;
-        const phy = land ? lx : ly;
-        buf[phy*16+(phx>>3)] &= ~(1<<(7-(phx&7)));
+        const [bi, m] = vsIdx(lx, ly, land);
+        buf[bi] &= ~m;
       }
     }
   }
@@ -4013,9 +4133,10 @@ function canvasToToneTemporalFrame(ctx, tw, th, land, state, inv) {
 function canvasToToneServoFrame(ctx, tw, th, land, state, inv) {
   const id = ctx.getImageData(0, 0, tw, th);
   const d = id.data;
-  const buf = new Uint8Array(FB_SIZE * 2).fill(0xFF);
-  const bw = buf.subarray(0, FB_SIZE);
-  const red = buf.subarray(FB_SIZE);
+  const FB = fbSize();
+  const buf = new Uint8Array(FB * 2).fill(0xFF);
+  const bw = buf.subarray(0, FB);
+  const red = buf.subarray(FB);
   const dead = state.step * 0.55;
 
   for (let cy=0; cy<state.ch; cy++) {
@@ -4050,10 +4171,7 @@ function canvasToToneServoFrame(ctx, tw, th, land, state, inv) {
       if (!action) continue;
 
       for (let ly=y0; ly<y1; ly++) for (let lx=x0; lx<x1; lx++) {
-        const phx = land ? DISP_W - 1 - ly : lx;
-        const phy = land ? lx : ly;
-        const off = phy*16+(phx>>3);
-        const bit = 1<<(7-(phx&7));
+        const [off, bit] = vsIdx(lx, ly, land);
         if (action > 0) {
           // 00 selects LUT0: darken pulse.
           bw[off] &= ~bit;
@@ -4082,22 +4200,12 @@ function canvasTo1bpp(ctx, tw, th, dith, inv, land) {
       if(y+1<th){ if(x>0) g[i+tw-1]+=e*3/16; g[i+tw]+=e*5/16; if(x+1<tw) g[i+tw+1]+=e/16; }
     }
   }
-  const buf = new Uint8Array(FB_SIZE).fill(0xFF);
-  if (land) {
-    // Landscape: tw=296, th=128 → same physical rotation as BWR frame
-    for (let ly=0; ly<th; ly++) for (let lx=0; lx<tw; lx++) {
-      const blk = (g[ly*tw+lx]<128) !== inv;
-      if (!blk) continue;
-      const phx=DISP_W-1-ly, phy=lx;
-      buf[phy*16+(phx>>3)] &= ~(1<<(7-(phx&7)));
-    }
-  } else {
-    // Portrait: tw=128, th=296
-    for (let y=0; y<th; y++) for (let x=0; x<tw; x++) {
-      const blk = (g[y*tw+x]<128) !== inv;
-      if (!blk) continue;
-      buf[y*16+(x>>3)] &= ~(1<<(7-(x&7)));
-    }
+  const buf = new Uint8Array(fbSize()).fill(0xFF);
+  for (let ly=0; ly<th; ly++) for (let lx=0; lx<tw; lx++) {
+    const blk = (g[ly*tw+lx]<128) !== inv;
+    if (!blk) continue;
+    const [bi, m] = vsIdx(lx, ly, land);
+    buf[bi] &= ~m;
   }
   return buf;
 }
@@ -4148,7 +4256,7 @@ function vsWrap(type, payload, useCrc) {
 
 function makeVSPkt(frame, enc, prev, useCrc=false) {
   let payload, type;
-  const dual = frame.length === FB_SIZE * 2;
+  const dual = frame.length === fbSize() * 2;
   if (enc===2) { // DRLE
     if (!prev) { payload=packBits(frame); type=dual ? VS_TYPE_RLE2 : VS_TYPE_RLE; }
     else {
@@ -4167,7 +4275,7 @@ function makeVSPkt(frame, enc, prev, useCrc=false) {
 // AND scene cuts) — near-free resync points that bound corruption lifetime.
 // Returns {pkt, isKey}.
 function encodeVSFrame(frame, prev, enc, useCrc, forceKey, keySlack) {
-  const dual = frame.length === FB_SIZE * 2;
+  const dual = frame.length === fbSize() * 2;
   if (enc===0) return { pkt: vsWrap(dual?VS_TYPE_RAW2:VS_TYPE_RAW, frame, useCrc), isKey:true };
   if (enc===1 || !prev || forceKey)
     return { pkt: vsWrap(dual?VS_TYPE_RLE2:VS_TYPE_RLE, packBits(frame), useCrc), isKey:true };
