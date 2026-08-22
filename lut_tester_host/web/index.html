@@ -1173,6 +1173,25 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
         </div>
       </div>
 
+      <!-- Mesh receive / power saving -->
+      <div class="card">
+        <div class="ctitle">Mesh-приём · энергосбережение</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;align-items:center;margin-bottom:8px">
+          <span style="color:var(--fg2)">Сейчас:</span>
+          <span id="sys-meshrx" style="font-family:var(--mono);color:var(--fg2)">—</span>
+        </div>
+        <div class="brow" style="gap:6px">
+          <button class="btn ok" onclick="setMeshRx(true)">Включить</button>
+          <button class="btn bad" onclick="setMeshRx(false)">Выключить</button>
+        </div>
+        <div style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
+          Приём широковещательных команд от соседних ценников (BCAST). <b>Выключение экономит
+          ~0.2–0.3 мА</b> — батарея живёт в разы дольше, но ценник перестаёт слышать и ретранслировать
+          команды по mesh: включить обратно можно только здесь, по прямому подключению.
+          Сохраняется в ценнике. Нужна прошивка v3.4.1+.
+        </div>
+      </div>
+
       <!-- NFC метка -->
       <div class="card">
         <div class="ctitle">NFC-метка · быстрое подключение</div>
@@ -1620,6 +1639,10 @@ function onBleDisc() {
   $('btn-conn').textContent = 'Подключить';
   currentDeviceName = '';
   nfcRefresh();
+  // Не тащим статус приёма на следующий ценник: у него он может быть другим,
+  // а старая прошивка на MESHRX вообще не ответит.
+  const mrx = $('sys-meshrx');
+  if (mrx) { mrx.textContent = '—'; mrx.style.color = 'var(--fg2)'; }
   logI('Disconnected');
 }
 
@@ -1636,6 +1659,7 @@ function onNotify(ev) {
     if (line.startsWith('STATS:')) parseStats(line);
     if (line.startsWith('SYSINFO:')) parseSysinfo(line);
     if (line.startsWith('NAME:')) parseName(line);
+    if (line.startsWith('meshrx=')) parseMeshrx(line);
     if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -4526,6 +4550,25 @@ function requestSysinfo() {
   send('BATT\n');
   send('STATS\n');
   send('NAME\n');
+  send('MESHRX\n');   // прошивка < 3.4.1 не ответит — статус останется «—»
+}
+
+// ── Mesh-приём (MESHRX) ───────────────────────────────────────────
+// Прошивка отвечает «meshrx=on» или «meshrx=off (re-enable over NUS only)».
+function parseMeshrx(line) {
+  const on = line.slice('meshrx='.length).trim().startsWith('on');
+  const el = $('sys-meshrx');
+  if (!el) return;
+  el.textContent = on ? 'включён' : 'выключен (экономия ~0.25 мА)';
+  el.style.color = on ? 'var(--green)' : 'var(--orange)';
+}
+
+async function setMeshRx(on) {
+  if (!connected) { alert('Не подключено'); return; }
+  send(`MESHRX ${on ? 'ON' : 'OFF'}\n`);
+  const reply = await waitForLine(/^meshrx=/, 4000);
+  if (reply) logI('Mesh-приём: ' + reply.slice('meshrx='.length));
+  else logE('MESHRX: нет ответа (прошивка старше v3.4.1? включена SEC-защита?)');
 }
 
 // ── Имя ценника (NAME) ────────────────────────────────────────────
