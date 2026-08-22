@@ -496,7 +496,21 @@ void ble_printf(const char *fmt, ...) {
         len = sizeof(buf) - 1;
     }
     if (len > 0) {
-        ble_service_send(buf, len);
+        /* The ATT/L2CAP TX pools hold only 3 buffers each; a burst of replies
+         * (the web app queries SYSINFO/BATT/STATS/NAME/MESHRX back-to-back on
+         * connect) overruns them on a slow idle connection interval, and the
+         * tail reply was silently lost every time. Retry briefly — the pool
+         * drains on the BT TX path, not on this thread, and command handlers
+         * already block here far longer (a full refresh holds this thread for
+         * seconds). Bounded, so a caller holding display_lock delays at most
+         * ~120 ms instead of deadlocking. */
+        int rc = ble_service_send(buf, len);
+        for (int tries = 0;
+             (rc == -ENOMEM || rc == -EAGAIN || rc == -ENOBUFS) && tries < 6;
+             tries++) {
+            k_sleep(K_MSEC(20));
+            rc = ble_service_send(buf, len);
+        }
         LOG_INF("%s", buf); // Also log to RTT/UART
     }
 }
