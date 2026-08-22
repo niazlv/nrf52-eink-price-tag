@@ -42,6 +42,21 @@ static bool port_ready;
 static int panel_width  = SSD1675A_WIDTH;
 static int panel_height = SSD1675A_HEIGHT;
 
+/* Scan timing (0x3A dummy line period, 0x3B gate line width): the length of
+ * one LUT subframe, hence of every refresh. Runtime-settable so a host can A/B
+ * faster scans on a new panel without reflashing. */
+static uint8_t scan_dummy_line = SSD1675A_DUMMY_LINE;
+static uint8_t scan_gate_width = SSD1675A_GATE_WIDTH;
+
+void ssd1675a_set_scan_timing(uint8_t dummy_line, uint8_t gate_width)
+{
+    scan_dummy_line = dummy_line & 0x7F;
+    scan_gate_width = gate_width & 0x0F;
+}
+
+uint8_t ssd1675a_get_scan_dummy_line(void) { return scan_dummy_line; }
+uint8_t ssd1675a_get_scan_gate_width(void) { return scan_gate_width; }
+
 void ssd1675a_set_geometry(int width, int height)
 {
     if (width < 8 || (width % 8) != 0 || width > 512 || height < 1 || height > 512) {
@@ -181,10 +196,10 @@ static void configure_registers(void)
     send_data(0x00);
 
     send_cmd(0x3A); // Dummy line period, part of panel scan timing
-    send_data(SSD1675A_DUMMY_LINE);
+    send_data(scan_dummy_line);
 
     send_cmd(0x3B); // Gate line width, part of panel scan timing
-    send_data(SSD1675A_GATE_WIDTH);
+    send_data(scan_gate_width);
 
     send_cmd(0x3C); // Border waveform control
     send_data(SSD1675A_BORDER_WAVEFORM);

@@ -382,17 +382,22 @@ static void vs_flush_frame(void) {
     const bool show = !crc_bad && !vs_poisoned;
     const bool want_resync = crc_bad || vs_poisoned;
 
-    int32_t ms = 0;
+    int32_t ms = 0, wait_ms = 0, spi_ms = 0;
     if (show) {
         /* Pipeline: wait for the PREVIOUS frame's refresh (triggered without
          * blocking, so it overlapped this frame's BLE transfer), then trigger
-         * this one. ms includes the wait so the host sees real display timing. */
+         * this one. ms includes the wait so the host sees real display timing;
+         * w/s split it into the wave remainder and the SPI burst + trigger. */
         int64_t t0 = k_uptime_get();
         ssd1675a_wait_busy();
+        int64_t t1 = k_uptime_get();
         display_manager_set_keep_on(true);
         display_manager_set_stream_write_red_plane(dual);
         display_manager_update_partial_nowait();
-        ms = (int32_t)(k_uptime_get() - t0);
+        int64_t t2 = k_uptime_get();
+        wait_ms = (int32_t)(t1 - t0);
+        spi_ms = (int32_t)(t2 - t1);
+        ms = (int32_t)(t2 - t0);
     }
 
     vs_frame_count++;
@@ -401,10 +406,10 @@ static void vs_flush_frame(void) {
     /* ACK: legacy fields (f/ms/dec/crc) plus the wire-CRC verdict wc and a
      * resync request rs=1 (host should send a full keyframe). Old hosts simply
      * ignore the two trailing fields. */
-    ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x wc=%s rs=%d\r\n",
+    ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x wc=%s rs=%d w=%d s=%d\r\n",
                vs_frame_count, (int)ms, (int)vs_dec, (unsigned)crc,
                vs_has_crc ? (crc_bad ? "bad" : "ok") : "na",
-               want_resync ? 1 : 0);
+               want_resync ? 1 : 0, (int)wait_ms, (int)spi_ms);
 }
 
 static void vs_process_byte(uint8_t b) {
@@ -1254,6 +1259,49 @@ static void cmd_ruler(char *args)
                display_manager_panel_name());
 }
 
+/* SCAN / SCAN:dummy,gate — panel scan timing (hex): 0x3A dummy line period
+ * (00..7F) and 0x3B gate line width (0..F). Shorter = faster subframes, every
+ * refresh and every vstream frame proportionally quicker, weaker drive.
+ * Applied at the next init (every partial update re-inits). Not persisted. */
+static void cmd_scan(char *args)
+{
+    if (args && *args) {
+        char *comma = strchr(args, ',');
+        if (!comma) { ble_printf("usage: SCAN:dummyHH,gateH\r\n"); return; }
+        *comma = '\0';
+        uint8_t dummy = (uint8_t)strtoul(args, NULL, 16);
+        uint8_t gate = (uint8_t)strtoul(comma + 1, NULL, 16);
+        ssd1675a_set_scan_timing(dummy, gate);
+    }
+    ble_printf("SCAN:dummy=%02X gate=%02X\r\n",
+               ssd1675a_get_scan_dummy_line(), ssd1675a_get_scan_gate_width());
+}
+
+/* SPITEST — time the display bus: 15000 NOP command frames (pure bit-bang,
+ * RAM untouched) and one real B/W plane load, in µs per byte. Diagnostic for
+ * the port's write path; the plane load is what every vstream frame pays. */
+static void cmd_spitest(char *args)
+{
+    (void)args;
+    display_manager_enable_screensaver(false);
+    k_msleep(100);
+    ssd1675a_init_partial();
+    uint32_t c0 = k_cycle_get_32();
+    for (int i = 0; i < 15000; i++) {
+        ssd1675a_port_write9(0x7F, false);   /* NOP */
+    }
+    uint32_t c1 = k_cycle_get_32();
+    ssd1675a_display_buffer_fast(graphics_get_buffer());
+    uint32_t c2 = k_cycle_get_32();
+    uint32_t hz = sys_clock_hw_cycles_per_sec();
+    uint32_t nop_us = (uint32_t)((uint64_t)(c1 - c0) * 1000000ULL / hz);
+    uint32_t plane_us = (uint32_t)((uint64_t)(c2 - c1) * 1000000ULL / hz);
+    ble_printf("SPITEST: nop15000=%uus (%u.%02uus/B) plane=%dB %uus (%u.%02uus/B) clk=%uHz\r\n",
+               nop_us, nop_us / 15000, (nop_us % 15000) * 100 / 15000,
+               plane_size(), plane_us, plane_us / plane_size(),
+               (plane_us % plane_size()) * 100 / plane_size(), hz);
+}
+
 /* OTPLUT / OTPLUT:0|1 — full refreshes with the panel's factory OTP waveform
  * (1) or with the working LUT table (0). Takes effect at the next refresh. */
 static void cmd_otplut(char *args)
@@ -1589,6 +1637,9 @@ const struct shell_cmd commands[] = {
     {OP_PROBE,     "PROBE",       cmd_probe,      "Identify panel controller: status/OTP/UID read-back + RAM capacity probe"},
     {OP_RULER,     "RULER",       cmd_ruler,      "Geometry test screen: border, 10px ticks, corner tags, diagonal"},
     {OP_OTPLUT,    "OTPLUT",      cmd_otplut,     "Full-refresh waveform: OTPLUT / OTPLUT:1 (factory OTP) / OTPLUT:0 (working LUT)"},
+    {OP_SCAN,      "SCAN:",       cmd_scan,       "Scan timing (hex): SCAN:dummy,gate e.g. SCAN:35,4 (default) / SCAN:10,2 (faster)"},
+    {OP_SCAN,      "SCAN",        cmd_scan,       "Show scan timing"},
+    {OP_SPITEST,   "SPITEST",     cmd_spitest,    "Time the display bus: NOP burst + one plane load, us/byte"},
     {OP_INVALID, NULL, NULL, NULL}
 };
 

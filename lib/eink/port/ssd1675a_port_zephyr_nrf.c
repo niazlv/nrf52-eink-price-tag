@@ -73,19 +73,27 @@ bool ssd1675a_port_init(void)
     return true;
 }
 
-/* Direct register writes via nrf_gpio HAL, NOT gpio_pin_set(): the Zephyr GPIO
- * API costs ~0.6µs per call through the driver abstraction, which at ~28 calls
- * per byte made a 4736-byte frame take ~85ms (measured via vstream telemetry:
- * disp 205ms = 120ms LUT wave + ~85ms SPI). Raw OUTSET/OUTCLR stores at 64MHz
- * bring it to ~1.5µs/byte — confirmed: disp dropped to wave + ~7ms. NOPs keep
- * each clock half-period ≥60ns; SSD1675A allows up to 20MHz, margin is ample. */
+/* The write path is ~30 pin toggles per byte, so its cost is the cost of one
+ * pin toggle. The Zephyr GPIO API is ~0.6 µs per call (85 ms per 4736-byte
+ * frame). The nrfx HAL (nrf_gpio_pin_set/clear) looked like a direct store but
+ * is not under -Os + LTO: the port-decode switch keeps it out of line, and a
+ * call per toggle measured 18.9 µs per byte — 283 ms for a 400x300 plane,
+ * 91 ms for 128x296 (SPITEST / TELE:vs s=). Raw OUTSET/OUTCLR stores with
+ * compile-time masks are a single instruction each: ~2 µs per byte. NOPs keep
+ * each clock half-period ≥ 60 ns; the controllers allow up to 20 MHz. */
+
+#define PIN_MASK(p) (1UL << (p))
+
+/* nRF52832 has one GPIO port; a board that moves the panel to P1 needs the
+ * port pointer derived from SSD1675A_GPIO_NODE instead. */
+#define SPI_PORT NRF_P0
 
 static inline void clk_pulse(void)
 {
     __NOP(); __NOP();
-    nrf_gpio_pin_set(SSD1675A_PIN_CLK);
+    SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_CLK);
     __NOP(); __NOP(); __NOP();
-    nrf_gpio_pin_clear(SSD1675A_PIN_CLK);
+    SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CLK);
 }
 
 void ssd1675a_port_write9(uint8_t byte, bool is_data)
@@ -94,28 +102,28 @@ void ssd1675a_port_write9(uint8_t byte, bool is_data)
         return;
     }
 
-    nrf_gpio_pin_clear(SSD1675A_PIN_CS);
+    SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CS);
 
     /* 1. Command/data bit (0 = command, 1 = data) */
     if (is_data) {
-        nrf_gpio_pin_set(SSD1675A_PIN_MOSI);
+        SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_MOSI);
     } else {
-        nrf_gpio_pin_clear(SSD1675A_PIN_MOSI);
+        SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_MOSI);
     }
     clk_pulse();
 
     /* 2. Eight data bits, MSB first */
     for (int i = 0; i < 8; i++) {
         if (byte & 0x80) {
-            nrf_gpio_pin_set(SSD1675A_PIN_MOSI);
+            SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_MOSI);
         } else {
-            nrf_gpio_pin_clear(SSD1675A_PIN_MOSI);
+            SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_MOSI);
         }
         byte <<= 1;
         clk_pulse();
     }
 
-    nrf_gpio_pin_set(SSD1675A_PIN_CS);
+    SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_CS);
 }
 
 /* Read path for the probe/identification commands. Deliberately slower than

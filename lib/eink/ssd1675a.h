@@ -86,6 +86,17 @@ int  ssd1675a_width(void);
 int  ssd1675a_height(void);
 int  ssd1675a_ram_bytes(void);
 
+/**
+ * Scan timing, applied at the next init: 0x3A dummy line period (0..127)
+ * and 0x3B gate line width (0..15). Together they set the duration of one
+ * LUT subframe — fewer dummy lines / a narrower gate pulse make every refresh
+ * proportionally shorter, at the cost of weaker per-line drive. Defaults come
+ * from ssd1675a_config.h; see the controller datasheet's frame-rate table.
+ */
+void    ssd1675a_set_scan_timing(uint8_t dummy_line, uint8_t gate_width);
+uint8_t ssd1675a_get_scan_dummy_line(void);
+uint8_t ssd1675a_get_scan_gate_width(void);
+
 /* ── RAM planes ─────────────────────────────────────────────────────────── */
 
 /**

@@ -86,6 +86,8 @@
 #define OP_PROBE     0x72u   /* identify the panel controller (read-backs + RAM probe) */
 #define OP_RULER     0x73u   /* geometry test screen (border, ticks, diagonal) */
 #define OP_OTPLUT    0x74u   /* full refresh waveform: OTP (1) or working table (0) */
+#define OP_SCAN      0x75u   /* scan timing: 0x3A dummy lines, 0x3B gate width */
+#define OP_SPITEST   0x76u   /* display bus timing diagnostic */
 
 /* ── Radio / power (0x80–0x8F) ──────────────────────────────────────────── */
 #define OP_MESHRX    0x80u   /* get/set mesh receive (observer scan) on/off */
