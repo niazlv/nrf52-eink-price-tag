@@ -82,9 +82,11 @@ static uint8_t opc_idx;
 static uint8_t *fb_bw(void)  { return (uint8_t *)graphics_get_buffer(); }
 static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
 /* Bytes in one plane of the canvas the boot-time panel probe laid out
- * (4736 on 128x296, 15000 on 400x300). FB_SIZE above stays the vstream wire
- * size, which is a 128x296-only protocol. */
+ * (4736 on 128x296, 15000 on 400x300). */
 static int plane_size(void)  { return (int)graphics_get_canvas()->buffer_size; }
+/* vstream frame size on the wire: the plane size at VSTREAM:start. FB_SIZE is
+ * only the 128x296 default before the first stream. */
+static uint16_t vs_fb = FB_SIZE;
 
 /* ── Binary vstream (animation streaming over BLE) ──────────────────────────
  *
@@ -298,14 +300,14 @@ static void vs_reset_frame(void) {
 
 static inline void vs_write_byte(uint8_t b) {
     const bool dual = vs_type_is_dual(vs_type);
-    const uint16_t max_dec = dual ? (FB_SIZE * 2) : FB_SIZE;
+    const uint16_t max_dec = dual ? (vs_fb * 2) : vs_fb;
     if (vs_dec >= max_dec) return;
 
     uint8_t *fb;
     uint16_t off = vs_dec;
-    if (dual && off >= FB_SIZE) {
+    if (dual && off >= vs_fb) {
         fb = fb_red();
-        off -= FB_SIZE;
+        off -= vs_fb;
     } else {
         fb = fb_bw();
     }
@@ -345,7 +347,7 @@ static void vs_rle_feed(uint8_t b) {
 
 static void vs_flush_frame(void) {
     const bool dual = vs_type_is_dual(vs_type);
-    const uint16_t max_dec = dual ? (FB_SIZE * 2) : FB_SIZE;
+    const uint16_t max_dec = dual ? (vs_fb * 2) : vs_fb;
 
     /* Flush any trailing run bytes that arrived at end of compressed stream. */
     if (!vs_type_is_raw(vs_type)) {
@@ -358,10 +360,10 @@ static void vs_flush_frame(void) {
     /* XOR checksum of the decoded framebuffer — legacy host integrity field. */
     const uint8_t *fb = fb_bw();
     uint8_t crc = 0;
-    for (int i = 0; i < FB_SIZE; i++) crc ^= fb[i];
+    for (int i = 0; i < vs_fb; i++) crc ^= fb[i];
     if (dual) {
         const uint8_t *fr = fb_red();   /* NULL on a B/W-only panel */
-        for (int i = 0; fr && i < FB_SIZE; i++) crc ^= fr[i];
+        for (int i = 0; fr && i < vs_fb; i++) crc ^= fr[i];
     }
 
     /* Wire-CRC verdict (L0). A frame with no CRC trailer is trusted as before.
@@ -830,6 +832,13 @@ static void fb_write(char *args, uint8_t *buf, int *counter, const char *tag)
         buf[offset + i] = (uint8_t)b;
     }
     *counter += nbytes;
+
+    /* Progress for the host: one line per 2 KB and at the end of the plane,
+     * so a 15000 B transfer over a phone shows movement instead of silence. */
+    int end = offset + nbytes;
+    if ((end / 2048) != (offset / 2048) || end >= plane_size()) {
+        ble_printf("%s:rx %d/%d\r\n", tag, end, plane_size());
+    }
 }
 
 /* FW:offset:HH..  — write BW frame bytes */
@@ -1151,6 +1160,7 @@ static void cmd_vstream(char *args)
 
         display_manager_enable_screensaver(false);
         k_msleep(50);  /* let screensaver thread finish any in-progress update */
+        vs_fb = (uint16_t)plane_size();   /* frames are one plane of the detected panel */
         graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
         display_manager_set_keep_on(true);
         display_manager_set_stream_write_red_plane(false);
