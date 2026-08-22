@@ -22,9 +22,15 @@
 #define MESH_PAYLOAD_MAX (MESH_PDU_MAX - MESH_HDR_MIN - 1 /*opcode*/ - MESH_MAC_LEN)
 
 /* ── Tunables ───────────────────────────────────────────────────────────── */
-/* Air time per (re)broadcast. Must exceed the scan interval below so a 30 ms
- * scan window is guaranteed to overlap the beacon at least once. */
-#define BEACON_MS        300
+/* Observer scan duty. RX is ~6-10 mA on the nRF52832, so window/interval is
+ * the single largest term in the tag's whole power budget: 30/200 (15%) cost
+ * ~1-1.5 mA average, 30/1000 (3%) costs ~0.2-0.3 mA. Keep POWER_MESH_SCAN_UA
+ * in display_manager.c in step with this ratio. */
+#define SCAN_WINDOW_MS   30
+#define SCAN_INTERVAL_MS 1000
+/* Air time per (re)broadcast. Must exceed SCAN_INTERVAL_MS so a full scan
+ * window is guaranteed to land inside the beacon at least once per hop. */
+#define BEACON_MS        1200
 #define DEDUP_SLOTS      16
 #define RXQ_DEPTH        6
 #define TXRING_SLOTS     4
@@ -37,6 +43,8 @@
 static uint8_t  my_id[3];
 static uint16_t my_seq;
 static uint8_t  my_group;           /* persisted "mesh/g" */
+static uint8_t  rx_enabled = 1;     /* persisted "mesh/rx"; scan on/off */
+static bool     scanning;           /* live state of bt_le_scan */
 
 /* ── Dedup cache (src,seq) ring ─────────────────────────────────────────── */
 struct seen_ent { uint8_t src[3]; uint16_t seq; bool used; };
@@ -432,11 +440,48 @@ int mesh_set_group(uint8_t gid)
     return settings_save_one("mesh/g", &gid, 1);
 }
 
+/* Start the observer role. Failure is non-fatal everywhere this is called:
+ * TX/originate still works, the node just won't relay/receive. */
+static void mesh_scan_start(void)
+{
+    if (scanning) {
+        return;
+    }
+    struct bt_le_scan_param sp = {
+        .type     = BT_LE_SCAN_TYPE_PASSIVE,
+        .options  = BT_LE_SCAN_OPT_NONE,
+        .interval = SCAN_INTERVAL_MS * 8 / 5,   /* ms → 0.625 ms units */
+        .window   = SCAN_WINDOW_MS * 8 / 5,
+    };
+    if (bt_le_scan_start(&sp, scan_cb) == 0) {
+        scanning = true;
+    }
+}
+
+bool mesh_get_rx(void) { return rx_enabled != 0; }
+
+int mesh_set_rx(bool enable)
+{
+    rx_enabled = enable ? 1 : 0;
+    if (enable) {
+        mesh_scan_start();
+    } else if (scanning) {
+        (void)bt_le_scan_stop();
+        scanning = false;
+    }
+    return settings_save_one("mesh/rx", &rx_enabled, 1);
+}
+
 static int mesh_settings_set(const char *name, size_t len,
                              settings_read_cb read_cb, void *cb_arg)
 {
     if (settings_name_steq(name, "g", NULL) && len == 1) {
         if (read_cb(cb_arg, &my_group, 1) >= 0) {
+            return 0;
+        }
+    }
+    if (settings_name_steq(name, "rx", NULL) && len == 1) {
+        if (read_cb(cb_arg, &rx_enabled, 1) >= 0) {
             return 0;
         }
     }
@@ -456,17 +501,10 @@ void mesh_init(void)
                                K_PRIO_PREEMPT(7), 0, K_NO_WAIT);
     k_thread_name_set(mesh_tid, "mesh");
 
-    /* Low-duty scan (~15%): 30 ms window every 200 ms. Gentle on the connection
-     * (vstream throughput) and battery; BEACON_MS (300) > the 200 ms interval, so
-     * a window is guaranteed to catch each flooded beacon. */
-    struct bt_le_scan_param sp = {
-        .type     = BT_LE_SCAN_TYPE_PASSIVE,
-        .options  = BT_LE_SCAN_OPT_NONE,
-        .interval = 0x0140,   /* 200 ms */
-        .window   = 0x0030,   /* 30 ms */
-    };
-    int err = bt_le_scan_start(&sp, scan_cb);
-    if (err) {
-        /* Non-fatal: TX/originate still works; this node just won't relay/receive. */
+    /* Observer role is optional (persisted "mesh/rx", default on): a tag that
+     * only ever needs direct NUS control can drop the scan entirely — it is
+     * the dominant idle consumer even at low duty. */
+    if (rx_enabled) {
+        mesh_scan_start();
     }
 }

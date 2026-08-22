@@ -61,4 +61,12 @@ int mesh_originate(enum mesh_dst dst, const uint8_t *dst_val,
 uint8_t mesh_get_group(void);
 int     mesh_set_group(uint8_t gid);
 
+/* Mesh receive (observer scan) on/off (default on). Persisted under "mesh/rx".
+ * The scan is the tag's dominant idle consumer, so a node that is only driven
+ * over a direct NUS connection should turn it off. With RX off the node still
+ * originates broadcasts but neither executes nor relays flooded commands —
+ * turning it back on over the mesh is therefore impossible, only over NUS. */
+bool mesh_get_rx(void);
+int  mesh_set_rx(bool enable);
+
 #endif /* APP_MESH_H */

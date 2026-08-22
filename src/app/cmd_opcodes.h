@@ -84,6 +84,9 @@
 #define OP_VCOM      0x70u   /* VCOM= and DEBUG:VCOM= share this opcode */
 #define OP_DEBUG_LUT 0x71u
 
+/* ── Radio / power (0x80–0x8F) ──────────────────────────────────────────── */
+#define OP_MESHRX    0x80u   /* get/set mesh receive (observer scan) on/off */
+
 /* 0x80–0xFF reserved for mesh-control opcodes (DISCOVER/PRESENCE/ACK, Phase 2). */
 
 #endif /* APP_CMD_OPCODES_H */

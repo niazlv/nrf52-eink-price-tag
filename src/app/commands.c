@@ -1328,6 +1328,26 @@ static void cmd_group(char *args)
     ble_printf("group=%u\r\n", mesh_get_group());
 }
 
+static void cmd_meshrx(char *args)
+{
+    if (args && *args) {
+        bool on;
+        if (strcasecmp(args, "on") == 0 || strcmp(args, "1") == 0) {
+            on = true;
+        } else if (strcasecmp(args, "off") == 0 || strcmp(args, "0") == 0) {
+            on = false;
+        } else {
+            ble_printf("usage: MESHRX / MESHRX ON|OFF\r\n");
+            return;
+        }
+        mesh_set_rx(on);
+    }
+    /* An OFF node no longer hears the mesh, so a flooded MESHRX ON can never
+     * reach it — say so up front instead of letting the fleet discover it. */
+    ble_printf("meshrx=%s%s\r\n", mesh_get_rx() ? "on" : "off",
+               mesh_get_rx() ? "" : " (re-enable over NUS only)");
+}
+
 /* BCAST <all|g<N>|<6hex-id>> <CMD...> — flood a command to the fleet.
  * The trailing CMD is parsed exactly like a typed command, so the same opcode +
  * argument handling is reused (no duplicated command logic). */
@@ -1441,6 +1461,7 @@ const struct shell_cmd commands[] = {
     /* Mesh broadcast */
     {OP_BCAST,     "BCAST",       cmd_bcast,      "Flood a command: BCAST <all|g<N>|<6hex>> <CMD...>"},
     {OP_GROUP,     "GROUP",       cmd_group,      "Mesh group id: GROUP / GROUP <0-255>", CMD_MESH},
+    {OP_MESHRX,    "MESHRX",      cmd_meshrx,     "Mesh receive: MESHRX / MESHRX ON|OFF (OFF saves ~0.2-0.3mA; node stops hearing floods)", CMD_MESH},
     /* Security / identity */
     {OP_AUTH,      "AUTH",        cmd_auth,       "Auth: AUTH (get challenge) / AUTH <resp-hex>", CMD_NOAUTH},
     {OP_SETKEY,    "SETKEY",      cmd_setkey,     "Replace shared key: SETKEY <32 hex> (must be authed)"},
