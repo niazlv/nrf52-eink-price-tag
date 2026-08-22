@@ -48,9 +48,29 @@ except ImportError:
     NP_OK = False
 
 # ── display geometry ──────────────────────────────────────────────────────────
+# Physical (controller RAM) geometry: rows of DISP_W pixels, DISP_H rows. A
+# frame on the wire is one such plane. The firmware (3.4.5+) sizes its decoder
+# from the panel it detected at boot, so the host must encode for that panel:
+# 128x296 for the 2.9" tags, 400x300 for the 4.2" ones. --panel selects it and
+# an .ebf remembers it in its header.
+PANELS = {"128x296": (128, 296), "400x300": (400, 300)}
 DISP_W  = 128
 DISP_H  = 296
 FB_SIZE = DISP_W * DISP_H // 8   # 4736 bytes
+
+def set_panel(w: int, h: int):
+    global DISP_W, DISP_H, FB_SIZE
+    DISP_W, DISP_H, FB_SIZE = w, h, w * h // 8
+
+def set_panel_from_header(w: int, h: int):
+    """An .ebf stores the frame geometry it was encoded for; adopt it. A legacy
+    landscape file (296x128) is the portrait panel seen sideways."""
+    if (w, h) in PANELS.values():
+        set_panel(w, h)
+    elif (h, w) in PANELS.values():
+        set_panel(h, w)
+    else:
+        set_panel(w, h)
 
 # ── protocol ──────────────────────────────────────────────────────────────────
 NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -392,13 +412,14 @@ class EBFReader:
         self.width, self.height = hdr[1], hdr[2]
         self.fps = hdr[3]
         self.n_frames = hdr[4]
+        self.fb = self.width * self.height // 8   # bytes per frame, from the header
 
     def __len__(self):
         return self.n_frames
 
     def __getitem__(self, idx: int) -> bytes:
-        off = EBF_HDR_SIZE + idx * FB_SIZE
-        return bytes(self._mm[off:off + FB_SIZE])
+        off = EBF_HDR_SIZE + idx * self.fb
+        return bytes(self._mm[off:off + self.fb])
 
     def close(self):
         self._mm.close()
@@ -710,7 +731,7 @@ async def run_play(args):
 
     path = Path(args.file)
     enc  = ENC_NAMES.get(args.enc.lower(), VS_DRLE)
-    tw, th = (DISP_H, DISP_W) if args.landscape else (DISP_W, DISP_H)
+    set_panel(*PANELS[args.panel])
 
     rot   = getattr(args, 'rotate', 0)
     scale = getattr(args, 'scale', 'fit')
@@ -720,11 +741,14 @@ async def run_play(args):
     # Determine source fps
     if is_ebf:
         ebf = EBFReader(str(path))
+        set_panel_from_header(ebf.width, ebf.height)   # the file knows its panel
         src_fps   = ebf.fps
         n_frames  = ebf.n_frames
         file_mb   = path.stat().st_size / 1e6
-        print(f"EBF  {n_frames} frames  {src_fps:.2f}fps  {file_mb:.1f}MB")
-    else:
+        print(f"EBF  {n_frames} frames  {ebf.width}×{ebf.height}  {src_fps:.2f}fps  {file_mb:.1f}MB"
+              f"  → panel {DISP_W}x{DISP_H}")
+    tw, th = (DISP_H, DISP_W) if args.landscape else (DISP_W, DISP_H)
+    if not is_ebf:
         if not which_ffmpeg():
             print("ffmpeg not found — install with: brew install ffmpeg")
             sys.exit(1)
@@ -855,6 +879,7 @@ def cmd_convert(args):
 
     path = Path(args.input)
     out  = Path(args.output) if args.output else path.with_suffix('.ebf')
+    set_panel(*PANELS[args.panel])
     tw, th = (DISP_H, DISP_W) if args.landscape else (DISP_W, DISP_H)
 
     rot   = getattr(args, 'rotate', 0)
@@ -960,7 +985,9 @@ def build_parser():
     c = sub.add_parser("convert", help="Convert video → .ebf")
     c.add_argument("input",  help="Input video file")
     c.add_argument("output", nargs="?", help="Output .ebf path (default: same name)")
-    c.add_argument("--landscape",   action="store_true", help="296×128 instead of 128×296")
+    c.add_argument("--panel",       default="128x296", choices=sorted(PANELS),
+                   help="Target panel: 128x296 (2.9\" tags) or 400x300 (4.2\", landscape native)")
+    c.add_argument("--landscape",   action="store_true", help="swap axes (296×128 on the 2.9\")")
     c.add_argument("--rotate",      type=int, default=0, choices=[0, 90, 180, 270],
                    help="Rotate source clockwise before scaling (default: 0)")
     c.add_argument("--auto-rotate", action="store_true",
@@ -986,7 +1013,9 @@ def build_parser():
                     help="Encoding (default: drle)")
     pl.add_argument("--fps",        type=float, default=0,
                     help="Override playback fps (0=use source fps)")
-    pl.add_argument("--landscape",  action="store_true", help="296×128 mode")
+    pl.add_argument("--panel",      default="128x296", choices=sorted(PANELS),
+                    help="Target panel for a video source (an .ebf carries its own)")
+    pl.add_argument("--landscape",  action="store_true", help="swap axes (296×128 on the 2.9\")")
     pl.add_argument("--rotate",     type=int, default=0, choices=[0, 90, 180, 270],
                     help="Rotate source clockwise before scaling (video only, default: 0)")
     pl.add_argument("--auto-rotate", action="store_true",
