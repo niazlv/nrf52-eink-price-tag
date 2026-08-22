@@ -34,6 +34,15 @@ const char *display_manager_panel_name(void);
 /** false on panels driven with a single B/W plane (no red ink available). */
 bool display_manager_panel_has_red(void);
 
+/**
+ * @brief Host-frame red on a single-plane panel: push the red mask the host
+ *        wrote into the (only) frame buffer straight into the controller's
+ *        red RAM and keep the panel awake. The host then writes the B/W frame
+ *        and sends a plain FAPPLY, which refreshes without clearing red RAM.
+ *        No-op on a B/W/R canvas (the red plane is a real buffer there).
+ */
+void display_manager_stage_red_plane(void);
+
 /** Geometry test screen — border, 10-px ticks, corner tags, diagonal — as a
  *  full refresh. Shows clipped edges, wrong orientation or a stretched axis. */
 void display_manager_show_ruler(void);

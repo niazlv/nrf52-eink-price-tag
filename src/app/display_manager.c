@@ -341,6 +341,9 @@ static int maintenance_countdown(int current_count, int interval)
  * and the fallback when the read-back path is dead. */
 static char panel_name[12] = "128x296";
 static bool panel_has_red = true;
+/* A host-written red mask sits in the controller's red RAM, panel kept awake;
+ * the next FAPPLY must refresh without resetting or clearing it. */
+static bool red_staged;
 
 /* Identify the panel controller by RAM capacity (ssd1675a_probe_ram) and size
  * the driver and the canvas for it. A 400x300-class controller (SSD1619A) gets
@@ -388,6 +391,38 @@ static void detect_panel(void)
 const char *display_manager_panel_name(void)
 {
     return panel_name;
+}
+
+void display_manager_stage_red_plane(void)
+{
+    if (!display_ready || panel_has_red) {
+        return;
+    }
+    DISPLAY_LOCK();
+    stop_streaming_if_active();
+    power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
+    ssd1675a_init_partial();            /* wake; hard-resets only if asleep */
+    ssd1675a_load_plane(true, graphics_get_buffer());
+    red_staged = true;                  /* no power-down: RAM must live until FAPPLY */
+    power_estimate_resync_idle();
+    DISPLAY_UNLOCK();
+}
+
+/* FAPPLY after FAPPLY RED: the panel is still awake with the red mask in its
+ * RAM, so skip the hard reset of ssd1675a_init() and load only the B/W plane. */
+static void perform_display_update_keep_red(void)
+{
+    if (!display_ready) return;
+    DISPLAY_LOCK();
+    power_estimate_set_current(POWER_DISPLAY_FULL_UA);
+    ssd1675a_init_partial();
+    ssd1675a_load_plane(false, graphics_get_buffer());
+    run_full_refresh();
+    red_staged = false;
+    power_down_after_idle_update();
+    power_estimate_resync_idle();
+    persist_add_refresh();
+    DISPLAY_UNLOCK();
 }
 
 bool display_manager_panel_has_red(void)
@@ -1078,7 +1113,11 @@ void display_manager_force_update(void) {
          * replay an earlier scene over them. */
         cur_scene = NULL;
         cur_scene_arg = NULL;
-        perform_display_update();
+        if (red_staged) {
+            perform_display_update_keep_red();
+        } else {
+            perform_display_update();
+        }
     }
 }
 

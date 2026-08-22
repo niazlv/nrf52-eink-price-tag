@@ -97,7 +97,24 @@ static const char *power_tag(const display_status_model_t *model)
     return "ON";
 }
 
-static void render_stats(const display_status_model_t *model, int x, int y)
+/* Text at an integer scale. Scale 1 keeps the white-background variant (so
+ * small text stays readable over a busy scene); larger scales draw only the
+ * glyph pixels, which is what the big panel's clean status screen wants. */
+static void draw_text(int x, int y, const char *s, int scale)
+{
+    if (scale <= 1) {
+        graphics_draw_string(x, y, s);
+    } else {
+        graphics_draw_string_scaled(x, y, s, scale);
+    }
+}
+
+static int text_width(const char *s, int scale)
+{
+    return (int)strlen(s) * 6 * scale;
+}
+
+static void render_stats(const display_status_model_t *model, int x, int y, int scale)
 {
     char time_part[20] = {0};
     uint32_t mah = model->energy_mah_x1000 / 1000U;
@@ -112,21 +129,21 @@ static void render_stats(const display_status_model_t *model, int x, int y)
              partial_mode_tag(model),
              model->maintenance_countdown,
              power_tag(model));
-    graphics_draw_string(x, y, stat_str);
+    draw_text(x, y, stat_str, scale);
 
     char mf_s[4]; fmt_u3(mf_s, (unsigned int)mah_frac);
     snprintf(power_str, sizeof(power_str), "mAh:%u.%s I:%d.%dmA",
              (unsigned int)mah, mf_s,
              current_ma_x10 / 10, current_ma_x10 % 10);
-    graphics_draw_string(x, y + 10, power_str);
+    draw_text(x, y + 10 * scale, power_str, scale);
 }
 
-static void render_battery(const display_status_model_t *model, int x, int y)
+static void render_battery(const display_status_model_t *model, int x, int y, int scale)
 {
     char bat_str[16];
     graphics_draw_battery(x, y, model->battery_percent);
     snprintf(bat_str, sizeof(bat_str), "%dmV", model->battery_mv);
-    graphics_draw_string(x, y + 13, bat_str);
+    draw_text(x, y + 13, bat_str, scale);
 }
 
 void display_screens_reset_dynamic(void)
@@ -134,34 +151,87 @@ void display_screens_reset_dynamic(void)
     life_world.initialized = false;
 }
 
+/* Status-screen layout, picked from the canvas size. The 296x128 numbers
+ * reproduce the original fixed layout pixel for pixel; the large branch is
+ * the 400x300 panel. Everything is centred horizontally, so any width works. */
+typedef struct {
+    int time_scale, time_y;
+    int date_scale, date_y;
+    int wday_scale, wday_y;
+    int text_scale;              /* stats + battery text */
+    int margin;
+    bool battery_bottom;         /* bottom-right instead of top-right */
+} status_layout_t;
+
+static status_layout_t status_layout(int h)
+{
+    status_layout_t l;
+    if (h >= 200) {
+        l.time_scale = 9;  l.time_y = 62;
+        l.date_scale = 4;  l.date_y = 150;
+        l.wday_scale = 3;  l.wday_y = 195;
+        l.text_scale = 2;  l.margin = 6;
+        l.battery_bottom = true;
+    } else {
+        l.time_scale = 5;  l.time_y = 30;
+        l.date_scale = 3;  l.date_y = 80;
+        l.wday_scale = 2;  l.wday_y = 110;
+        l.text_scale = 1;  l.margin = 5;
+        l.battery_bottom = false;
+    }
+    return l;
+}
+
 void display_screens_render_status_static(const display_status_model_t *model)
 {
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+    status_layout_t l = status_layout(h);
     char time_str[8];
 
     graphics_clear(GFX_WHITE);
 
-    { char h[3], m[3]; fmt_d2(h, model->time.tm_hour); fmt_d2(m, model->time.tm_min);
-      snprintf(time_str, sizeof(time_str), "%s:%s", h, m); }
-    graphics_draw_string_scaled(70, 30, time_str, 5);
+    { char hh[3], mm[3]; fmt_d2(hh, model->time.tm_hour); fmt_d2(mm, model->time.tm_min);
+      snprintf(time_str, sizeof(time_str), "%s:%s", hh, mm); }
+    graphics_draw_string_scaled((w - text_width(time_str, l.time_scale)) / 2,
+                                l.time_y, time_str, l.time_scale);
 
     { char d[3], mo[3]; fmt_d2(d, model->time.tm_mday); fmt_d2(mo, model->time.tm_mon + 1);
       snprintf(date_str, sizeof(date_str), "%s.%s.%d", d, mo, model->time.tm_year + 1900); }
-    graphics_draw_string_scaled(58, 80, date_str, 3);
+    graphics_draw_string_scaled((w - text_width(date_str, l.date_scale)) / 2,
+                                l.date_y, date_str, l.date_scale);
 
     if (model->time.tm_wday >= 0 && model->time.tm_wday <= 6) {
-        graphics_draw_string_scaled(130, 110, wday_names[model->time.tm_wday], 2);
+        const char *wd = wday_names[model->time.tm_wday];
+        graphics_draw_string_scaled((w - text_width(wd, l.wday_scale)) / 2,
+                                    l.wday_y, wd, l.wday_scale);
     }
 
-    render_battery(model, 260, 5);
-    render_stats(model, 5, 0);
+    if (l.battery_bottom) {
+        /* Bottom-right corner: the reading ("3279mV", 6 glyphs) right-aligned
+         * to the margin, the 23-px icon right-aligned above it. */
+        int right = w - l.margin;
+        int text_w = text_width("0000mV", l.text_scale);
+        int y = h - l.margin - 8 * l.text_scale - 13;
+        char bat_str[16];
+        graphics_draw_battery(right - 23, y, model->battery_percent);
+        snprintf(bat_str, sizeof(bat_str), "%dmV", model->battery_mv);
+        draw_text(right - text_w, y + 13, bat_str, l.text_scale);
+    } else {
+        render_battery(model, w - 36, 5, 1);
+    }
+    render_stats(model, l.margin, l.margin - (l.text_scale == 1 ? 5 : 0), l.text_scale);
 }
 
 void display_screens_render_status_dynamic(const display_status_model_t *model)
 {
     int width = graphics_get_width();
     int height = graphics_get_height();
-    int life_w = width / LIFE_CELL_SIZE;
-    int life_h = height / LIFE_CELL_SIZE;
+    /* The world is sized for 296 px at 8-px cells; on the 400-px panel use
+     * 11-px cells so the same 38x38 world still covers the whole canvas. */
+    int cell = (width > LIFE_MAX_DIM * LIFE_CELL_SIZE) ? 11 : LIFE_CELL_SIZE;
+    int life_w = width / cell;
+    int life_h = height / cell;
     char time_str[16];
 
     if (!life_world.initialized) {
@@ -181,11 +251,7 @@ void display_screens_render_status_dynamic(const display_status_model_t *model)
     for (int y = 0; y < life_h; y++) {
         for (int x = 0; x < life_w; x++) {
             if (life_world.cells[y][x]) {
-                graphics_fill_rect(x * LIFE_CELL_SIZE,
-                                   y * LIFE_CELL_SIZE,
-                                   LIFE_CELL_SIZE - 1,
-                                   LIFE_CELL_SIZE - 1,
-                                   GFX_BLACK);
+                graphics_fill_rect(x * cell, y * cell, cell - 1, cell - 1, GFX_BLACK);
             }
         }
     }
@@ -194,7 +260,8 @@ void display_screens_render_status_dynamic(const display_status_model_t *model)
       fmt_d2(h, model->time.tm_hour); fmt_d2(m, model->time.tm_min); fmt_d2(s, model->time.tm_sec);
       snprintf(time_str, sizeof(time_str), "%s:%s:%s", h, m, s); }
 
-    int scale = (width >= 150) ? 3 : 2;
+    int scale = (width >= 350) ? 5 : (width >= 150) ? 3 : 2;
+    int small = (width >= 350) ? 2 : 1;
     int str_w = 8 * (6 * scale);
     int tx = (width - str_w) / 2;
     int ty = height / 2 - (4 * scale);
@@ -203,17 +270,17 @@ void display_screens_render_status_dynamic(const display_status_model_t *model)
 
     { char d[3], mo[3]; fmt_d2(d, model->time.tm_mday); fmt_d2(mo, model->time.tm_mon + 1);
       snprintf(date_str, sizeof(date_str), "%s.%s.%d", d, mo, model->time.tm_year + 1900); }
-    graphics_draw_string_scaled((width - 10 * 6) / 2, ty + (10 * scale), date_str, 1);
+    graphics_draw_string_scaled((width - 10 * 6 * small) / 2, ty + (10 * scale), date_str, small);
 
     if (model->time.tm_wday >= 0 && model->time.tm_wday <= 6) {
-        graphics_draw_string_scaled((width - 3 * 6) / 2,
-                                    ty + (10 * scale) + 15,
+        graphics_draw_string_scaled((width - 3 * 6 * small) / 2,
+                                    ty + (10 * scale) + 15 * small,
                                     wday_names[model->time.tm_wday],
-                                    1);
+                                    small);
     }
 
-    render_battery(model, width - 40, 5);
-    render_stats(model, 5, 5);
+    render_battery(model, width - 40, 5, 1);
+    render_stats(model, 5, 5, 1);
 }
 
 void display_screens_render_text(const char *text)
@@ -591,30 +658,31 @@ void display_screens_render_low_battery(int battery_mv, int64_t uptime_sec)
 
     format_uptime(uptime_sec, time_part, sizeof(time_part));
 
+    /* The 296x128 layout, scaled up 2x on the big panel. */
+    int s = (h >= 200) ? 2 : 1;
+
     /* White background */
     graphics_clear(GFX_WHITE);
 
     /* Red banner at top */
-    graphics_fill_rect(0, 0, w, 22, GFX_RED);
-    graphics_draw_string_color_bg(w / 2 - 60, 7, "LOW BATTERY",
-                                  GFX_BLACK, GFX_TRANSPARENT);
+    graphics_fill_rect(0, 0, w, 22 * s, GFX_RED);
+    graphics_draw_string_color_scaled(w / 2 - 33 * s, 7 * s, "LOW BATTERY", GFX_BLACK, s);
 
     /* Battery voltage - large */
     { char cv[3]; fmt_d2(cv, (battery_mv % 1000) / 10);
       snprintf(buf, sizeof(buf), "%d.%sV", battery_mv / 1000, cv); }
-    graphics_draw_string_color_scaled(w / 2 - 30, 30, buf, GFX_BLACK, 2);
+    graphics_draw_string_color_scaled(w / 2 - 15 * 2 * s, 30 * s, buf, GFX_BLACK, 2 * s);
 
     /* Info text */
-    graphics_draw_string(10, 55, "Display updates stopped.");
-    graphics_draw_string(10, 67, "BLE active for commands.");
+    draw_text(10 * s, 55 * s, "Display updates stopped.", s);
+    draw_text(10 * s, 67 * s, "BLE active for commands.", s);
 
     snprintf(buf, sizeof(buf), "Uptime: %s", time_part);
-    graphics_draw_string(10, 85, buf);
+    draw_text(10 * s, 85 * s, buf, s);
 
     /* Red warning bar at bottom */
-    graphics_fill_rect(0, h - 14, w, 14, GFX_RED);
-    graphics_draw_string_color_bg(10, h - 12, "Charge or replace battery",
-                                  GFX_BLACK, GFX_TRANSPARENT);
+    graphics_fill_rect(0, h - 14 * s, w, 14 * s, GFX_RED);
+    graphics_draw_string_color_scaled(10 * s, h - 12 * s, "Charge or replace battery", GFX_BLACK, s);
 }
 
 /* ── Farewell / shutdown screen ──────────────────────────────────────────── */
@@ -629,33 +697,36 @@ void display_screens_render_shutdown(int battery_mv, int64_t uptime_sec)
     format_uptime(uptime_sec, time_part, sizeof(time_part));
     get_system_time(&t);
 
+    /* The 296x128 layout, scaled up 2x on the big panel. */
+    int s = (h >= 200) ? 2 : 1;
+
     /* White background */
     graphics_clear(GFX_WHITE);
 
     /* Red border */
-    graphics_fill_rect(0, 0, w, 3, GFX_RED);
-    graphics_fill_rect(0, h - 3, w, 3, GFX_RED);
-    graphics_fill_rect(0, 0, 3, h, GFX_RED);
-    graphics_fill_rect(w - 3, 0, 3, h, GFX_RED);
+    graphics_fill_rect(0, 0, w, 3 * s, GFX_RED);
+    graphics_fill_rect(0, h - 3 * s, w, 3 * s, GFX_RED);
+    graphics_fill_rect(0, 0, 3 * s, h, GFX_RED);
+    graphics_fill_rect(w - 3 * s, 0, 3 * s, h, GFX_RED);
 
     /* SHUTDOWN text in red */
-    graphics_draw_string_color_scaled(w / 2 - 50, 12, "SHUTDOWN", GFX_RED, 2);
+    graphics_draw_string_color_scaled(w / 2 - 48 * s, 12 * s, "SHUTDOWN", GFX_RED, 2 * s);
 
     /* Time of shutdown */
-    { char h[3], m[3], s[3]; fmt_d2(h, t.tm_hour); fmt_d2(m, t.tm_min); fmt_d2(s, t.tm_sec);
-      snprintf(buf, sizeof(buf), "%s:%s:%s", h, m, s); }
-    graphics_draw_string_scaled(w / 2 - 25, 35, buf, 2);
+    { char hh[3], mm[3], ss[3]; fmt_d2(hh, t.tm_hour); fmt_d2(mm, t.tm_min); fmt_d2(ss, t.tm_sec);
+      snprintf(buf, sizeof(buf), "%s:%s:%s", hh, mm, ss); }
+    graphics_draw_string_scaled(w / 2 - 48 * s, 35 * s, buf, 2 * s);
 
     /* Battery */
     snprintf(buf, sizeof(buf), "Battery: %d mV", battery_mv);
-    graphics_draw_string(10, 60, buf);
+    draw_text(10 * s, 60 * s, buf, s);
 
     /* Uptime */
     snprintf(buf, sizeof(buf), "Uptime: %s", time_part);
-    graphics_draw_string(10, 74, buf);
+    draw_text(10 * s, 74 * s, buf, s);
 
     /* Message */
-    graphics_draw_string_color(10, 94, "Deep sleep to protect", GFX_RED);
-    graphics_draw_string_color(10, 106, "battery. Replace/charge", GFX_RED);
-    graphics_draw_string_color(10, 118, "to restart.", GFX_RED);
+    graphics_draw_string_color_scaled(10 * s, 94 * s, "Deep sleep to protect", GFX_RED, s);
+    graphics_draw_string_color_scaled(10 * s, 106 * s, "battery. Replace/charge", GFX_RED, s);
+    graphics_draw_string_color_scaled(10 * s, 118 * s, "to restart.", GFX_RED, s);
 }

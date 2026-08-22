@@ -81,6 +81,10 @@ static uint8_t opc_idx;
 
 static uint8_t *fb_bw(void)  { return (uint8_t *)graphics_get_buffer(); }
 static uint8_t *fb_red(void) { return (uint8_t *)graphics_get_red_buffer(); }
+/* Bytes in one plane of the canvas the boot-time panel probe laid out
+ * (4736 on 128x296, 15000 on 400x300). FB_SIZE above stays the vstream wire
+ * size, which is a 128x296-only protocol. */
+static int plane_size(void)  { return (int)graphics_get_canvas()->buffer_size; }
 
 /* ── Binary vstream (animation streaming over BLE) ──────────────────────────
  *
@@ -786,6 +790,10 @@ static void cmd_l_byte(char *args)
     ble_printf("L[%d]=0x%02X — custom LUT active\r\n", idx, val);
 }
 
+/* Fast connection parameters were requested for a FW:/RW: transfer and must
+ * be released by the FAPPLY that ends it. */
+static bool frame_xfer_fast;
+
 /* Body of FW: and RW: — same wire shape, different target plane. Decodes in
  * place, so a bad nibble part-way leaves the earlier bytes written (the
  * host reconciles via the FAPPLY byte count). `tag` selects the reply prefix. */
@@ -797,10 +805,20 @@ static void fb_write(char *args, uint8_t *buf, int *counter, const char *tag)
     int hexlen = (int)strlen(hex);
     if (hexlen & 1) { ble_printf("%s:err odd len %d\r\n", tag, hexlen); return; }
     int nbytes = hexlen / 2;
-    if (!range_ok(offset, nbytes, FB_SIZE)) {
+    if (!range_ok(offset, nbytes, plane_size())) {
         ble_printf("%s:OOB off=%d n=%d\r\n", tag, offset, nbytes); return;
     }
     if (!buf) { ble_printf("%s:no plane\r\n", tag); return; }
+
+    /* A frame is 100-313 write-without-response packets. On the idle
+     * connection parameters (100-200 ms, latency 4) a macOS/Chrome host
+     * overruns its own queue and silently drops some — and the FAPPLY behind
+     * them. Borrow vstream's fast parameters for the transfer; the closing
+     * FAPPLY gives them back. */
+    if (offset == 0 && !frame_xfer_fast) {
+        frame_xfer_fast = true;
+        ble_service_set_streaming_mode(true);
+    }
 
     for (int i = 0; i < nbytes; i++) {
         int b = hex_byte(hex + i * 2);
@@ -820,17 +838,34 @@ static void cmd_fw(char *args)
     fb_write(args, fb_bw(), &fw_written, "FW");
 }
 
-/* RW:offset:HH..  — write Red frame bytes */
+/* RW:offset:HH..  — write Red frame bytes. A single-plane panel has no red
+ * buffer: the bytes land in the only frame buffer and the host must follow
+ * them with FAPPLY RED (stages them into the controller's red RAM) before it
+ * writes the B/W frame with FW: and applies. */
 static void cmd_rw(char *args)
 {
-    fb_write(args, fb_red(), &rw_written, "RW");
+    fb_write(args, fb_red() ? fb_red() : fb_bw(), &rw_written, "RW");
 }
 
 /* FAPPLY — push FW/RW-written frame buffers to display.
  * Screensaver is disabled first; a short sleep lets its thread finish
- * the current render cycle before we push our frame. */
+ * the current render cycle before we push our frame.
+ * FAPPLY RED / FAPPLY:RED — stage the RW: bytes as the red plane on a
+ * single-plane panel (see cmd_rw); no refresh yet. */
 static void cmd_fapply(char *args)
 {
+    while (args && (*args == ':' || *args == ' ')) {
+        args++;
+    }
+    if (args && strncasecmp(args, "RED", 3) == 0) {
+        display_manager_enable_screensaver(false);
+        k_msleep(150);
+        display_manager_stage_red_plane();
+        int rw = rw_written;
+        rw_written = 0;
+        ble_printf("FAPPLY:red staged rw=%d\r\n", rw);
+        return;
+    }
     display_manager_enable_screensaver(false);
     k_msleep(150);  /* wait for screensaver thread to finish current cycle */
     int bw = fw_written, rw = rw_written;
@@ -840,6 +875,10 @@ static void cmd_fapply(char *args)
     int64_t t0 = k_uptime_get();
     display_manager_force_update();
     int32_t elapsed = (int32_t)(k_uptime_get() - t0);
+    if (frame_xfer_fast) {
+        frame_xfer_fast = false;
+        ble_service_set_streaming_mode(false);
+    }
     if (host_mode) {
         ble_printf("TELE:fapply time=%dms bw=%d rw=%d lut=%s\r\n",
                    (int)elapsed, bw, rw,
@@ -1496,7 +1535,7 @@ const struct shell_cmd commands[] = {
     {OP_UPDATE,    "UPDATE",      cmd_update,     "Full display refresh", CMD_MESH},
     {OP_UPDATE,    "APPLY",       cmd_update,     "Full refresh (host compat alias for UPDATE)", CMD_MESH},
     {OP_FAST,      "FAST",        cmd_fast,       "Fast/partial update", CMD_MESH},
-    {OP_FAPPLY,    "FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display", CMD_MESH},
+    {OP_FAPPLY,    "FAPPLY",      cmd_fapply,     "Push FW/RW frame buffers to display; FAPPLY RED stages RW: bytes as red on a single-plane panel", CMD_MESH},
     {OP_MODE,      "MODE:",       cmd_mode,       "Partial mode: 0=T 1=B 2=S 3=C 4=ToneDark 5=ToneLight 6=ToneBidirFast 7=ToneBidir 8=SoftDark 9=SoftLight", CMD_MESH},
     {OP_PALTEST,   "PALTEST",     cmd_paltest,    "Render B/W/R palette and spatial dither test"},
     {OP_TONETEST,  "TONETEST",    cmd_tonetest,   "Render physical gray accumulation test"},
@@ -1518,7 +1557,7 @@ const struct shell_cmd commands[] = {
     {OP_STAT,      "STAT",        cmd_stat,       "Telemetry snapshot: frame/last/min/max ms"},
     /* Frame buffers */
     {OP_FW,        "FW:",         cmd_fw,         "Write BW frame: FW:offset:HH.."},
-    {OP_RW,        "RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.."},
+    {OP_RW,        "RW:",         cmd_rw,         "Write Red frame: RW:offset:HH.. (single-plane panel: then FAPPLY RED, then FW:)"},
     /* System */
     {OP_REBOOT,    "REBOOT",      cmd_reboot,     "Cold reboot the device", CMD_MESH},
     {OP_SYSINFO,   "SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy", CMD_NOAUTH},
