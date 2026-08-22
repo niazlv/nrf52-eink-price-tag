@@ -3,6 +3,7 @@
 #include "display_screens.h"
 #include "system_time.h"
 #include "persist.h"
+#include "mesh.h"
 #include "ble/ble_service.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/poweroff.h>
@@ -46,8 +47,11 @@ static int screensaver_mode = SCREENSAVER_MODE_STATIC;
  * regulator, LEDs and BLE settings.
  */
 #define POWER_BASE_SLEEP_UA             80
-#define POWER_BLE_ADV_IDLE_UA          120
+#define POWER_BLE_ADV_IDLE_UA           40   /* 2-2.5 s interval */
 #define POWER_BLE_ADV_FAST_UA          900
+/* Mesh observer scan: duty × RX current. Keep in step with SCAN_WINDOW_MS /
+ * SCAN_INTERVAL_MS in mesh.c (30/1000 = 3% of ~8 mA). */
+#define POWER_MESH_SCAN_UA             250
 #define POWER_BLE_CONN_IDLE_UA         900
 #define POWER_BLE_STREAM_UA           4500
 #define POWER_DISPLAY_STANDBY_UA       400
@@ -132,6 +136,10 @@ static int power_estimate_idle_current_ua(void)
 {
     int ua = POWER_BASE_SLEEP_UA;
     bool ble_streaming = ble_service_get_streaming_mode();
+
+    if (mesh_get_rx()) {
+        ua += POWER_MESH_SCAN_UA;
+    }
 
     if (ble_service_is_connected()) {
         ua += ble_streaming ? POWER_BLE_STREAM_UA : POWER_BLE_CONN_IDLE_UA;
@@ -855,9 +863,12 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
         }
 
         if (!screensaver_enabled) {
-            /* Image mode: nothing to update, sleep until explicitly woken.
-             * Time is tracked via k_uptime_get() and needs no periodic wakeup. */
-            k_sem_take(&sem_screensaver_wake, K_FOREVER);
+            /* Image mode: nothing to draw, but the top of this loop is ALSO
+             * the battery-protection and persist cycle — blocking forever here
+             * silently disabled low-battery shutdown for a tag left on a
+             * picture. A finite timeout keeps that cycle alive; with the
+             * screensaver off the iteration touches no display state. */
+            k_sem_take(&sem_screensaver_wake, K_SECONDS(60));
         } else if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC ||
                    screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
             k_sem_take(&sem_screensaver_wake, K_MSEC(10));
