@@ -25,8 +25,12 @@ LOG_MODULE_REGISTER(ble_service, LOG_LEVEL_INF);
 #define DEVICE_NAME_SUFFIX_HEX_LEN 6
 #define ADV_FAST_INT_MIN 160   /* 100 ms */
 #define ADV_FAST_INT_MAX 240   /* 150 ms */
-#define ADV_IDLE_INT_MIN 800   /* 500 ms */
-#define ADV_IDLE_INT_MAX 1280  /* 800 ms */
+/* Idle advertising is a small consumer next to the mesh scan (~20 µA at
+ * 500-800 ms), but 2-2.5 s still halves-again that cost for the price of a
+ * couple of extra seconds of discovery latency on a device that sits idle for
+ * weeks. Streaming/connected paths keep their fast parameters. */
+#define ADV_IDLE_INT_MIN 3200  /* 2.0 s */
+#define ADV_IDLE_INT_MAX 4000  /* 2.5 s */
 #define ADV_BEACON_INT_MIN 48  /* 30 ms — fast so a flooded PDU is caught quickly */
 #define ADV_BEACON_INT_MAX 80  /* 50 ms */
 #define CON_STATUS_LED DK_LED2
