@@ -566,7 +566,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <canvas id="disp-canvas" width="296" height="128" style="width:296px;height:128px"></canvas>
           </div>
           <div class="bezel-label">
-            <span>SSD1675A · 296×128</span>
+            <span id="disp-label">SSD1675A · 296×128</span>
             <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i>&nbsp;BWR</span>
           </div>
         </div>
@@ -1126,6 +1126,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <span id="sys-fw-ver" style="color:var(--yellow);font-family:var(--mono)">—</span>
           <span style="color:var(--fg2)">Сборка:</span>
           <span id="sys-build" style="color:var(--fg);font-family:var(--mono)">—</span>
+          <span style="color:var(--fg2)">Панель:</span>
+          <span id="sys-panel" style="color:var(--fg);font-family:var(--mono)">—</span>
           <span style="color:var(--fg2)">Uptime:</span>
           <span id="sys-uptime" style="color:var(--green);font-family:var(--mono)">—</span>
           <span style="color:var(--fg2)">Батарея:</span>
@@ -1360,9 +1362,45 @@ const NUS_SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
+// VSTREAM wire geometry — the binary video protocol is 128x296-only.
 const DISP_W  = 128;  // physical width
 const DISP_H  = 296;  // physical height
 const FB_SIZE = DISP_W * DISP_H / 8; // 4736
+
+// Panels the firmware can report in SYSINFO panel=WxH (physical = controller
+// RAM geometry; logical = the canvas the UI draws on). 128x296 is driven
+// portrait and shown landscape (rot 1); 400x300 is landscape natively. A
+// single-plane panel has no red buffer in the firmware: red goes first and is
+// staged with FAPPLY RED (see sendBWR).
+const PANELS = {
+  '128x296': { key:'128x296', ctl:'SSD1675A', pw:128, ph:296, lw:296, lh:128, rot:1, redPlane:true  },
+  '400x300': { key:'400x300', ctl:'SSD1619A', pw:400, ph:300, lw:400, lh:300, rot:0, redPlane:false },
+};
+let PANEL = PANELS['128x296'];
+const fbSize = () => PANEL.pw * PANEL.ph / 8;
+
+// Logical canvas pixel → [byte index, bit mask] in one controller plane.
+function physIndex(lx, ly) {
+  const phx = PANEL.rot === 1 ? PANEL.pw - 1 - ly : lx;
+  const phy = PANEL.rot === 1 ? lx : ly;
+  return [phy * (PANEL.pw >> 3) + (phx >> 3), 1 << (7 - (phx & 7))];
+}
+
+function setPanel(key) {
+  const p = PANELS[key] || PANELS['128x296'];
+  const changed = p !== PANEL;
+  PANEL = p;
+  const cv = $('disp-canvas');
+  if (cv && (cv.width !== p.lw || cv.height !== p.lh)) {
+    cv.width = p.lw; cv.height = p.lh;                 // resets the bitmap
+    cv.style.width = '296px';
+    cv.style.height = Math.round(296 * p.lh / p.lw) + 'px';
+    clearCanvas();
+  }
+  const lbl = $('disp-label'); if (lbl) lbl.textContent = `${p.ctl} · ${p.lw}×${p.lh}`;
+  const sp = $('sys-panel');   if (sp)  sp.textContent  = `${p.lw}×${p.lh} (${p.ctl}${p.redPlane ? '' : ', red via FAPPLY RED'})`;
+  if (changed && typeof IE !== 'undefined' && IE.img) { IE.oc = null; renderImg(); }
+}
 
 // Binary VSTREAM stop escapes. The second byte is intentionally different:
 // [CC DD] is video/animation stop, so firmware restores the screensaver.
@@ -2010,8 +2048,9 @@ function tab(name) {
 function clearCanvas() {
   ieClose();
   const ctx = $('disp-canvas').getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, 296, 128);
+  ctx.fillRect(0, 0, PANEL.lw, PANEL.lh);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2152,24 +2191,25 @@ function renderImg() {
   if (!IE.img) return;
   const cv = $('disp-canvas'), ctx = cv.getContext('2d');
   // 1) Compose on offscreen canvas
+  const LW = PANEL.lw, LH = PANEL.lh;
   const oc = IE.oc || (IE.oc = document.createElement('canvas'));
-  oc.width = 296; oc.height = 128;
+  oc.width = LW; oc.height = LH;
   const o = oc.getContext('2d');
   o.fillStyle = $('ie-bg').value;
-  o.fillRect(0, 0, 296, 128);
+  o.fillRect(0, 0, LW, LH);
   o.imageSmoothingEnabled = $('ie-smooth').checked;
   o.imageSmoothingQuality = 'high';
   const iw = IE.img.width, ih = IE.img.height;
   let sx, sy;
   switch ($('ie-mode').value) {
-    case 'fill':    sx = sy = Math.max(296/iw, 128/ih); break;
-    case 'stretch': sx = 296/iw; sy = 128/ih;           break;
-    case 'orig':    sx = sy = 1;                        break;
-    default:        sx = sy = Math.min(296/iw, 128/ih); // fit
+    case 'fill':    sx = sy = Math.max(LW/iw, LH/ih); break;
+    case 'stretch': sx = LW/iw; sy = LH/ih;           break;
+    case 'orig':    sx = sy = 1;                      break;
+    default:        sx = sy = Math.min(LW/iw, LH/ih); // fit
   }
   const z = IE.zoom / 100; sx *= z; sy *= z;
   o.save();
-  o.translate(148 + IE.x, 64 + IE.y);
+  o.translate(LW/2 + IE.x, LH/2 + IE.y);
   o.rotate(IE.rot * Math.PI / 180);
   o.scale(sx * (IE.fh ? -1 : 1), sy * (IE.fv ? -1 : 1));
   o.drawImage(IE.img, -iw/2, -ih/2);
@@ -2177,7 +2217,7 @@ function renderImg() {
   // "Оригинал" — показать без обработки
   if (IE.raw) { ctx.drawImage(oc, 0, 0); return; }
   // 2) Adjust + dither
-  const id = o.getImageData(0, 0, 296, 128);
+  const id = o.getImageData(0, 0, PANEL.lw, PANEL.lh);
   if (currentOutputMode() === 'tone') {
     ieProcessTonePreview(id);
   } else if (currentOutputMode() === 'tone-soft') {
@@ -2189,7 +2229,7 @@ function renderImg() {
 }
 
 function ieProcess(id) {
-  const w = 296, h = 128, d = id.data, n = w * h;
+  const w = PANEL.lw, h = PANEL.lh, d = id.data, n = w * h;
   const bri = +$('ie-bri').value, con = +$('ie-con').value;
   const gam = +$('ie-gam').value / 100;
   const thr = +$('ie-thr').value;
@@ -2246,7 +2286,7 @@ function ieProcess(id) {
 
 function ieProcessTonePreview(id) {
   const d = id.data;
-  const n = 296 * 128;
+  const n = PANEL.lw * PANEL.lh;
   const lut = makeAdjustLut();
   const maxPulse    = parseInt($('tone-pulses')?.value) || 8;
   const lightPasses = parseInt($('tone-light-passes')?.value ?? 0) || 0;
@@ -2300,7 +2340,7 @@ function ieProcessTonePreview(id) {
 
   const toCanvas = (clX, clY) => {
     const r = cv.getBoundingClientRect();
-    return { x: (clX - r.left) * 296 / r.width, y: (clY - r.top) * 128 / r.height };
+    return { x: (clX - r.left) * PANEL.lw / r.width, y: (clY - r.top) * PANEL.lh / r.height };
   };
   const pinchState = () => {
     const [a, b] = [...ptrs.values()];
@@ -2341,13 +2381,13 @@ function ieProcessTonePreview(id) {
         const mid = toCanvas(np.mx, np.my);
         zoomAt(mid.x, mid.y, np.dist / pinch.dist);
       }
-      IE.x += (np.mx - pinch.mx) * 296 / r.width;   // двухпальцевый пан
-      IE.y += (np.my - pinch.my) * 128 / r.height;
+      IE.x += (np.mx - pinch.mx) * PANEL.lw / r.width;   // двухпальцевый пан
+      IE.y += (np.my - pinch.my) * PANEL.lh / r.height;
       pinch = np;
       renderImg();
     } else if (ptrs.size === 1) {
-      IE.x += (e.clientX - prev.x) * 296 / r.width;
-      IE.y += (e.clientY - prev.y) * 128 / r.height;
+      IE.x += (e.clientX - prev.x) * PANEL.lw / r.width;
+      IE.y += (e.clientY - prev.y) * PANEL.lh / r.height;
       renderImg();
     }
   });
@@ -2375,21 +2415,18 @@ function ieProcessTonePreview(id) {
     ob.addEventListener(ev, () => { if (IE.raw) { IE.raw = false; renderImg(); } }));
 })();
 
-// Convert 296×128 logical canvas → physical 128×296 buffers
-// BW: 1-bpp, 0 = чёрный; RED: 1-bpp, 1 = красный (4736 байт каждый)
-// Logical (lx, ly): lx∈[0,296), ly∈[0,128)
-// Physical: phx = 127-ly, phy = lx
+// Convert the logical canvas → the controller's physical planes (see PANELS /
+// physIndex for the mapping). BW: 1-bpp, 0 = чёрный; RED: 1-bpp, 1 = красный.
 function canvasToPhys(ctx) {
-  const id = ctx.getImageData(0, 0, 296, 128);
-  const d  = id.data;
-  const bw  = new Uint8Array(FB_SIZE).fill(0xFF); // all white
-  const red = new Uint8Array(FB_SIZE);            // no red
-  for (let ly=0; ly<DISP_W; ly++) {
-    for (let lx=0; lx<DISP_H; lx++) {
-      const pi  = (ly*296 + lx)*4;
+  const id = ctx.getImageData(0, 0, PANEL.lw, PANEL.lh);
+  const d  = id.data, FB = fbSize();
+  const bw  = new Uint8Array(FB).fill(0xFF); // all white
+  const red = new Uint8Array(FB);            // no red
+  for (let ly=0; ly<PANEL.lh; ly++) {
+    for (let lx=0; lx<PANEL.lw; lx++) {
+      const pi  = (ly*PANEL.lw + lx)*4;
       const r=d[pi], g=d[pi+1], b=d[pi+2];
-      const phx = DISP_W-1-ly, phy = lx;
-      const bi  = phy*16 + (phx>>3), msk = 1 << (7-(phx&7));
+      const [bi, msk] = physIndex(lx, ly);
       if (r > 120 && r-g > 60 && r-b > 60) { red[bi] |= msk; continue; } // красный слой
       if ((r+g+b)/3 < 128) bw[bi] &= ~msk;
     }
@@ -2417,11 +2454,11 @@ function toneSourceImageData() {
   }
 
   if (IE.img && IE.oc) {
-    return { id: IE.oc.getContext('2d').getImageData(0, 0, 296, 128), raw: true };
+    return { id: IE.oc.getContext('2d').getImageData(0, 0, PANEL.lw, PANEL.lh), raw: true };
   }
 
   return {
-    id: $('disp-canvas').getContext('2d').getImageData(0, 0, 296, 128),
+    id: $('disp-canvas').getContext('2d').getImageData(0, 0, PANEL.lw, PANEL.lh),
     raw: false,
   };
 }
@@ -2429,7 +2466,7 @@ function toneSourceImageData() {
 function canvasToToneLevels(maxPulse) {
   const src = toneSourceImageData();
   const d = src.id.data;
-  const levels = new Uint8Array(296 * 128);
+  const levels = new Uint8Array(PANEL.lw * PANEL.lh);
   const lut = src.raw ? makeAdjustLut() : null;
   const inv = src.raw && $('ie-inv').checked;
 
@@ -2475,16 +2512,12 @@ function canvasToToneLevels(maxPulse) {
 }
 
 function toneLevelsToFrame(levels, pass) {
-  const buf = new Uint8Array(FB_SIZE).fill(0xFF);
+  const buf = new Uint8Array(fbSize()).fill(0xFF);
 
-  for (let ly = 0; ly < DISP_W; ly++) {
-    for (let lx = 0; lx < DISP_H; lx++) {
-      if (levels[ly * 296 + lx] <= pass) continue;
-
-      const phx = DISP_W - 1 - ly;
-      const phy = lx;
-      const bi  = phy * 16 + (phx >> 3);
-      const msk = 1 << (7 - (phx & 7));
+  for (let ly = 0; ly < PANEL.lh; ly++) {
+    for (let lx = 0; lx < PANEL.lw; lx++) {
+      if (levels[ly * PANEL.lw + lx] <= pass) continue;
+      const [bi, msk] = physIndex(lx, ly);
       buf[bi] &= ~msk;
     }
   }
@@ -2501,18 +2534,15 @@ function toneLevelsToFrameLight(levels, maxPulse, lightPass) {
   // Порог: осветляем пиксели чья тёмность ≤ lightThreshold.
   // При lightPass=0 — только уровень 0 (белые пиксели), при lightPass=k — всё до k.
   const threshold = lightPass;
-  const buf = new Uint8Array(FB_SIZE).fill(0xFF); // 0xFF = белый
+  const buf = new Uint8Array(fbSize()).fill(0xFF); // 0xFF = белый
 
-  for (let ly = 0; ly < DISP_W; ly++) {
-    for (let lx = 0; lx < DISP_H; lx++) {
-      const level = levels[ly * 296 + lx];
+  for (let ly = 0; ly < PANEL.lh; ly++) {
+    for (let lx = 0; lx < PANEL.lw; lx++) {
+      const level = levels[ly * PANEL.lw + lx];
       // Пиксели ВЫШЕ порога (тёмные) — не осветляем, ставим 0x00 (чёрный в BW RAM)
       // чтобы TONE_LIGHT LUT их не трогал (LUT1 white: no-op для них)
       if (level > threshold) {
-        const phx = DISP_W - 1 - ly;
-        const phy = lx;
-        const bi  = phy * 16 + (phx >> 3);
-        const msk = 1 << (7 - (phx & 7));
+        const [bi, msk] = physIndex(lx, ly);
         buf[bi] &= ~msk; // 0 = чёрный пиксель → TONE_LIGHT оставляет его как есть
       }
       // Пиксели ≤ порога остаются 0xFF (белый) → TONE_LIGHT даёт им VSL импульс → осветление
@@ -2677,7 +2707,7 @@ async function sendCanvasTone() {
 
 function ieProcessToneSoftPreview(id) {
   const d   = id.data;
-  const n   = 296 * 128;
+  const n   = PANEL.lw * PANEL.lh;
   const lut = makeAdjustLut();
   const maxPulse = parseInt($('tone-soft-pulses')?.value) || 16;
   const inv      = $('ie-inv').checked;
@@ -2700,7 +2730,7 @@ function ieProcessToneSoftPreview(id) {
 function canvasToToneSoftLevels(maxPulse) {
   const src = toneSourceImageData();
   const d   = src.id.data;
-  const levels = new Uint8Array(296 * 128);
+  const levels = new Uint8Array(PANEL.lw * PANEL.lh);
   const lut = src.raw ? makeAdjustLut() : null;
   const inv = src.raw && $('ie-inv').checked;
 
@@ -2779,25 +2809,30 @@ async function sendCanvasToneSoft() {
 }
 
 async function sendBWR(bw, red, desc) {
-  logI(`Отправляю ${desc}…`);
+  logI(`Отправляю ${desc} (${PANEL.lw}×${PANEL.lh})…`);
   await sendBytes(new TextEncoder().encode('SS:0\n'));
   await sleep(350);
+  const FB = fbSize();
   const hasRed = red.some(b=>b!==0);
-  let sent=0, total=Math.ceil(FB_SIZE/FW_CHUNK)*(hasRed?2:1);
-  for (let off=0; off<FB_SIZE; off+=FW_CHUNK) {
-    const ch = bw.slice(off, Math.min(off+FW_CHUNK, FB_SIZE));
-    await sendBytes(new TextEncoder().encode(`FW:${off}:${hexOf(ch).toUpperCase()}\n`));
-    sent++; if(sent%20===0) logI(`  BW ${off+ch.length}/${FB_SIZE}B (${Math.round(sent*100/total)}%)`);
-    await sleep(5);
-  }
-  if (hasRed) {
-    for (let off=0; off<FB_SIZE; off+=FW_CHUNK) {
-      const ch = red.slice(off, Math.min(off+FW_CHUNK, FB_SIZE));
-      await sendBytes(new TextEncoder().encode(`RW:${off}:${hexOf(ch).toUpperCase()}\n`));
-      sent++; if(sent%20===0) logI(`  RW ${off+ch.length}/${FB_SIZE}B`);
+  let sent=0, total=Math.ceil(FB/FW_CHUNK)*(hasRed?2:1);
+  const sendPlane = async (buf, tag) => {
+    for (let off=0; off<FB; off+=FW_CHUNK) {
+      const ch = buf.slice(off, Math.min(off+FW_CHUNK, FB));
+      await sendBytes(new TextEncoder().encode(`${tag}:${off}:${hexOf(ch).toUpperCase()}\n`));
+      sent++; if(sent%20===0) logI(`  ${tag} ${off+ch.length}/${FB}B (${Math.round(sent*100/total)}%)`);
       await sleep(5);
     }
+  };
+  // A single-plane panel (400x300) has no red buffer in the firmware: the red
+  // mask goes first, FAPPLY RED stages it into the controller's red RAM, then
+  // the B/W frame follows and plain FAPPLY refreshes with both.
+  if (hasRed && !PANEL.redPlane) {
+    await sendPlane(red, 'RW');
+    await sendBytes(new TextEncoder().encode('FAPPLY RED\n'));
+    await sleep(400);
   }
+  await sendPlane(bw, 'FW');
+  if (hasRed && PANEL.redPlane) await sendPlane(red, 'RW');
   await sendBytes(new TextEncoder().encode('FAPPLY\n'));
   logI(`${desc} отправлено → FAPPLY`);
 }
@@ -2807,10 +2842,16 @@ async function sendBWR(bw, red, desc) {
 // ═══════════════════════════════════════════════════════════════════
 function testPat(n) {
   const c=$('disp-canvas'), ctx=c.getContext('2d');
-  ctx.fillStyle='white'; ctx.fillRect(0,0,296,128);
+  ieClose();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle='white'; ctx.fillRect(0,0,PANEL.lw,PANEL.lh);
+  // The patterns are authored on the 296×128 canvas; stretch them to the panel.
+  ctx.save();
+  ctx.scale(PANEL.lw/296, PANEL.lh/128);
   if(n===1) patBands(ctx);
   else if(n===2) patText(ctx);
   else patGrid(ctx);
+  ctx.restore();
   sendCanvas();
 }
 
@@ -4529,6 +4570,7 @@ const sysState = {
   curUa: 0,
   lastUpdate: null,
   layout: null,     // 1=legacy, 2=v2; null = old fw that doesn't report it
+  panel: '128x296', // SYSINFO panel=WxH (physical); see PANELS
   secOn: false,     // device access gate active
   authed: false,    // this connection authenticated
   wallUnix: null,   // device wall clock (unix sec), из STATS wall=
@@ -4652,6 +4694,11 @@ function parseSysinfo(line) {
   const layoutM = data.match(/layout=(\d+)/);
   const secM = data.match(/\bsec=(\d+)/);
   const authedM = data.match(/authed=(\d+)/);
+  const panelM = data.match(/panel=(\d+)x(\d+)/);
+
+  // Firmware before 3.4.4 does not report the panel: it only ever drove 128x296.
+  sysState.panel = panelM ? `${panelM[1]}x${panelM[2]}` : '128x296';
+  setPanel(sysState.panel);
 
   if (fwM) sysState.fwVersion = fwM[1];
   if (buildM) sysState.buildDate = buildM[1];
