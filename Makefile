@@ -91,9 +91,13 @@ FW_BIN := $(FW_DIR)/$(OTA_BIN_NAME)
 # ----------------------------------------------------------
 # Deploy target (rsync to web server)
 # ----------------------------------------------------------
-DEPLOY_HOST  ?= pwa.price-tag.sorewa.ru
-DEPLOY_PATH  ?= /var/www/pwa.price-tag.sorewa.ru
-DEPLOY_USER  ?= $(USER)
+# The public domain is only a reverse proxy (vitalii's nginx, .60 → .114:7341);
+# rsync must target the LAN box that actually serves the files. --chown keeps
+# the June-era niazl ownership even though we connect as root.
+DEPLOY_HOST  ?= 192.168.99.114
+DEPLOY_PATH  ?= /var/www/lut_tester
+DEPLOY_USER  ?= root
+DEPLOY_CHOWN ?= niazl:niazl
 WEB_DIR      := $(ROOT_DIR)/lut_tester_host/web
 
 # ----------------------------------------------------------
@@ -279,6 +283,7 @@ deploy: build
 	@echo ">>> Deploying to $(DEPLOY_HOST):$(DEPLOY_PATH)…"
 	rsync -avz --delete \
 		--exclude='.DS_Store' \
+		--chown=$(DEPLOY_CHOWN) \
 		"$(WEB_DIR)/" \
 		"$(DEPLOY_USER)@$(DEPLOY_HOST):$(DEPLOY_PATH)/"
-	@echo ">>> Deploy complete: https://$(DEPLOY_HOST)/"
+	@echo ">>> Deploy complete: https://pwa.price-tag.sorewa.ru/"
