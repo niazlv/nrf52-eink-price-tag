@@ -7,6 +7,8 @@
 #include "ble/ble_service.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/poweroff.h>
+#include <string.h>
+#include <stdio.h>
 #include <eink/ssd1675a.h>
 #include <gfx/graphics.h>
 #include <zephyr/logging/log.h>
@@ -117,6 +119,30 @@ K_MUTEX_DEFINE(display_lock);
 #define DISPLAY_UNLOCK() k_mutex_unlock(&display_lock)
 
 static bool should_power_down_after_update(void);
+static void load_frame(void);
+
+/* Full refreshes use the panel's OTP waveform instead of the working table.
+ * On by default for a panel the table was never tuned for (the 400x300). */
+static bool full_refresh_otp;
+
+static void run_full_refresh(void)
+{
+    if (full_refresh_otp) {
+        ssd1675a_update_display_otp();
+    } else {
+        ssd1675a_update_display();
+    }
+}
+
+void display_manager_set_full_refresh_otp(bool enable)
+{
+    full_refresh_otp = enable;
+}
+
+bool display_manager_get_full_refresh_otp(void)
+{
+    return full_refresh_otp;
+}
 
 static void write_partial_stream_buffers(void)
 {
@@ -238,8 +264,8 @@ static void show_final_screen(void)
     stop_streaming_if_active();
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init();
-    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
-    ssd1675a_update_display();
+    load_frame();
+    run_full_refresh();
     persist_add_refresh();
     ssd1675a_sleep();
     ssd1675a_power_off();
@@ -255,6 +281,33 @@ static void power_down_after_idle_update(void)
         ssd1675a_sleep();
         ssd1675a_power_off();
     }
+}
+
+void display_manager_probe_panel(struct panel_probe_report *r)
+{
+    memset(r, 0, sizeof(*r));
+    if (!display_ready) {
+        r->status = 0xFF;
+        r->ram.all_ff = true;
+        return;
+    }
+
+    DISPLAY_LOCK();
+    stop_streaming_if_active();
+    power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
+    ssd1675a_init_partial();            /* wake; hard-resets if asleep */
+
+    r->status = ssd1675a_read_status();
+    ssd1675a_read_register(0x2D, r->otp, sizeof(r->otp));
+    ssd1675a_read_register(0x2E, r->uid, sizeof(r->uid));
+    ssd1675a_probe_ram(240, &r->ram);   /* 12000 B > both planes of a 160x296 chip */
+
+    /* The probe scribbled over RAM: put the current frame back so the next
+     * partial update does not flash garbage. No refresh is triggered. */
+    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+    power_down_after_idle_update();
+    power_estimate_resync_idle();
+    DISPLAY_UNLOCK();
 }
 
 static void force_builtin_partial_mode(int mode, bool *prev_custom, int *prev_mode)
@@ -284,13 +337,128 @@ static int maintenance_countdown(int current_count, int interval)
     return (phase == 0) ? 0 : (interval - phase);
 }
 
+/* What the boot-time probe decided. 128x296 B/W/R is the compile-time default
+ * and the fallback when the read-back path is dead. */
+static char panel_name[12] = "128x296";
+static bool panel_has_red = true;
+
+/* Identify the panel controller by RAM capacity (ssd1675a_probe_ram) and size
+ * the driver and the canvas for it. A 400x300-class controller (SSD1619A) gets
+ * one B/W plane laid out landscape — two 15000 B planes do not fit next to the
+ * BLE stack; anything else, including a dead read-back path, keeps the 128x296
+ * B/W/R default. Runs once before the first frame, so the RAM the probe
+ * scribbles over is never shown. */
+static void detect_panel(void)
+{
+    ssd1675a_ram_probe_t pr;
+
+    DISPLAY_LOCK();
+    ssd1675a_init();                /* power, reset, default registers */
+    ssd1675a_probe_ram(240, &pr);   /* 12000 B: more than both planes of a 160x296 chip */
+
+    bool large = !pr.all_ff && pr.bytes > 0 && pr.match == pr.bytes;
+    if (large && graphics_init_panel(400, 300, false)) {
+        ssd1675a_set_geometry(400, 300);
+        graphics_set_rotation(0);   /* landscape: 400 wide, source axis along the FPC edge */
+        panel_has_red = false;
+        snprintf(panel_name, sizeof(panel_name), "400x300");
+        /* The working table, VSH2 and VCOM were tuned on the 2.9" panel and
+         * give a washed-out red here; the factory waveform set and VCOM in
+         * this panel's OTP are the better starting point. OTPLUT:0 reverts. */
+        full_refresh_otp = true;
+        ssd1675a_set_vcom_from_otp(true);
+    } else {
+        ssd1675a_set_geometry(SSD1675A_WIDTH, SSD1675A_HEIGHT);
+        graphics_init_panel(SSD1675A_WIDTH, SSD1675A_HEIGHT, true);
+        graphics_set_rotation(1);
+        panel_has_red = true;
+        full_refresh_otp = false;
+        ssd1675a_set_vcom_from_otp(false);
+        snprintf(panel_name, sizeof(panel_name), "%dx%d", SSD1675A_WIDTH, SSD1675A_HEIGHT);
+    }
+
+    /* The first real frame re-inits with the chosen geometry; park the panel
+     * the way an idle update would. */
+    ssd1675a_sleep();
+    ssd1675a_power_off();
+    DISPLAY_UNLOCK();
+    LOG_INF("panel %s (probe %d/%d, all_ff=%d)", panel_name, pr.match, pr.bytes, pr.all_ff);
+}
+
+const char *display_manager_panel_name(void)
+{
+    return panel_name;
+}
+
+bool display_manager_panel_has_red(void)
+{
+    return panel_has_red;
+}
+
 void display_manager_init(void) {
     display_ready = ssd1675a_port_init();
     if (!display_ready) {
         LOG_ERR("Display port unavailable");
         return;
     }
+    detect_panel();
     power_estimate_resync_idle();
+}
+
+/* ── Scenes ─────────────────────────────────────────────────────────────
+ * A full refresh renders through render_scene() so the frame can be rebuilt
+ * on demand. On a B/W/R canvas that changes nothing. On a single-plane layout
+ * (the 400x300 panel: no RAM for a second 15000 B plane) load_frame() replays
+ * the scene as a red mask straight into the controller's red RAM and then
+ * re-renders the B/W image — red costs a second render, not a second buffer.
+ * The scene is consumed by the refresh, so a frame that was written by other
+ * means (host FW:/RW: bytes) is never overwritten by a stale replay; it simply
+ * has no red on such a layout. Scenes must be deterministic. */
+typedef void (*scene_fn_t)(void *arg);
+static scene_fn_t cur_scene;
+static void *cur_scene_arg;
+
+static void render_scene(scene_fn_t scene, void *arg)
+{
+    cur_scene = scene;
+    cur_scene_arg = arg;
+    graphics_set_render_mode(GFX_RENDER_NORMAL);
+    scene(arg);
+}
+
+static void load_frame(void)
+{
+    if (panel_has_red || !cur_scene) {
+        ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+    } else {
+        graphics_set_render_mode(GFX_RENDER_RED_MASK);
+        cur_scene(cur_scene_arg);
+        ssd1675a_load_plane(true, graphics_get_buffer());
+        graphics_set_render_mode(GFX_RENDER_NORMAL);
+        cur_scene(cur_scene_arg);
+        ssd1675a_load_plane(false, graphics_get_buffer());
+    }
+    cur_scene = NULL;
+    cur_scene_arg = NULL;
+}
+
+/* The scene thunks: one per screen that goes through a full refresh. */
+static void scene_text(void *arg)          { display_screens_render_text((const char *)arg); }
+static void scene_ruler(void *arg)         { (void)arg; display_screens_render_ruler(panel_name, graphics_get_canvas()->rotation); }
+static void scene_palette(void *arg)       { (void)arg; display_screens_render_palette_test(); }
+static void scene_status_static(void *arg) { display_screens_render_status_static((const display_status_model_t *)arg); }
+static void scene_clear(void *arg)         { graphics_clear((uint8_t)(uintptr_t)arg); }
+
+struct final_scene_args { int mv; int64_t uptime; };
+static void scene_shutdown(void *arg)
+{
+    const struct final_scene_args *a = arg;
+    display_screens_render_shutdown(a->mv, a->uptime);
+}
+static void scene_low_battery(void *arg)
+{
+    const struct final_scene_args *a = arg;
+    display_screens_render_low_battery(a->mv, a->uptime);
 }
 
 static void perform_display_update(void) {
@@ -300,8 +468,8 @@ static void perform_display_update(void) {
 
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init();
-    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
-    ssd1675a_update_display();
+    load_frame();
+    run_full_refresh();
 
     power_down_after_idle_update();
     power_estimate_resync_idle();
@@ -319,7 +487,7 @@ static void perform_display_update_flush_red(void) {
     DISPLAY_LOCK();
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init();
-    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+    load_frame();
     ssd1675a_update_display_flush_red();
     power_down_after_idle_update();
     power_estimate_resync_idle();
@@ -640,7 +808,7 @@ void display_manager_update_status(void) {
         dyn_frame_ctr++;
         send_tele = tele_enabled && (dyn_frame_ctr % 10 == 0);
     } else {
-        display_screens_render_status_static(&model);
+        render_scene(scene_status_static, &model);
         bool full_refresh = (static_saver_frame_count == 0) ||
                             ((static_saver_frame_count % STATIC_SAVER_FULL_INTERVAL) == 0);
         static_saver_frame_count++;
@@ -648,6 +816,11 @@ void display_manager_update_status(void) {
 
         last_dur = (int32_t)(k_uptime_get() - start_render);
     }
+
+    /* `model` dies with this frame: a partial tick leaves the scene unconsumed,
+     * and it must not be replayed later with a dangling argument. */
+    cur_scene = NULL;
+    cur_scene_arg = NULL;
 
     DISPLAY_UNLOCK();
 
@@ -663,7 +836,16 @@ void display_manager_update_status(void) {
 void display_manager_show_text(const char *text) {
     if (!text) return;
     DISPLAY_LOCK();
-    display_screens_render_text(text);
+    render_scene(scene_text, (void *)text);
+    perform_display_update();
+    DISPLAY_UNLOCK();
+}
+
+void display_manager_show_ruler(void)
+{
+    DISPLAY_LOCK();
+    stop_streaming_if_active();
+    render_scene(scene_ruler, NULL);
     perform_display_update();
     DISPLAY_UNLOCK();
 }
@@ -671,7 +853,7 @@ void display_manager_show_text(const char *text) {
 void display_manager_show_palette_test(void) {
     DISPLAY_LOCK();
     stop_streaming_if_active();
-    display_screens_render_palette_test();
+    render_scene(scene_palette, NULL);
     perform_display_update();
     DISPLAY_UNLOCK();
 }
@@ -715,17 +897,18 @@ void display_manager_clean(void) {
     stop_streaming_if_active();
     stream_partial_count = 0;
     for (int i = 0; i < 7; i++) {
-        graphics_clear(GFX_BLACK);
+        render_scene(scene_clear, (void *)(uintptr_t)GFX_BLACK);
         perform_display_update();
-        graphics_clear(GFX_WHITE);
+        render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
         perform_display_update();
-        graphics_clear(GFX_RED);
+        render_scene(scene_clear, (void *)(uintptr_t)GFX_RED);
         perform_display_update();
     }
     // Two red-clearing passes: VSL on red channel actively drives pigment away,
     // eliminating the reddish tint left by the "red fixation" phases in lut_data.
-    graphics_clear(GFX_WHITE);
+    render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
     perform_display_update_flush_red();
+    render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
     perform_display_update_flush_red();
     DISPLAY_UNLOCK();
 }
@@ -738,20 +921,21 @@ void display_manager_deep_clean(int cycles) {
     // Phase 1: white-only pre-soak — repeated VSL application kills VSH1
     // polarization from streaming without re-applying it (no black phase).
     for (int i = 0; i < cycles; i++) {
-        graphics_clear(GFX_WHITE);
+        render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
         perform_display_update();
     }
     // Phase 2: W→R cycles — VSL depolarize, then VSH2 drive red.
     // No black phase here either: black (LUT0 Ph4) re-applies 472f of VSH1,
     // which is exactly what caused the red burn-in.
     for (int i = 0; i < cycles; i++) {
-        graphics_clear(GFX_WHITE);
+        render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
         perform_display_update();
-        graphics_clear(GFX_RED);
+        render_scene(scene_clear, (void *)(uintptr_t)GFX_RED);
         perform_display_update();
     }
-    graphics_clear(GFX_WHITE);
+    render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
     perform_display_update_flush_red();
+    render_scene(scene_clear, (void *)(uintptr_t)GFX_WHITE);
     perform_display_update_flush_red();
     DISPLAY_UNLOCK();
 }
@@ -808,7 +992,8 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
 
             /* Farewell screen: one final full render, then deep sleep */
             LOG_WRN("Battery critical (%d mV) — rendering farewell", mv);
-            display_screens_render_shutdown(mv, (int64_t)persist_uptime_sec());
+            struct final_scene_args fa = { .mv = mv, .uptime = (int64_t)persist_uptime_sec() };
+            render_scene(scene_shutdown, &fa);
             show_final_screen();
 
             /* Notify over BLE if connected, then wait a moment */
@@ -831,7 +1016,8 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
 
                 /* Show low-battery warning screen once (full clean update) */
                 LOG_WRN("Battery low (%d mV) — showing warning, inhibiting display", mv);
-                display_screens_render_low_battery(mv, (int64_t)persist_uptime_sec());
+                struct final_scene_args fa = { .mv = mv, .uptime = (int64_t)persist_uptime_sec() };
+                render_scene(scene_low_battery, &fa);
                 show_final_screen();
                 low_battery_screen_shown = true;
 
@@ -888,6 +1074,10 @@ void display_manager_force_update(void) {
     if (screensaver_enabled) {
         k_sem_give(&sem_screensaver_wake);
     } else {
+        /* The caller (FAPPLY, host-written planes) owns the buffers: never
+         * replay an earlier scene over them. */
+        cur_scene = NULL;
+        cur_scene_arg = NULL;
         perform_display_update();
     }
 }

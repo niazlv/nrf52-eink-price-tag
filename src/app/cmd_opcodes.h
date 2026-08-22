@@ -83,6 +83,9 @@
 /* ── Debug (0x70–0x7F) ──────────────────────────────────────────────────── */
 #define OP_VCOM      0x70u   /* VCOM= and DEBUG:VCOM= share this opcode */
 #define OP_DEBUG_LUT 0x71u
+#define OP_PROBE     0x72u   /* identify the panel controller (read-backs + RAM probe) */
+#define OP_RULER     0x73u   /* geometry test screen (border, ticks, diagonal) */
+#define OP_OTPLUT    0x74u   /* full refresh waveform: OTP (1) or working table (0) */
 
 /* ── Radio / power (0x80–0x8F) ──────────────────────────────────────────── */
 #define OP_MESHRX    0x80u   /* get/set mesh receive (observer scan) on/off */

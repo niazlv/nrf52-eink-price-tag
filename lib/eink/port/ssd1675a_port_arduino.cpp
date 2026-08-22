@@ -130,3 +130,14 @@ extern "C" void ssd1675a_port_delay_ms(uint32_t ms)
 {
     delay(ms);
 }
+
+/* Read-back is only needed by the panel probe. Left as "no read path" (all
+ * 0xFF) in this template; the nRF port shows the bit-banged sequence if you
+ * want it (pinMode(MOSI, INPUT_PULLUP) between the D/C bit and the 8 bits). */
+extern "C" void ssd1675a_port_read(uint8_t cmd, uint8_t *buf, int n)
+{
+    (void)cmd;
+    for (int i = 0; i < n; i++) {
+        buf[i] = 0xFF;
+    }
+}

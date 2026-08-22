@@ -26,6 +26,12 @@ void display_screens_reset_dynamic(void);
 void display_screens_render_status_static(const display_status_model_t *model);
 void display_screens_render_status_dynamic(const display_status_model_t *model);
 void display_screens_render_text(const char *text);
+/**
+ * @brief Geometry check: border, 10-px ticks with labels every 50 px along
+ *        the top and left edges, corner tags, TL→BR diagonal, size + panel
+ *        name in the middle.
+ */
+void display_screens_render_ruler(const char *panel, int rotation);
 void display_screens_render_partial_test(int32_t frame,
                                          int64_t uptime_ms,
                                          int32_t delta_ms,

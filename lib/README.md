@@ -9,7 +9,7 @@ lib/
 ├── eink/                          SSD1675A e-paper controller
 │   ├── ssd1675a.h/.c              driver — no OS, no vendor SDK, no malloc
 │   ├── ssd1675a_config.h          panel geometry + register defaults
-│   ├── ssd1675a_port.h            the six functions a platform must provide
+│   ├── ssd1675a_port.h            the seven functions a platform must provide
 │   ├── eink_lut.h/.c              waveform presets, refresh modes, virtual LUTs
 │   └── port/
 │       ├── ssd1675a_port_zephyr_nrf.c   Zephyr on nRF52 (used by this repo)
@@ -25,7 +25,7 @@ both.
 
 ## Porting the display driver
 
-Copy `lib/eink/` and implement six functions. That is the whole contract
+Copy `lib/eink/` and implement seven functions. That is the whole contract
 (`ssd1675a_port.h`):
 
 ```c
@@ -35,7 +35,12 @@ void ssd1675a_port_reset(bool asserted);                // RST line
 void ssd1675a_port_power(bool on);                      // panel supply (may be empty)
 bool ssd1675a_port_busy(void);                          // BUSY line
 void ssd1675a_port_delay_ms(uint32_t ms);
+void ssd1675a_port_read(uint8_t cmd, uint8_t *buf, int n); // read-back; may stub to 0xFF
 ```
+
+The last one is only used by the panel-identification calls
+(`ssd1675a_probe_ram()` and friends); a port that fills the buffer with 0xFF
+simply reports "no read path".
 
 Start from the closest file in `port/` — the Arduino and STM32 ones are
 complete, commented templates, roughly 60 lines each. Pin numbers live in the

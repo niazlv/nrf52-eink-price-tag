@@ -3,11 +3,45 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <eink/ssd1675a.h>
 
 /**
  * @brief Initialize display manager
  */
 void display_manager_init(void);
+
+/**
+ * @brief What the PROBE command learns about the attached panel controller.
+ */
+struct panel_probe_report {
+    uint8_t status;            /* 0x2F Status Bit Read */
+    uint8_t otp[11];           /* 0x2D: VCOM OTP sel, VCOM, display modes, waveform version */
+    uint8_t uid[10];           /* 0x2E: 10-byte user ID from OTP */
+    ssd1675a_ram_probe_t ram;  /* RAM-capacity probe, 240 rows × 50 B */
+};
+
+/**
+ * @brief Identify the panel controller: register read-backs plus the RAM
+ *        capacity probe. Wakes the panel, scribbles over its RAM, restores the
+ *        current frame and powers down like any other idle update. Blocks for
+ *        ~0.3 s; never call while a stream is running.
+ */
+void display_manager_probe_panel(struct panel_probe_report *r);
+
+/** Panel geometry chosen by the boot-time probe: "400x300" or "128x296". */
+const char *display_manager_panel_name(void);
+
+/** false on panels driven with a single B/W plane (no red ink available). */
+bool display_manager_panel_has_red(void);
+
+/** Geometry test screen — border, 10-px ticks, corner tags, diagonal — as a
+ *  full refresh. Shows clipped edges, wrong orientation or a stretched axis. */
+void display_manager_show_ruler(void);
+
+/** Full refreshes with the panel's OTP waveform (true) or the working LUT
+ *  table (false). Defaults to true on the 400x300 panel, false on 128x296. */
+void display_manager_set_full_refresh_otp(bool enable);
+bool display_manager_get_full_refresh_otp(void);
 
 /**
  * @brief Update the status screen (Time, Date, Battery)

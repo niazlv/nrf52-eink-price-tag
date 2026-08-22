@@ -116,3 +116,15 @@ void ssd1675a_port_delay_ms(uint32_t ms)
 {
     HAL_Delay(ms);
 }
+
+/* Read-back is only needed by the panel probe. A hardware SPI peripheral
+ * cannot turn its MOSI line around mid-frame, so this template reports "no
+ * read path" (all 0xFF); bit-bang it on GPIOs if you need the probe — the
+ * nRF port shows the sequence. */
+void ssd1675a_port_read(uint8_t cmd, uint8_t *buf, int n)
+{
+    (void)cmd;
+    for (int i = 0; i < n; i++) {
+        buf[i] = 0xFF;
+    }
+}

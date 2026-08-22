@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <string.h>
 
 #define GRAPHICS_DEFAULT_WIDTH  128
@@ -11,6 +12,15 @@
 #define DISPLAY_WIDTH  GRAPHICS_DEFAULT_WIDTH
 #define DISPLAY_HEIGHT GRAPHICS_DEFAULT_HEIGHT
 #define BUFFER_SIZE    GRAPHICS_BUFFER_SIZE(DISPLAY_WIDTH, DISPLAY_HEIGHT)
+
+/* The default canvas carves its planes out of one static arena, so a build
+ * that may meet more than one panel sizes the arena once for the largest
+ * (e.g. -DGRAPHICS_ARENA_BYTES=15000 for a 400x300 B/W plane) and picks the
+ * layout at run time with graphics_init_panel(). Default: two planes for the
+ * default panel, i.e. exactly what graphics_init() always used. */
+#ifndef GRAPHICS_ARENA_BYTES
+#define GRAPHICS_ARENA_BYTES (2 * BUFFER_SIZE)
+#endif
 
 // Colors
 #define GFX_BLACK 0
@@ -42,6 +52,13 @@ void graphics_set_canvas(graphics_canvas_t *canvas);
 graphics_canvas_t *graphics_get_canvas(void);
 
 void graphics_init(void);
+/**
+ * Re-lay the default canvas out of the arena for a @p width x @p height
+ * panel, with or without a red plane. Returns false (canvas untouched) when
+ * the planes would not fit GRAPHICS_ARENA_BYTES or width is not a multiple
+ * of 8. Rotation resets to 1 like graphics_init(); set it afterwards.
+ */
+bool graphics_init_panel(int width, int height, bool with_red);
 void graphics_clear(uint8_t color); // 0=Black, 1=White (Standard logic)
 void graphics_draw_pixel(int x, int y, int color);
 void graphics_fill_rect(int x, int y, int width, int height, int color);
@@ -60,6 +77,15 @@ void graphics_draw_battery(int x, int y, int percent);
 const uint8_t* graphics_get_buffer(void);
 const uint8_t* graphics_get_red_buffer(void);
 void graphics_set_rotation(int rotation); // 0, 1, 2, 3 (90 degree steps)
+
+/* Render mode. GFX_RENDER_RED_MASK makes the B/W buffer receive the red mask
+ * instead (bit 1 = red, everything else 0), so a canvas without a red plane
+ * can render a scene twice — once as the red mask, once as B/W — and upload
+ * the planes one after the other. The red plane, if any, is not touched. */
+#define GFX_RENDER_NORMAL   0
+#define GFX_RENDER_RED_MASK 1
+void graphics_set_render_mode(int mode);
+int  graphics_get_render_mode(void);
 int graphics_get_width(void);
 int graphics_get_height(void);
 

@@ -118,6 +118,70 @@ void ssd1675a_port_write9(uint8_t byte, bool is_data)
     nrf_gpio_pin_set(SSD1675A_PIN_CS);
 }
 
+/* Read path for the probe/identification commands. Deliberately slower than
+ * the write path: the controller needs time after each falling edge to drive
+ * the line (tACC), and a one-off 12 KB probe does not care about a few µs per
+ * byte. Roughly 0.5 µs per half-period at 64 MHz. */
+static inline void read_pause(void)
+{
+    for (int i = 0; i < 16; i++) {
+        __NOP();
+    }
+}
+
+void ssd1675a_port_read(uint8_t cmd, uint8_t *buf, int n)
+{
+    if (!configured) {
+        for (int i = 0; i < n; i++) {
+            buf[i] = 0xFF;
+        }
+        return;
+    }
+
+    /* CS stays low for the whole transaction (datasheet fig. 6-4); the write
+     * path's per-frame CS toggling is not what the read procedure shows. */
+    nrf_gpio_pin_clear(SSD1675A_PIN_CS);
+
+    /* Command frame: D/C = 0, then 8 bits, host drives the line. */
+    nrf_gpio_pin_clear(SSD1675A_PIN_MOSI);
+    clk_pulse();
+    for (int i = 0; i < 8; i++) {
+        if (cmd & 0x80) {
+            nrf_gpio_pin_set(SSD1675A_PIN_MOSI);
+        } else {
+            nrf_gpio_pin_clear(SSD1675A_PIN_MOSI);
+        }
+        cmd <<= 1;
+        clk_pulse();
+    }
+
+    for (int b = 0; b < n; b++) {
+        /* D/C = 1 from the host, then hand the line to the controller. The
+         * pull-up makes an undriven line read back as 0xFF, which the driver
+         * treats as "no read path" rather than as data. */
+        nrf_gpio_cfg_output(SSD1675A_PIN_MOSI);
+        nrf_gpio_pin_set(SSD1675A_PIN_MOSI);
+        clk_pulse();
+        nrf_gpio_cfg_input(SSD1675A_PIN_MOSI, NRF_GPIO_PIN_PULLUP);
+
+        /* The controller puts a bit on the line after every falling edge —
+         * the D/C pulse above delivered D7 — so sample, then clock. */
+        uint8_t v = 0;
+        for (int i = 0; i < 8; i++) {
+            read_pause();
+            v = (uint8_t)((v << 1) | (nrf_gpio_pin_read(SSD1675A_PIN_MOSI) ? 1u : 0u));
+            nrf_gpio_pin_set(SSD1675A_PIN_CLK);
+            read_pause();
+            nrf_gpio_pin_clear(SSD1675A_PIN_CLK);
+        }
+        buf[b] = v;
+    }
+
+    nrf_gpio_cfg_output(SSD1675A_PIN_MOSI);
+    nrf_gpio_pin_clear(SSD1675A_PIN_MOSI);
+    nrf_gpio_pin_set(SSD1675A_PIN_CS);
+}
+
 void ssd1675a_port_reset(bool asserted)
 {
     if (!configured) {

@@ -7,6 +7,7 @@
 #include <eink/ssd1675a.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 static char date_str[40];
 static char stat_str[48];
@@ -245,6 +246,65 @@ void display_screens_render_text(const char *text)
             text++;
         }
     }
+}
+
+void display_screens_render_ruler(const char *panel, int rotation)
+{
+    int w = graphics_get_width();
+    int h = graphics_get_height();
+    char buf[32];
+
+    graphics_clear(GFX_WHITE);
+    /* Two borders: the outer one sits on the very edge pixels, so a panel
+     * that does not drive its first/last line shows a single frame only. */
+    graphics_draw_rect(0, 0, w, h, GFX_BLACK);
+    graphics_draw_rect(3, 3, w - 6, h - 6, GFX_BLACK);
+
+    for (int x = 10; x < w; x += 10) {
+        int len = (x % 50 == 0) ? 14 : 7;
+        graphics_fill_rect(x, 0, 1, len, GFX_BLACK);
+        if (x % 50 == 0) {
+            snprintf(buf, sizeof(buf), "%d", x);
+            graphics_draw_string_color_bg(x + 2, 15, buf, GFX_BLACK, GFX_TRANSPARENT);
+        }
+    }
+    for (int y = 10; y < h; y += 10) {
+        int len = (y % 50 == 0) ? 14 : 7;
+        graphics_fill_rect(0, y, len, 1, GFX_BLACK);
+        if (y % 50 == 0) {
+            snprintf(buf, sizeof(buf), "%d", y);
+            graphics_draw_string_color_bg(16, y + 2, buf, GFX_BLACK, GFX_TRANSPARENT);
+        }
+    }
+
+    /* Diagonal: straight only when both axes are driven 1:1. */
+    for (int x = 0; x < w; x++) {
+        int y = (int)((int64_t)x * (h - 1) / (w > 1 ? w - 1 : 1));
+        graphics_draw_pixel(x, y, GFX_BLACK);
+    }
+
+    graphics_draw_string_color_bg(w - 18, 6, "TR", GFX_BLACK, GFX_TRANSPARENT);
+    graphics_draw_string_color_bg(6, h - 14, "BL", GFX_BLACK, GFX_TRANSPARENT);
+    graphics_draw_string_color_bg(w - 18, h - 14, "BR", GFX_BLACK, GFX_TRANSPARENT);
+
+    /* Red channel check: a red frame just inside the black ones, a solid red
+     * block and a dithered pink one under the caption. */
+    graphics_draw_rect(6, 6, w - 12, h - 12, GFX_RED);
+
+    int scale = (w >= 300) ? 3 : 2;
+    snprintf(buf, sizeof(buf), "%dx%d rot%d", w, h, rotation);
+    int tw = (int)strlen(buf) * 6 * scale;
+    graphics_draw_string_color_scaled((w - tw) / 2, h / 2 - 8 * scale, buf, GFX_BLACK, scale);
+
+    snprintf(buf, sizeof(buf), "panel %s", panel ? panel : "?");
+    tw = (int)strlen(buf) * 6;
+    graphics_draw_string_color_bg((w - tw) / 2, h / 2 + 4, buf, GFX_RED, GFX_TRANSPARENT);
+
+    int bw_ = 60, bh = 18;
+    graphics_fill_rect(w / 2 - bw_ - 4, h / 2 + 16, bw_, bh, GFX_RED);
+    graphics_fill_rect(w / 2 + 4, h / 2 + 16, bw_, bh, GFX_PINK);
+    graphics_draw_string_color_bg(w / 2 - bw_ - 4, h / 2 + 16 + bh + 2, "RED", GFX_BLACK, GFX_TRANSPARENT);
+    graphics_draw_string_color_bg(w / 2 + 4, h / 2 + 16 + bh + 2, "PINK", GFX_BLACK, GFX_TRANSPARENT);
 }
 
 static void draw_palette_row(const char *label, int y, int color,

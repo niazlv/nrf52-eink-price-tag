@@ -5,8 +5,9 @@
  * Platform contract for the SSD1675A driver.
  *
  * ssd1675a.c is plain C99 with no OS or vendor dependency. Everything that
- * touches hardware goes through the six functions below; porting the driver to
- * a new platform means implementing exactly these and nothing else.
+ * touches hardware goes through the seven functions below; porting the driver
+ * to a new platform means implementing exactly these and nothing else (the
+ * read-back one may be a stub — see its comment).
  *
  * Reference implementations live in port/:
  *   ssd1675a_port_zephyr_nrf.c  — Zephyr on nRF52 (used by this repo)
@@ -67,6 +68,21 @@ bool ssd1675a_port_busy(void);
 
 /** Block for at least @p ms milliseconds. */
 void ssd1675a_port_delay_ms(uint32_t ms);
+
+/**
+ * Read-back path, used only by the identification/probe calls in ssd1675a.h.
+ *
+ * Issue @p cmd and clock @p n parameter bytes back into @p buf. On 3-wire SPI
+ * that is: CS low, the 9-bit command frame, then for every byte a D/C=1 bit
+ * driven by the host followed by 8 bits driven by the controller (it shifts
+ * each one out on the falling clock edge), CS high at the end. The data line
+ * is turned around in between, so the host pin must be able to go
+ * high-impedance while the controller drives it.
+ *
+ * Optional: a port that cannot read may fill @p buf with 0xFF. The probe then
+ * reports "no read path" instead of a wrong identification.
+ */
+void ssd1675a_port_read(uint8_t cmd, uint8_t *buf, int n);
 
 #ifdef __cplusplus
 }

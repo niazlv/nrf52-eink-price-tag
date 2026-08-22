@@ -48,3 +48,8 @@ target_sources(app PRIVATE
 )
 
 zephyr_include_directories(src lib)
+
+# Frame-buffer arena, sized for the largest panel this image can drive: a
+# 400x300 B/W plane is 15000 B; the 128x296 B/W/R default uses 9472 B of it.
+# display_manager picks the layout at boot from the panel probe.
+target_compile_definitions(app PRIVATE GRAPHICS_ARENA_BYTES=15000)

@@ -1,9 +1,19 @@
 #include "graphics.h"
 
-static uint8_t default_frame_buffer[BUFFER_SIZE];
-static uint8_t default_frame_buffer_red[BUFFER_SIZE];
+static uint8_t frame_arena[GRAPHICS_ARENA_BYTES];
 static graphics_canvas_t default_canvas;
 static graphics_canvas_t *active_canvas = &default_canvas;
+static int render_mode = GFX_RENDER_NORMAL;
+
+void graphics_set_render_mode(int mode)
+{
+    render_mode = (mode == GFX_RENDER_RED_MASK) ? GFX_RENDER_RED_MASK : GFX_RENDER_NORMAL;
+}
+
+int graphics_get_render_mode(void)
+{
+    return render_mode;
+}
 
 static int canvas_logical_width(const graphics_canvas_t *canvas)
 {
@@ -221,24 +231,45 @@ static const uint8_t font_cyr[] = {
     0x4E, 0x51, 0x51, 0x51, 0x7F  // я
 };
 
-void graphics_init(void) {
-    graphics_canvas_init(&default_canvas,
-                         GRAPHICS_DEFAULT_WIDTH,
-                         GRAPHICS_DEFAULT_HEIGHT,
-                         default_frame_buffer,
-                         default_frame_buffer_red,
-                         BUFFER_SIZE);
+bool graphics_init_panel(int width, int height, bool with_red)
+{
+    if (width < 8 || height < 1 || (width % 8) != 0) {
+        return false;
+    }
+    size_t plane = (size_t)GRAPHICS_BUFFER_SIZE(width, height);
+    size_t need = with_red ? 2 * plane : plane;
+    if (need > sizeof(frame_arena)) {
+        return false;
+    }
+
+    uint8_t *bw = frame_arena;
+    uint8_t *red = with_red ? frame_arena + plane : NULL;
+    graphics_canvas_init(&default_canvas, width, height, bw, red, plane);
     active_canvas = &default_canvas;
 
     // Default to White (0xFF) in BW buffer
-    memset(active_canvas->bw_buffer, 0xFF, active_canvas->buffer_size);
+    memset(bw, 0xFF, plane);
     // Default to No Red (0x00 or 0xFF depending on logic) in Red Buffer.
     // Assuming 0x00 = Transparent/No Red (User feedback: 0x00 covered nothing)
-    memset(active_canvas->red_buffer, 0x00, active_canvas->buffer_size);
+    if (red) {
+        memset(red, 0x00, plane);
+    }
+    return true;
+}
+
+void graphics_init(void) {
+    graphics_init_panel(GRAPHICS_DEFAULT_WIDTH, GRAPHICS_DEFAULT_HEIGHT, true);
 }
 
 void graphics_clear(uint8_t color) {
     if (!active_canvas || !active_canvas->bw_buffer) {
+        return;
+    }
+
+    if (render_mode == GFX_RENDER_RED_MASK) {
+        /* The B/W buffer is the red mask: only a red fill sets bits. */
+        memset(active_canvas->bw_buffer, (color == GFX_RED) ? 0xFF : 0x00,
+               active_canvas->buffer_size);
         return;
     }
 
@@ -327,6 +358,16 @@ void graphics_draw_pixel(int x, int y, int color) {
         return;
     }
     int bit = 7 - (tx % 8);
+
+    if (render_mode == GFX_RENDER_RED_MASK) {
+        // The BW buffer stands in for the red plane: 1 = Red, 0 = not red.
+        if (color == GFX_RED) {
+            active_canvas->bw_buffer[idx] |= (1 << bit);
+        } else if (color == GFX_BLACK || color == GFX_WHITE) {
+            active_canvas->bw_buffer[idx] &= ~(1 << bit);
+        }
+        return;
+    }
 
     // BW plane: 1 = White, 0 = Black. Red plane: 1 = Red, 0 = Transparent;
     // red pixels keep the BW plane white underneath.

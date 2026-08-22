@@ -32,8 +32,39 @@ static uint8_t lut_data[EINK_LUT_SIZE];
 static bool lut_seeded;
 
 static uint8_t vcom_register_value = SSD1675A_VCOM_DEFAULT;
+static bool vcom_from_otp;          /* skip the 0x2C write, keep the factory VCOM */
 static bool controller_sleeping = true;
 static bool port_ready;
+
+/* Runtime geometry. The compile-time values are only the default; an
+ * application that identifies the panel at boot (ssd1675a_probe_ram)
+ * overrides them before the first init. */
+static int panel_width  = SSD1675A_WIDTH;
+static int panel_height = SSD1675A_HEIGHT;
+
+void ssd1675a_set_geometry(int width, int height)
+{
+    if (width < 8 || (width % 8) != 0 || width > 512 || height < 1 || height > 512) {
+        return;
+    }
+    panel_width = width;
+    panel_height = height;
+}
+
+int ssd1675a_width(void)
+{
+    return panel_width;
+}
+
+int ssd1675a_height(void)
+{
+    return panel_height;
+}
+
+int ssd1675a_ram_bytes(void)
+{
+    return (panel_width / 8) * panel_height;
+}
 
 void ssd1675a_lut_init(void)
 {
@@ -106,9 +137,9 @@ static void upload_lut(const uint8_t *lut)
     }
 }
 
-void ssd1675a_wait_busy(void)
+static void wait_busy_for(int timeout_ms)
 {
-    int remaining = SSD1675A_BUSY_TIMEOUT_MS;
+    int remaining = timeout_ms;
 
     if (!bus_ready()) {
         return;
@@ -117,6 +148,11 @@ void ssd1675a_wait_busy(void)
         ssd1675a_port_delay_ms(SSD1675A_BUSY_POLL_MS);
         remaining -= SSD1675A_BUSY_POLL_MS;
     }
+}
+
+void ssd1675a_wait_busy(void)
+{
+    wait_busy_for(SSD1675A_BUSY_TIMEOUT_MS);
 }
 
 static void set_ram_pointer(int x, int y)
@@ -136,9 +172,12 @@ static void configure_registers(void)
     send_cmd(0x7E); // Set digital block control
     send_data(SSD1675A_DIGITAL_BLOCK);
 
+    const int x_end = (panel_width / 8) - 1;   /* last RAM X address, in bytes */
+    const int y_end = panel_height - 1;        /* last gate line */
+
     send_cmd(0x01); // Driver output: (gate lines - 1), then scan direction flags
-    send_data(SSD1675A_RAM_Y_END & 0xFF);
-    send_data((SSD1675A_RAM_Y_END >> 8) & 0xFF);
+    send_data(y_end & 0xFF);
+    send_data((y_end >> 8) & 0xFF);
     send_data(0x00);
 
     send_cmd(0x3A); // Dummy line period, part of panel scan timing
@@ -155,21 +194,24 @@ static void configure_registers(void)
 
     send_cmd(0x44); // RAM X range, in bytes
     send_data(0x00);
-    send_data(SSD1675A_RAM_X_END);
+    send_data(x_end);
 
     send_cmd(0x45); // RAM Y range, in gate lines
     send_data(0x00);
     send_data(0x00);
-    send_data(SSD1675A_RAM_Y_END & 0xFF);
-    send_data((SSD1675A_RAM_Y_END >> 8) & 0xFF);
+    send_data(y_end & 0xFF);
+    send_data((y_end >> 8) & 0xFF);
 
     send_cmd(0x04); // Source driving voltage settings
     send_data(SSD1675A_SOURCE_VSH1);
     send_data(SSD1675A_SOURCE_VSH2);
     send_data(SSD1675A_SOURCE_VSL);
 
-    send_cmd(0x2C); // VCOM voltage, affects contrast and ghosting
-    send_data(vcom_register_value);
+    if (!vcom_from_otp) {
+        send_cmd(0x2C); // VCOM voltage, affects contrast and ghosting
+        send_data(vcom_register_value);
+    }
+    /* else: the SW reset loaded the factory VCOM from OTP — leave it. */
 
 #if SSD1675A_USE_CUSTOM_LUT
     upload_lut(lut_data); // Waveform table for pixel transitions
@@ -233,6 +275,12 @@ bool ssd1675a_init_partial(void)
 void ssd1675a_set_vcom_register(uint8_t val)
 {
     vcom_register_value = val;
+    vcom_from_otp = false;
+}
+
+void ssd1675a_set_vcom_from_otp(bool enable)
+{
+    vcom_from_otp = enable;
 }
 
 void ssd1675a_power_on(void)
@@ -269,6 +317,35 @@ void ssd1675a_update_display(void)
     send_data(0xC7); // Enable CLK+analog → display mode 1 → disable analog+CLK
     send_cmd(0x20);
     ssd1675a_wait_busy();
+}
+
+void ssd1675a_update_display_otp(void)
+{
+    if (!bus_ready()) {
+        return;
+    }
+    /* The factory waveform set lives in OTP per temperature range, so the
+     * controller must read its own sensor first (POR selects an external I2C
+     * sensor these modules do not have). 0xB1: enable clock, read temperature,
+     * load the matching waveform set — LUT, gate/source voltages, frame timing
+     * — then disable clock. The sets were tuned by the panel maker, which is
+     * what makes them worth trying on a panel the working table was not. */
+    send_cmd(0x18); // Temperature sensor: internal
+    send_data(0x80);
+    send_cmd(0x22);
+    send_data(0xB1);
+    send_cmd(0x20);
+    ssd1675a_wait_busy();
+
+    /* Display with whatever is in the LUT register now — the OTP set. A
+     * factory B/W/R waveform can run well past the 8 s working-table budget,
+     * and returning early would let the caller cut power mid-refresh. */
+    send_cmd(0x22);
+    send_data(0xC7);
+    send_cmd(0x20);
+    wait_busy_for(30000);
+    /* Voltage/timing registers now hold the OTP values; the next init's
+     * configure_registers() puts ours back for the partial modes. */
 }
 
 void ssd1675a_trigger_update_nowait(void)
@@ -378,9 +455,11 @@ void ssd1675a_update_display_flush_red(void)
 /* A NULL buffer writes zeros — the caller's way of clearing a plane. */
 static void write_plane(uint8_t ram_cmd, const uint8_t *buffer)
 {
+    const int n = ssd1675a_ram_bytes();
+
     set_ram_pointer(0, 0);
     send_cmd(ram_cmd);
-    for (int i = 0; i < SSD1675A_RAM_BYTES; i++) {
+    for (int i = 0; i < n; i++) {
         send_data(buffer ? buffer[i] : 0x00);
     }
 }
@@ -422,4 +501,117 @@ void ssd1675a_clear_red_ram(void)
         return;
     }
     write_plane(0x26, NULL);
+}
+
+void ssd1675a_load_plane(bool red, const uint8_t *buffer)
+{
+    if (!bus_ready()) {
+        return;
+    }
+    write_plane(red ? 0x26 : 0x24, buffer);
+}
+
+/* ── Identification / probing ───────────────────────────────────────────── */
+
+uint8_t ssd1675a_read_status(void)
+{
+    uint8_t v = 0xFF;
+    if (!bus_ready()) {
+        return v;
+    }
+    ssd1675a_port_read(0x2F, &v, 1);
+    return v;
+}
+
+void ssd1675a_read_register(uint8_t cmd, uint8_t *buf, int n)
+{
+    if (!bus_ready()) {
+        memset(buf, 0xFF, (size_t)n);
+        return;
+    }
+    ssd1675a_port_read(cmd, buf, n);
+}
+
+/* 16-bit Galois LFSR, one byte per eight steps: the byte sequence repeats
+ * only every 65535 bytes, so an address wrap of a few KB cannot line the
+ * pattern up with itself and fake a match. */
+static uint8_t probe_next_byte(uint16_t *state)
+{
+    uint8_t out = 0;
+    for (int i = 0; i < 8; i++) {
+        unsigned lsb = *state & 1u;
+        *state >>= 1;
+        if (lsb) {
+            *state ^= 0xB400u;
+        }
+        out = (uint8_t)((out << 1) | lsb);
+    }
+    return out;
+}
+
+void ssd1675a_probe_ram(int rows, ssd1675a_ram_probe_t *out)
+{
+    enum { COLS = 50, SEED = 0xACE1 }; /* 50 bytes = 400 px, the widest row in the family */
+    uint8_t row[COLS + 1];             /* +1: the first byte of a RAM read is a dummy */
+
+    memset(out, 0, sizeof(*out));
+    out->first_mismatch = -1;
+    if (!bus_ready()) {
+        out->all_ff = true;
+        return;
+    }
+    if (rows < 1) {
+        rows = 1;
+    }
+    if (rows > 300) {
+        rows = 300;
+    }
+    out->bytes = rows * COLS;
+
+    /* One window for both passes, X++ then Y++: whatever RAM the controller
+     * really has is traversed in the same order when writing and reading. */
+    send_cmd(0x11);
+    send_data(0x03);
+    send_cmd(0x44);
+    send_data(0x00);
+    send_data(COLS - 1);
+    send_cmd(0x45);
+    send_data(0x00);
+    send_data(0x00);
+    send_data((rows - 1) & 0xFF);
+    send_data(((rows - 1) >> 8) & 0xFF);
+
+    uint16_t lfsr = SEED;
+    set_ram_pointer(0, 0);
+    send_cmd(0x24);
+    for (int i = 0; i < out->bytes; i++) {
+        send_data(probe_next_byte(&lfsr));
+    }
+
+    /* Read back row by row with an explicit pointer each time, so the result
+     * does not depend on whether reads auto-advance the address counter. */
+    send_cmd(0x41); /* Read RAM option: the BW plane */
+    send_data(0x00);
+    lfsr = SEED;
+    bool all_ff = true;
+    for (int r = 0; r < rows; r++) {
+        set_ram_pointer(0, r);
+        ssd1675a_port_read(0x27, row, COLS + 1);
+        for (int c = 0; c < COLS; c++) {
+            uint8_t expect = probe_next_byte(&lfsr);
+            uint8_t got = row[c + 1];
+            if (got != 0xFF) {
+                all_ff = false;
+            }
+            if (got == expect) {
+                out->match++;
+            } else if (out->first_mismatch < 0) {
+                out->first_mismatch = r * COLS + c;
+            }
+        }
+    }
+    out->all_ff = all_ff;
+
+    /* Put the driver's own window, timing and waveform back. */
+    configure_registers();
 }

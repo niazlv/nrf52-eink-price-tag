@@ -306,7 +306,9 @@ static inline void vs_write_byte(uint8_t b) {
         fb = fb_bw();
     }
 
-    fb[off] = vs_type_is_delta(vs_type) ? (fb[off] ^ b) : b;
+    if (fb) {   /* a B/W-only panel has no red plane: swallow that half */
+        fb[off] = vs_type_is_delta(vs_type) ? (fb[off] ^ b) : b;
+    }
     vs_dec++;
 }
 
@@ -354,8 +356,8 @@ static void vs_flush_frame(void) {
     uint8_t crc = 0;
     for (int i = 0; i < FB_SIZE; i++) crc ^= fb[i];
     if (dual) {
-        const uint8_t *fr = fb_red();
-        for (int i = 0; i < FB_SIZE; i++) crc ^= fr[i];
+        const uint8_t *fr = fb_red();   /* NULL on a B/W-only panel */
+        for (int i = 0; fr && i < FB_SIZE; i++) crc ^= fr[i];
     }
 
     /* Wire-CRC verdict (L0). A frame with no CRC trailer is trusted as before.
@@ -1150,6 +1152,69 @@ static void cmd_reboot(char *args)
     sys_reboot(SYS_REBOOT_COLD);
 }
 
+/* PROBE — identify the attached panel controller without knowing it up front.
+ * Read-backs (status, OTP display option, user ID) plus a RAM-capacity probe:
+ * 12000 B written through a 400-px-wide window. A 400x300-class controller
+ * (SSD1619A, 15000 B/plane) returns every byte; a 160x296 one (SSD1675A/B,
+ * 11840 B in both planes together) must lose some, whatever its address
+ * wrapping does. Chip ID is 01 on both, hence the probe. */
+static void probe_hex_line(const char *key, const uint8_t *buf, int n)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    char hex[2 * 16 + 1];
+    int len = 0;
+    for (int i = 0; i < n && i < 16; i++) {
+        hex[len++] = digits[buf[i] >> 4];
+        hex[len++] = digits[buf[i] & 0x0F];
+    }
+    hex[len] = '\0';
+    ble_printf("PROBE:%s=%s\r\n", key, hex);
+}
+
+static void cmd_probe(char *args)
+{
+    (void)args;
+    struct panel_probe_report r;
+    display_manager_probe_panel(&r);
+
+    const char *cls;
+    if (r.ram.all_ff) {
+        cls = "noread";                 /* data line never turned around */
+    } else if (r.ram.match == r.ram.bytes) {
+        cls = "400x300";                /* SSD1619A class */
+    } else {
+        cls = "160x296";                /* SSD1675 class */
+    }
+    ble_printf("PROBE:status=%02X chipid=%u busy=%u\r\n",
+               r.status, r.status & 3u, (r.status >> 2) & 1u);
+    probe_hex_line("otp", r.otp, sizeof(r.otp));
+    probe_hex_line("uid", r.uid, sizeof(r.uid));
+    ble_printf("PROBE:ram bytes=%d match=%d first_mismatch=%d\r\n",
+               r.ram.bytes, r.ram.match, r.ram.first_mismatch);
+    ble_printf("PROBE:class=%s panel=%s\r\n", cls, display_manager_panel_name());
+}
+
+/* RULER — geometry test screen for a freshly identified panel: border,
+ * 10-px ticks, corner tags, diagonal, size in the middle. Full refresh. */
+static void cmd_ruler(char *args)
+{
+    (void)args;
+    display_manager_enable_screensaver(false);
+    display_manager_show_ruler();
+    ble_printf("RULER %dx%d panel=%s\r\n", graphics_get_width(), graphics_get_height(),
+               display_manager_panel_name());
+}
+
+/* OTPLUT / OTPLUT:0|1 — full refreshes with the panel's factory OTP waveform
+ * (1) or with the working LUT table (0). Takes effect at the next refresh. */
+static void cmd_otplut(char *args)
+{
+    if (args && *args) {
+        display_manager_set_full_refresh_otp(atoi(args) != 0);
+    }
+    ble_printf("OTPLUT=%d\r\n", display_manager_get_full_refresh_otp() ? 1 : 0);
+}
+
 /* SYSINFO — detailed system information for the host app (DFU page, etc.)
  * Reports: firmware version, build date, uptime, battery, energy consumed,
  * estimated current, MCUboot image version (from VERSION file). */
@@ -1184,9 +1249,10 @@ static void cmd_sysinfo(char *args)
                persist_boot_count(), persist_fw_update_count(),
                persist_refreshes_total(), persist_refreshes_since_fw());
     /* Identity + security on the same logical line (host buffers until '\n'). */
-    ble_printf(" layout=%d serial=%s sec=%d authed=%d\r\n",
+    ble_printf(" layout=%d serial=%s sec=%d authed=%d panel=%s\r\n",
                APP_LAYOUT_ID, factory_serial(),
-               secauth_enforced() ? 1 : 0, secauth_is_authed() ? 1 : 0);
+               secauth_enforced() ? 1 : 0, secauth_is_authed() ? 1 : 0,
+               display_manager_panel_name());
 }
 
 /* STATS — read persisted statistics (live RAM copy + flash record), for manual
@@ -1471,6 +1537,9 @@ const struct shell_cmd commands[] = {
     {OP_VCOM,      "VCOM=",       cmd_vcom,       "Set VCOM: VCOM=HH"},
     {OP_VCOM,      "DEBUG:VCOM=", cmd_debug_vcom, "Set VCOM (legacy)"},
     {OP_DEBUG_LUT, "DEBUG:LUT=",  cmd_debug_lut,  "Set LUT byte: DEBUG:LUT=idx:HH"},
+    {OP_PROBE,     "PROBE",       cmd_probe,      "Identify panel controller: status/OTP/UID read-back + RAM capacity probe"},
+    {OP_RULER,     "RULER",       cmd_ruler,      "Geometry test screen: border, 10px ticks, corner tags, diagonal"},
+    {OP_OTPLUT,    "OTPLUT",      cmd_otplut,     "Full-refresh waveform: OTPLUT / OTPLUT:1 (factory OTP) / OTPLUT:0 (working LUT)"},
     {OP_INVALID, NULL, NULL, NULL}
 };
 
