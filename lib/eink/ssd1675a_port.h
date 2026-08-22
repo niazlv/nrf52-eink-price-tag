@@ -10,7 +10,6 @@
  *
  * Reference implementations live in port/:
  *   ssd1675a_port_zephyr_nrf.c  — Zephyr on nRF52 (used by this repo)
- *   ssd1675a_port_arduino.cpp   — Arduino core (AVR / ESP32 / RP2040 / …)
  *   ssd1675a_port_stm32_hal.c   — STM32Cube HAL
  *
  * Wiring is a port concern: pin numbers, whether the panel supply is switched

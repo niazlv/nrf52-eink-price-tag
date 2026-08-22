@@ -47,7 +47,4 @@ void commands_process(const void *data, uint16_t len);
  */
 void commands_on_disconnect(void);
 
-/** @brief Run the test loop directly (blocking). */
-void cmd_test(char *args);
-
 #endif // APP_COMMANDS_H

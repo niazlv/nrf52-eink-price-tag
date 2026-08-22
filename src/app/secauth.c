@@ -119,8 +119,14 @@ bool secauth_verify(const char *resp_hex)
 		return false;
 	}
 
-	authed = (memcmp(resp, expected, SEC_KEY_LEN) == 0);
-	return authed;
+	/* A failed attempt does not revoke an already-authenticated session — the
+	 * no-nonce path above leaves it alone too, and a typo'd second AUTH is no
+	 * reason to drop a peer that already proved knowledge of the key. */
+	if (memcmp(resp, expected, SEC_KEY_LEN) != 0) {
+		return false;
+	}
+	authed = true;
+	return true;
 }
 
 int secauth_set_key(const char *key_hex)

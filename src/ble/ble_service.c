@@ -317,8 +317,9 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 #endif
 };
 
-// Auth callbacks omitted for brevity/simplicity unless needed, code had them before.
-// I'll re-add them to be safe if `CONFIG_BT_NUS_SECURITY_ENABLED` is on.
+/* Pairing callbacks — only built when the NUS characteristics are gated behind
+ * link-layer security (see Kconfig: off by default, the app-level challenge in
+ * secauth.c is the access gate instead). */
 #if defined(CONFIG_BT_NUS_SECURITY_ENABLED)
 static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey) {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -484,6 +485,12 @@ void ble_printf(const char *fmt, ...) {
     va_start(args, fmt);
     int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    /* vsnprintf returns the length it WOULD have written; clamp to what
+     * actually fits so a >127-char line does not send past buf (OOB read /
+     * stack-content leak to the peer). */
+    if (len >= (int)sizeof(buf)) {
+        len = sizeof(buf) - 1;
+    }
     if (len > 0) {
         ble_service_send(buf, len);
         LOG_INF("%s", buf); // Also log to RTT/UART

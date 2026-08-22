@@ -18,6 +18,10 @@
 #define GFX_RED   2
 #define GFX_GRAY  3 // Simulated (Checkerboard Black/White)
 #define GFX_PINK  4 // Simulated (Checkerboard Red/White)
+// Text background only: leave the pixels behind the glyph untouched, so text
+// can be drawn over an already-filled area (a coloured banner, a dithered
+// swatch). Not a drawable colour — graphics_draw_pixel ignores it.
+#define GFX_TRANSPARENT (-1)
 
 typedef struct {
     int width;
@@ -45,6 +49,11 @@ void graphics_draw_rect(int x, int y, int width, int height, int color);
 void graphics_draw_char(int x, int y, uint16_t c);
 void graphics_draw_string(int x, int y, const char *str);
 void graphics_draw_string_color(int x, int y, const char *str, int color);
+// As graphics_draw_string_color(), but with an explicit background: pass
+// GFX_TRANSPARENT to keep what is already on the canvas behind the glyphs.
+// The other variants paint a white background, which turns white-on-black text
+// into a solid white block.
+void graphics_draw_string_color_bg(int x, int y, const char *str, int color, int bg);
 void graphics_draw_string_scaled(int x, int y, const char *str, int scale);
 void graphics_draw_string_color_scaled(int x, int y, const char *str, int color, int scale);
 void graphics_draw_battery(int x, int y, int percent);

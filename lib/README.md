@@ -13,7 +13,6 @@ lib/
 │   ├── eink_lut.h/.c              waveform presets, refresh modes, virtual LUTs
 │   └── port/
 │       ├── ssd1675a_port_zephyr_nrf.c   Zephyr on nRF52 (used by this repo)
-│       ├── ssd1675a_port_arduino.cpp    Arduino core template
 │       └── ssd1675a_port_stm32_hal.c    STM32Cube HAL template
 └── gfx/                           1-bpp drawing on top of any framebuffer
     ├── graphics.h/.c              canvas, rotation, shapes, text, battery icon

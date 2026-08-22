@@ -284,26 +284,27 @@ void graphics_draw_pixel(int x, int y, int color) {
         return;
     }
 
-    int w = active_canvas->width;
-    int h = active_canvas->height;
-    int tx, ty;
-
     if (x < 0 || x >= canvas_logical_width(active_canvas) ||
         y < 0 || y >= canvas_logical_height(active_canvas)) {
         return;
     }
 
-    // Transform Coordinates based on Rotation
+    // GRAY/PINK are simulated: a checkerboard of real inks on logical coords.
+    if (color == GFX_GRAY) {
+        color = ((x + y) % 2 == 0) ? GFX_BLACK : GFX_WHITE;
+    } else if (color == GFX_PINK) {
+        color = ((x + y) % 2 == 0) ? GFX_RED : GFX_WHITE;
+    }
+
+    int w = active_canvas->width;
+    int h = active_canvas->height;
+    int tx, ty;
+
+    // Logical -> physical, in 90-degree steps
     switch (active_canvas->rotation) {
         case 1: // 90 deg
-            tx = w - 1 - y; // New X comes from Y
-            ty = x;         // New Y comes from X
-            // Boundary checks on original (rotated) inputs?
-            // Input X is logical. Input Y is logical.
-            // If Rotation is 90, Logical Width = 296, Logical Height = 128.
-            // Caller thinks they are drawing to WxH.
-            // But we must check against Logical Bounds if we want safety.
-            // Physical Bounds check happens after transform? No, mapping can go OOB.
+            tx = w - 1 - y;
+            ty = x;
             break;
         case 2: // 180 deg
             tx = w - 1 - x;
@@ -318,59 +319,29 @@ void graphics_draw_pixel(int x, int y, int color) {
             ty = y;
             break;
     }
-    
-    // Physical Boundary Check (128x296)
-    if (tx < 0 || tx >= active_canvas->width || ty < 0 || ty >= active_canvas->height) return;
 
-    int idx = ty * (active_canvas->width / 8) + (tx / 8);
+    if (tx < 0 || tx >= w || ty < 0 || ty >= h) return;
+
+    int idx = ty * (w / 8) + (tx / 8);
     if (idx < 0 || (size_t)idx >= active_canvas->buffer_size) {
         return;
     }
     int bit = 7 - (tx % 8);
-    
-    // BW Buffer Logic: 1=White, 0=Black.
-    // Red Buffer Logic: 1=Red, 0=Transparent. (Assumption based on User's 0x00 fix)
-    
-    if (color == GFX_BLACK) { 
-        active_canvas->bw_buffer[idx] &= ~(1 << bit);    // BW: 0 (Black)
-        if (active_canvas->red_buffer) {
-            active_canvas->red_buffer[idx] &= ~(1 << bit); // Red: 0 (Transparent)
-        }
-    } else if (color == GFX_WHITE) {
-        active_canvas->bw_buffer[idx] |= (1 << bit);     // BW: 1 (White)
-        if (active_canvas->red_buffer) {
-            active_canvas->red_buffer[idx] &= ~(1 << bit); // Red: 0 (Transparent)
-        }
-    } else if (color == GFX_RED) {
-        active_canvas->bw_buffer[idx] |= (1 << bit);     // BW: 1 (White)
-        if (active_canvas->red_buffer) {
-            active_canvas->red_buffer[idx] |= (1 << bit);  // Red: 1 (Red)
-        }
-    } else if (color == GFX_GRAY) {
-        // Checkerboard: (x+y)%2 == 0 -> Black, else White
-        if ((x + y) % 2 == 0) {
-            active_canvas->bw_buffer[idx] &= ~(1 << bit);    // Black
-            if (active_canvas->red_buffer) {
-                active_canvas->red_buffer[idx] &= ~(1 << bit); // Transp
-            }
+
+    // BW plane: 1 = White, 0 = Black. Red plane: 1 = Red, 0 = Transparent;
+    // red pixels keep the BW plane white underneath.
+    if (color == GFX_BLACK) {
+        active_canvas->bw_buffer[idx] &= ~(1 << bit);
+    } else if (color == GFX_WHITE || color == GFX_RED) {
+        active_canvas->bw_buffer[idx] |= (1 << bit);
+    } else {
+        return; // unknown color: leave the planes untouched
+    }
+    if (active_canvas->red_buffer) {
+        if (color == GFX_RED) {
+            active_canvas->red_buffer[idx] |= (1 << bit);
         } else {
-            active_canvas->bw_buffer[idx] |= (1 << bit);     // White
-            if (active_canvas->red_buffer) {
-                active_canvas->red_buffer[idx] &= ~(1 << bit); // Transp
-            }
-        }
-    } else if (color == GFX_PINK) {
-        // Checkerboard: (x+y)%2 == 0 -> Red, else White
-        if ((x + y) % 2 == 0) {
-            active_canvas->bw_buffer[idx] |= (1 << bit);     // White
-            if (active_canvas->red_buffer) {
-                active_canvas->red_buffer[idx] |= (1 << bit);  // Red
-            }
-        } else {
-            active_canvas->bw_buffer[idx] |= (1 << bit);     // White
-            if (active_canvas->red_buffer) {
-                active_canvas->red_buffer[idx] &= ~(1 << bit); // Transp
-            }
+            active_canvas->red_buffer[idx] &= ~(1 << bit);
         }
     }
 }
@@ -400,91 +371,92 @@ void graphics_draw_rect(int x, int y, int width, int height, int color)
     }
 }
 
-void graphics_draw_char_color(int x, int y, uint16_t c, int color) {
-    const uint8_t *glyph = font5x7; // Default ASCII
-    int index = 0;
-
+/* Resolve a code point to its 5 columns of glyph data. ASCII 32..126 and
+ * Cyrillic U+0410..U+044F are covered; anything else renders as '?'. */
+static const uint8_t *glyph_for(uint16_t c) {
     if (c >= 32 && c <= 126) {
-        index = (c - 32) * 5;
-    } else if (c >= 0x0410 && c <= 0x044F) { // Basic Cyrillic
-        index = (c - 0x0410) * 5;
-        if ((size_t)index < sizeof(font_cyr)) {
-             glyph = font_cyr;
-        } else {
-             c = '?'; index = ('?'-32)*5;
-        }
-    } else {
-        c = '?'; index = ('?'-32)*5;
+        return &font5x7[(c - 32) * 5];
     }
+    if (c >= 0x0410 && c <= 0x044F) {
+        /* The range maps 1:1 onto font_cyr today, but the check keeps a
+         * shortened table from reading past the array instead of silently
+         * rendering garbage. */
+        size_t index = (size_t)(c - 0x0410) * 5;
+        if (index + 5 <= sizeof(font_cyr)) {
+            return &font_cyr[index];
+        }
+    }
+    return &font5x7[('?' - 32) * 5];
+}
+
+/* Decode the next UTF-8 code point and advance *str past it. Handles ASCII
+ * and 2-byte sequences (enough for Cyrillic); a malformed lead byte falls
+ * through as a raw byte and renders as '?'. */
+static uint16_t utf8_next(const char **str) {
+    uint16_t c = (uint8_t)**str;
+    (*str)++;
+    if ((c & 0xE0) == 0xC0) {
+        uint8_t c2 = (uint8_t)**str;
+        if ((c2 & 0xC0) == 0x80) {
+            c = ((c & 0x1F) << 6) | (c2 & 0x3F);
+            (*str)++;
+        }
+    }
+    return c;
+}
+
+/* Set bit -> foreground colour; clear bit -> bg, or nothing at all when bg is
+ * GFX_TRANSPARENT (5x7 cell). */
+static void graphics_draw_char_bg(int x, int y, uint16_t c, int color, int bg) {
+    const uint8_t *glyph = glyph_for(c);
 
     for (int col = 0; col < 5; col++) {
-        uint8_t line = glyph[index + col];
+        uint8_t line = glyph[col];
         for (int row = 0; row < 7; row++) {
-            // If pixel key is set, draw in 'color', else 'WHITE' (background) or 'TRANSPARENT'? 
-            // Existing logic was BLACK FG, WHITE BG.
-            // Let's assume transparent BG for flexible text, or WHITE BG?
-            // Existing: (line & (1 << row)) ? GFX_BLACK : GFX_WHITE
-            // New: If bit set -> color. If bit clear -> GFX_WHITE (keep existing BG behavior)
-            graphics_draw_pixel(x + col, y + row, (line & (1 << row)) ? color : GFX_WHITE);
+            if (line & (1 << row)) {
+                graphics_draw_pixel(x + col, y + row, color);
+            } else if (bg != GFX_TRANSPARENT) {
+                graphics_draw_pixel(x + col, y + row, bg);
+            }
         }
     }
 }
 
 void graphics_draw_char(int x, int y, uint16_t c) {
-    graphics_draw_char_color(x, y, c, GFX_BLACK);
+    graphics_draw_char_bg(x, y, c, GFX_BLACK, GFX_WHITE);
+}
+
+void graphics_draw_string_color_bg(int x, int y, const char *str, int color, int bg) {
+    while (*str) {
+        graphics_draw_char_bg(x, y, utf8_next(&str), color, bg);
+        x += 6;
+
+        if (x > graphics_get_width() - 6) { x = 0; y += 8; }
+        if (y > graphics_get_height() - 8) break;
+    }
 }
 
 void graphics_draw_string_color(int x, int y, const char *str, int color) {
-    while (*str) {
-        uint16_t c = (uint8_t)*str;
-        
-        if (c >= 0xC0) {
-            if ((c & 0xE0) == 0xC0) { 
-                uint8_t c2 = (uint8_t)*(str + 1);
-                if ((c2 & 0xC0) == 0x80) {
-                    c = ((c & 0x1F) << 6) | (c2 & 0x3F);
-                    str++;
-                }
-            }
-        }
-        
-        graphics_draw_char_color(x, y, c, color);
-        x += 6; 
-        str++;
-        
-        int max_x = graphics_get_width();
-        int max_y = graphics_get_height();
-        
-        if (x > max_x - 6) { x = 0; y += 8; }
-        if (y > max_y - 8) break;
-    }
+    graphics_draw_string_color_bg(x, y, str, color, GFX_WHITE);
 }
 
 void graphics_draw_string(int x, int y, const char *str) {
     graphics_draw_string_color(x, y, str, GFX_BLACK);
 }
 
-// Helper for Scaled Char
-void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale, int color) {
-    const uint8_t *glyph = font5x7;
-    int index = 0;
-
-    if (c >= 32 && c <= 126) index = (c - 32) * 5;
-    else if (c >= 0x0410 && c <= 0x044F) {
-        index = (c - 0x0410) * 5;
-        if ((size_t)index < sizeof(font_cyr)) glyph = font_cyr;
-        else { c = '?'; index = ('?'-32)*5; }
-    } else { c = '?'; index = ('?'-32)*5; }
+/* Scaled variant: transparent background (only set bits are drawn). */
+static void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale, int color) {
+    const uint8_t *glyph = glyph_for(c);
 
     for (int col = 0; col < 5; col++) {
-        uint8_t line = glyph[index + col];
+        uint8_t line = glyph[col];
         for (int row = 0; row < 7; row++) {
-            if (line & (1 << row)) {
-                // Draw a block of scale*scale pixels
-                for (int sx=0; sx<scale; sx++) {
-                    for (int sy=0; sy<scale; sy++) {
-                        graphics_draw_pixel(x + col*scale + sx, y + row*scale + sy, color);
-                    }
+            if (!(line & (1 << row))) {
+                continue;
+            }
+            for (int sx = 0; sx < scale; sx++) {
+                for (int sy = 0; sy < scale; sy++) {
+                    graphics_draw_pixel(x + col*scale + sx, y + row*scale + sy, color);
                 }
             }
         }
@@ -493,20 +465,8 @@ void graphics_draw_char_scaled(int x, int y, uint16_t c, int scale, int color) {
 
 void graphics_draw_string_color_scaled(int x, int y, const char *str, int color, int scale) {
     while (*str) {
-        uint16_t c = (uint8_t)*str;
-        if (c >= 0xC0) {
-            if ((c & 0xE0) == 0xC0) { 
-                uint8_t c2 = (uint8_t)*(str + 1);
-                if ((c2 & 0xC0) == 0x80) {
-                    c = ((c & 0x1F) << 6) | (c2 & 0x3F);
-                    str++;
-                }
-            }
-        }
-        
-        graphics_draw_char_scaled(x, y, c, scale, color);
-        x += (6 * scale); 
-        str++;
+        graphics_draw_char_scaled(x, y, utf8_next(&str), scale, color);
+        x += 6 * scale;
     }
 }
 

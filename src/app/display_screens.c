@@ -280,7 +280,8 @@ void display_screens_render_palette_test(void)
 
     graphics_clear(GFX_WHITE);
     graphics_fill_rect(0, 0, w, 10, GFX_BLACK);
-    graphics_draw_string_color(2, 1, "PALETTE TEST  B/W/R + DITHER", GFX_WHITE);
+    graphics_draw_string_color_bg(2, 1, "PALETTE TEST  B/W/R + DITHER",
+                                  GFX_WHITE, GFX_TRANSPARENT);
 
     draw_palette_row("GRAY", y, GFX_BLACK, levels, sw_x, sw_w, sw_h, gap);
     y += 23;
@@ -401,7 +402,7 @@ void display_screens_render_animation_frame(int x, int y, int size, int frame,
     graphics_fill_rect(0, 0, w, 10, GFX_BLACK);
     snprintf(buf, sizeof(buf), "ANIM #%d  %dms  mn=%d mx=%d",
              frame, (int)delta_ms, (int)min_ms, (int)max_ms);
-    graphics_draw_string_color(2, 1, buf, GFX_WHITE);
+    graphics_draw_string_color_bg(2, 1, buf, GFX_WHITE, GFX_TRANSPARENT);
 
     /* Bouncing square */
     graphics_fill_rect(x, y, size, size, GFX_BLACK);
@@ -454,7 +455,7 @@ void display_screens_render_lut_test(int32_t frame, int32_t delta_ms,
     /* ── Title bar ───────────────────────────────────────────────────── */
     graphics_fill_rect(0, Y_TITLE, w, 10, GFX_BLACK);
     snprintf(buf, sizeof(buf), "GHOST TEST  #%d  %dms", (int)frame, (int)delta_ms);
-    graphics_draw_string_color(2, Y_TITLE + 1, buf, GFX_WHITE);
+    graphics_draw_string_color_bg(2, Y_TITLE + 1, buf, GFX_WHITE, GFX_TRANSPARENT);
 
     /* ── Timing row ──────────────────────────────────────────────────── */
     graphics_fill_rect(0, Y_TIMING, w, 10, GFX_WHITE);
@@ -483,7 +484,7 @@ void display_screens_render_lut_test(int32_t frame, int32_t delta_ms,
     /* ── Track 1: white ball on black ────────────────────────────────── */
     graphics_fill_rect(0, Y_T1, w, TRACK_H, GFX_BLACK);
     graphics_fill_rect(0, Y_T1 + TRACK_H / 2, w, 1, GFX_WHITE);
-    graphics_draw_string_color(2, Y_T1 + 1, "W", GFX_WHITE);
+    graphics_draw_string_color_bg(2, Y_T1 + 1, "W", GFX_WHITE, GFX_TRANSPARENT);
     if (bw > 0) {
         graphics_fill_rect(bx0, Y_T1 + BALL_MARGIN,
                            bw,  TRACK_H - BALL_MARGIN * 2, GFX_WHITE);
@@ -535,7 +536,8 @@ void display_screens_render_low_battery(int battery_mv, int64_t uptime_sec)
 
     /* Red banner at top */
     graphics_fill_rect(0, 0, w, 22, GFX_RED);
-    graphics_draw_string_color(w / 2 - 60, 7, "LOW BATTERY", GFX_BLACK);
+    graphics_draw_string_color_bg(w / 2 - 60, 7, "LOW BATTERY",
+                                  GFX_BLACK, GFX_TRANSPARENT);
 
     /* Battery voltage - large */
     { char cv[3]; fmt_d2(cv, (battery_mv % 1000) / 10);
@@ -551,7 +553,8 @@ void display_screens_render_low_battery(int battery_mv, int64_t uptime_sec)
 
     /* Red warning bar at bottom */
     graphics_fill_rect(0, h - 14, w, 14, GFX_RED);
-    graphics_draw_string_color(10, h - 12, "Charge or replace battery", GFX_BLACK);
+    graphics_draw_string_color_bg(10, h - 12, "Charge or replace battery",
+                                  GFX_BLACK, GFX_TRANSPARENT);
 }
 
 /* ── Farewell / shutdown screen ──────────────────────────────────────────── */

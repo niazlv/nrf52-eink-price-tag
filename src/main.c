@@ -1,10 +1,13 @@
 /*
- * Refactored Main
+ * Application entry point: brings the modules up in dependency order,
+ * then parks the main thread — all work happens in BLE callbacks, the
+ * display thread and the system work queue.
  */
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/settings/settings.h>
 #ifdef CONFIG_MCUBOOT_IMG_MANAGER
 #include <zephyr/dfu/mcuboot.h>
 #endif
@@ -20,13 +23,6 @@
 #include <dk_buttons_and_leds.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
-
-static void configure_gpio(void)
-{
-    // Initialize Button/LED library if needed, but BLE service handles LEDs via direct access or we should init here.
-    // The original code used dk_library.
-    dk_leds_init();
-}
 
 int main(void)
 {
@@ -46,11 +42,15 @@ int main(void)
 #endif
 
     // 1. Init Base Peripherals
-    configure_gpio();
-    battery_init();
+    dk_leds_init();     // ble_service drives the LEDs via dk_set_led_*
+    int batt_rc = battery_init();
+    if (batt_rc) {
+        LOG_ERR("Battery ADC init failed: %d — voltage reads will fail", batt_rc);
+    }
     system_time_init(); // Set time from Build Date/Time
     persist_init();     // Validate retained-RAM stats (survives DFU reboot)
-    
+
+
     // 2. Init Graphics & Display
     graphics_init();
     display_manager_init();
@@ -61,32 +61,45 @@ int main(void)
     // 4. Init BLE with Command Processor
     int err = ble_service_init(commands_process);
     if (err) {
-        LOG_ERR("BLE Init failed: %d", err);
-        return 0;
+        /* Do not bail out: the panel, the clock and the persisted statistics
+         * work without BLE, and returning here would skip the settings load
+         * and persist_post_settings() below — the boot would go uncounted and
+         * the saved clock unadopted, while the display thread kept running. */
+        LOG_ERR("BLE Init failed: %d — continuing without BLE", err);
+        if (IS_ENABLED(CONFIG_SETTINGS)) {
+            /* subsys_init first: ble_service_init() failed at bt_enable(),
+             * before it got to its own settings_load(), so no backend is
+             * registered yet and a bare settings_load() would silently load
+             * nothing. Both calls are idempotent. */
+            settings_subsys_init();
+            settings_load();
+        }
+        secauth_init();   /* resolve the key even with no radio, so SYSINFO
+                           * does not report against an all-zero key */
+    } else {
+        // Settings are now loaded (ble_service_init -> settings_load). Resolve
+        // the effective auth key: NVS override > factory_data > compiled default.
+        secauth_init();
+
+        // Connectionless flood-mesh: needs the resolved node id
+        // (ble_service_init) and the effective key (secauth_init) for PDU
+        // signing. Starts scanning + the dispatch thread. Both need a live BT
+        // stack, so this is the one step BLE failure has to skip.
+        mesh_init();
     }
-
-    // Settings are now loaded (ble_service_init -> settings_load). Resolve the
-    // effective auth key: NVS override > factory_data > compiled default.
-    secauth_init();
-
-    // Connectionless flood-mesh: needs the resolved node id (ble_service_init)
-    // and the effective key (secauth_init) for PDU signing. Starts scanning +
-    // the dispatch thread.
-    mesh_init();
 
     // Settings are now loaded (ble_service_init -> settings_load): finalize
     // stats — restore from flash if RAM was lost, adopt saved clock, count boot.
     persist_post_settings();
 
-    // 4. Thread will handle initial screen
+    // 5. Draw the first screen; the display thread takes over from here.
     display_manager_update_status();
 
-    LOG_INF("System Initialized & Ready - Auto Starting TEST");
-    
-    // Auto-start TEST
-    // cmd_test(NULL);
+    LOG_INF("System initialized");
 
-    // 5. Main Loop (Unreachable if cmd_test loops forever)
+    /* Everything from here runs in the display thread, the BLE callbacks and
+     * the mesh dispatch thread. Park this one rather than returning, so its
+     * stack stays available to whatever main() called into. */
     while (1) {
         k_sleep(K_FOREVER);
     }

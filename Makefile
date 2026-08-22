@@ -123,7 +123,14 @@ CMAKE_EXTRA := \
 	-DAPP_BUILD_MIN=$(BUILD_MIN)     \
 	-DAPP_BUILD_SEC=$(BUILD_SEC)
 
-.PHONY: build flash flash-gdb flash-openocd flash-retry clean pristine publish deploy web release v2-genkey
+.PHONY: build flash flash-gdb flash-openocd flash-retry clean pristine publish deploy web release v2-genkey test
+
+# ----------------------------------------------------------
+# test — host-side unit tests for the portable lib/ modules.
+# Needs only a C compiler; no Zephyr, no hardware.
+# ----------------------------------------------------------
+test:
+	$(MAKE) -C tests/host test
 
 build:
 	@echo ">>> Build variant: $(VARIANT) (layout $(LAYOUT_ID), key $(KEY_LABEL))"

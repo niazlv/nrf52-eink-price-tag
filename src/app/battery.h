@@ -11,10 +11,15 @@
  */
 int battery_init(void);
 
+/** Returned by battery_read_mv() when the sample could not be taken. Negative
+ *  so it can never be mistaken for a low-but-valid voltage. */
+#define BATTERY_READ_ERROR (-1)
+
 /**
  * @brief Read battery voltage in millivolts
- * 
- * @return Voltage in mV, or 0/negative on error
+ *
+ * @return Voltage in mV, or BATTERY_READ_ERROR if the ADC read failed. Callers
+ *         must skip the sample on error rather than treating it as 0 mV.
  */
 int battery_read_mv(void);
 
@@ -44,6 +49,9 @@ int battery_read_mv(void);
 #define BATT_RECOVER_MV    3400
 #define BATT_HISTORY_LEN   8
 
+/** ADC full scale (gain 1/6, ref 0.6 V) — the highest voltage readable. */
+#define BATTERY_FULL_MV    3600
+
 typedef enum {
     BATT_OK = 0,
     BATT_LOW,
@@ -62,6 +70,14 @@ battery_state_t battery_monitor_update(int mv);
  * @brief Get current battery protection state without updating.
  */
 battery_state_t battery_get_state(void);
+
+/**
+ * @brief Charge percentage for a voltage sample, for the on-screen gauge.
+ *        0 % at 2000 mV, 100 % at 3000 mV. NOTE: that span sits below the
+ *        protection thresholds above, so the gauge reads full until the tag
+ *        shuts down — see the comment in battery.c before changing it.
+ */
+int battery_percent(int mv);
 
 /**
  * @brief Returns true if display updates should be inhibited (BATT_LOW+).

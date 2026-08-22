@@ -48,8 +48,11 @@ bool mesh_is_dispatch_thread(void);
  * @param dst_val  GROUP: 1 group-id byte; ID: 3 node-id bytes; ALL: ignored.
  * @param opcode   command opcode (cmd_opcodes.h).
  * @param payload  argument bytes (may be NULL).
- * @param plen     payload length.
- * @return 0 if queued, negative if the queue is full.
+ * @param plen     payload length. The budget depends on @p dst, because the
+ *                 address field shares the 27-byte PDU: 14 bytes for ALL,
+ *                 13 for GROUP, 11 for ID.
+ * @return 0 if queued, -EMSGSIZE if the payload exceeds that budget, or
+ *         another negative errno if the queue is full.
  */
 int mesh_originate(enum mesh_dst dst, const uint8_t *dst_val,
                    uint8_t opcode, const uint8_t *payload, uint8_t plen);

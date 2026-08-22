@@ -21,14 +21,6 @@ static struct adc_channel_cfg channel_cfg = {
     .input_positive = SAADC_CH_PSELP_PSELP_VDD // Measure VDD
 };
 
-static int16_t sample_buffer[1];
-static struct adc_sequence sequence = {
-    .channels = BIT(0),
-    .buffer = sample_buffer,
-    .buffer_size = sizeof(sample_buffer),
-    .resolution = 10,
-};
-
 int battery_init(void) {
     if (!device_is_ready(adc_dev)) {
         LOG_ERR("ADC device not ready");
@@ -45,21 +37,37 @@ int battery_init(void) {
 }
 
 int battery_read_mv(void) {
-    if (!adc_dev) return 0;
-    
-    int err = adc_read(adc_dev, &sequence);
+    /* Per-call sequence + buffer: several threads sample the battery (display,
+     * BLE commands), and a shared adc_sequence would let one publish another's
+     * result. */
+    int16_t sample = 0;
+    struct adc_sequence seq = {
+        .channels    = BIT(0),
+        .buffer      = &sample,
+        .buffer_size = sizeof(sample),
+        .resolution  = 10,
+    };
+
+    if (!device_is_ready(adc_dev)) {
+        return BATTERY_READ_ERROR;
+    }
+
+    int err = adc_read(adc_dev, &seq);
     if (err) {
+        /* Never report 0 mV here: the caller's protection state machine reads
+         * anything at or below BATT_CRITICAL_MV as "shut down now", so a single
+         * transient ADC failure would power off a fully charged device. */
         LOG_ERR("ADC read failed: %d", err);
-        return 0;
+        return BATTERY_READ_ERROR;
     }
 
     // 10 bit resolution, Ref 0.6V, Gain 1/6.
     // Val = (Input / 3.6) * 1023
     // Input = Val * 3.6 / 1023
     // mV = Val * 3600 / 1023
-    int32_t val = sample_buffer[0];
+    int32_t val = sample;
     if (val < 0) val = 0;
-    
+
     return (val * 3600) / 1023;
 }
 
@@ -89,6 +97,32 @@ static bool batt_was_high = false; /* latched: battery was definitely charged */
 battery_state_t battery_get_state(void)
 {
     return batt_state;
+}
+
+int battery_percent(int mv)
+{
+    /* Moved here from display_manager so the gauge sits next to the protection
+     * thresholds — but the 2.0–3.0 V mapping is UNCHANGED from where it lived
+     * before, deliberately.
+     *
+     * Known inconsistency, left as-is because the right curve depends on the
+     * cell and the board: this reaches 100 % at 3000 mV, which is below
+     * BATT_CRITICAL_MV (3100), so a discharging tag shows a full gauge right
+     * up to the shutdown screen. Re-anchoring it to
+     * BATT_CRITICAL_MV..BATTERY_FULL_MV would fix that, but it also pins any
+     * board running off a regulated 3.0/3.3 V rail (LBP/programmer, which
+     * battery.h documents as an expected setup) at 0–40 % forever. Needs a
+     * decision on real hardware, not a guess. */
+    if (mv < 0) {
+        return 0;   /* failed read — show empty rather than stale */
+    }
+    if (mv > 3000) {
+        return 100;
+    }
+    if (mv < 2000) {
+        return 0;
+    }
+    return (mv - 2000) / 10;
 }
 
 bool battery_display_inhibited(void)

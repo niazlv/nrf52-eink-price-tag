@@ -61,7 +61,12 @@ bool factory_is_provisioned(void)
 const char *factory_serial(void)
 {
 #if FACTORY_PRESENT
-	if (block_valid() && fb->serial_len <= FACTORY_SERIAL_MAXLEN) {
+	/* The terminator is checked, not assumed: callers hand this straight to
+	 * "%s" (SYSINFO prints it over BLE), and an unterminated serial would run
+	 * into auth_key[] immediately after it and notify the provisioning key to
+	 * the peer. A block with no NUL reads as unprovisioned. */
+	if (block_valid() && fb->serial_len <= FACTORY_SERIAL_MAXLEN &&
+	    memchr(fb->serial, '\0', sizeof(fb->serial)) != NULL) {
 		return fb->serial;
 	}
 #endif

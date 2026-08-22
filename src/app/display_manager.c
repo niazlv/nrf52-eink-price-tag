@@ -9,7 +9,6 @@
 #include <eink/ssd1675a.h>
 #include <gfx/graphics.h>
 #include <zephyr/logging/log.h>
-#include <limits.h>
 
 LOG_MODULE_REGISTER(display_manager, LOG_LEVEL_INF);
 
@@ -91,7 +90,27 @@ static int32_t lut_test_max_ms   = 0;
 // Semaphore to control screensaver loop (1 = run/wake, 0 = wait/timeout)
 static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
 
+/* Serialises the panel across the threads that drive it: the screensaver
+ * thread, the BLE RX thread (commands), the mesh dispatch thread (flooded
+ * commands) and the system workqueue (vstream watchdog). Two of those are
+ * cooperative and preempt the screensaver at any instruction, including
+ * halfway through a 4736-byte RAM write. Zephyr mutexes are recursive for the
+ * owning thread, so nested paths (update_status -> perform_display_update)
+ * are fine.
+ *
+ * Coverage is the public entry points of THIS module. It is not complete:
+ * commands.c's vstream teardown still calls ssd1675a_wait_busy() directly, and
+ * update_partial_nowait() releases the lock with BUSY still high by design.
+ * Anything added here that talks to the controller must take the lock too.
+ *
+ * Held across a full refresh, so a waiter can block for ~15 s — the same
+ * exposure a command handler already had when it ran the refresh itself. Never
+ * hold it across ble_printf(): a notification can block on the BLE TX pool,
+ * which only the BLE RX thread drains, and that thread may be waiting here. */
 K_MUTEX_DEFINE(display_lock);
+
+#define DISPLAY_LOCK()   k_mutex_lock(&display_lock, K_FOREVER)
+#define DISPLAY_UNLOCK() k_mutex_unlock(&display_lock)
 
 static bool should_power_down_after_update(void);
 
@@ -194,6 +213,34 @@ static bool should_power_down_after_update(void)
            (!screensaver_enabled || screensaver_mode == SCREENSAVER_MODE_STATIC);
 }
 
+/* Drive the already-rendered buffers onto the panel as the last thing the
+ * device does, then cut power. A FULL refresh, not a partial one: both battery
+ * screens are red-heavy, and only the full waveform drives the red plane. The
+ * panel is bistable, so the image survives with the rails down. */
+static void show_final_screen(void)
+{
+    if (!display_ready) {
+        return;
+    }
+    /* Bounded wait, unlike everywhere else: this runs on the deep-discharge
+     * path, and a long-running CLEAN/NUKE holds the lock for minutes. Powering
+     * off on time matters more than a clean handover — on timeout we drive the
+     * panel anyway and accept a possibly garbled farewell frame. */
+    bool locked = (k_mutex_lock(&display_lock, K_SECONDS(20)) == 0);
+    stop_streaming_if_active();
+    power_estimate_set_current(POWER_DISPLAY_FULL_UA);
+    ssd1675a_init();
+    ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
+    ssd1675a_update_display();
+    persist_add_refresh();
+    ssd1675a_sleep();
+    ssd1675a_power_off();
+    power_estimate_resync_idle();
+    if (locked) {
+        DISPLAY_UNLOCK();
+    }
+}
+
 static void power_down_after_idle_update(void)
 {
     if (should_power_down_after_update()) {
@@ -241,7 +288,7 @@ void display_manager_init(void) {
 static void perform_display_update(void) {
     if (!display_ready) return;
 
-    // k_mutex_lock(&display_lock, K_FOREVER);
+    DISPLAY_LOCK();
 
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init();
@@ -253,7 +300,7 @@ static void perform_display_update(void) {
 
     persist_add_refresh();
 
-    // k_mutex_unlock(&display_lock);
+    DISPLAY_UNLOCK();
 }
 
 // Like perform_display_update() but uses the red-clearing LUT (VSL on red
@@ -261,12 +308,14 @@ static void perform_display_update(void) {
 // to eliminate the reddish tint left by the "red fixation" phases of the main LUT.
 static void perform_display_update_flush_red(void) {
     if (!display_ready) return;
+    DISPLAY_LOCK();
     power_estimate_set_current(POWER_DISPLAY_FULL_UA);
     ssd1675a_init();
     ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
     ssd1675a_update_display_flush_red();
     power_down_after_idle_update();
     power_estimate_resync_idle();
+    DISPLAY_UNLOCK();
 }
 
 static void display_manager_update_static_saver(bool full_refresh)
@@ -289,6 +338,8 @@ static void display_manager_update_static_saver(bool full_refresh)
 void display_manager_update_partial(void) {
     if (!display_ready) return;
 
+    DISPLAY_LOCK();
+
     if (keep_display_on) {
         stream_partial_count++;
 
@@ -301,6 +352,7 @@ void display_manager_update_partial(void) {
             write_partial_stream_buffers();
             ssd1675a_update_partial();  // 0xC7: full HV cycle with current LUT
             power_estimate_resync_idle();
+            DISPLAY_UNLOCK();
             return;                     // streaming restarts on next call
         }
 
@@ -324,6 +376,8 @@ void display_manager_update_partial(void) {
         power_down_after_idle_update();
         power_estimate_resync_idle();
     }
+
+    DISPLAY_UNLOCK();
 }
 
 
@@ -337,6 +391,11 @@ void display_manager_update_partial_nowait(void) {
         return;
     }
 
+    /* The lock is released while the refresh is still running: this call
+     * deliberately returns with BUSY high and the caller owns the wait. It
+     * serialises the SPI burst, not the refresh that follows it. */
+    DISPLAY_LOCK();
+
     stream_partial_count++;
 
     /* Periodic DC-balance: every STREAM_REFRESH_INTERVAL frames do a full
@@ -348,6 +407,7 @@ void display_manager_update_partial_nowait(void) {
         write_partial_stream_buffers();
         ssd1675a_update_partial();
         power_estimate_resync_idle();
+        DISPLAY_UNLOCK();
         return;
     }
 
@@ -362,9 +422,12 @@ void display_manager_update_partial_nowait(void) {
     }
     /* Trigger display refresh but return immediately — display runs in background. */
     ssd1675a_trigger_frame_stream_nowait();
+
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_set_partial_mode(int mode) {
+    DISPLAY_LOCK();
     stop_streaming_if_active();  // new LUT must be loaded in next begin_streaming()
     if (mode == 0) {
         ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TURBO);
@@ -387,21 +450,30 @@ void display_manager_set_partial_mode(int mode) {
     } else if (mode == 9) {
         ssd1675a_set_partial_mode(SSD1675A_PARTIAL_MODE_TONE_SOFT_LIGHT);
     } else {
-        return;
+        DISPLAY_UNLOCK();
+        return;   /* unknown mode: leave the current one in place */
     }
     partial_mode_current = mode;
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_begin_streaming(void) {
+    if (!display_ready) return;
+
+    DISPLAY_LOCK();
     if (!streaming_active) {
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_begin_streaming();
         streaming_active = true;
         power_estimate_resync_idle();
     }
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_update_frame_stream(void) {
+    if (!display_ready) return;
+
+    DISPLAY_LOCK();
     if (!streaming_active) {
         power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
         ssd1675a_begin_streaming();
@@ -410,19 +482,24 @@ void display_manager_update_frame_stream(void) {
     power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     ssd1675a_update_frame_stream();
     power_estimate_resync_idle();
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_end_streaming(void) {
+    DISPLAY_LOCK();
     stop_streaming_if_active();
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_reset_lut_test(void) {
+    DISPLAY_LOCK();
     lut_test_frame   = 0;
     lut_test_last_ms = 0;
     lut_test_cur_ms  = 0;
     lut_test_min_ms  = 0;
     lut_test_max_ms  = 0;
     stop_streaming_if_active();  // reload LUT on next begin_streaming()
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
@@ -436,6 +513,10 @@ void display_manager_get_lut_test_stats(int32_t *frame_out, int32_t *cur_ms_out,
 
 void display_manager_update_lut_test(void) {
     if (!display_ready) return;
+
+    /* Held across the render too: the frame buffers are shared, so another
+     * thread rendering its own screen mid-way would be pushed out here. */
+    DISPLAY_LOCK();
 
     int64_t now = k_uptime_get();
     int32_t delta_ms = 0;
@@ -469,6 +550,8 @@ void display_manager_update_lut_test(void) {
     ssd1675a_update_frame_stream();
     power_estimate_resync_idle();
 
+    DISPLAY_UNLOCK();
+
     /* Send telemetry every frame once we have a valid measurement (frame >= 2). */
     if (tele_enabled && delta_ms > 0) {
         ble_printf("TELE:ltest frame=%d last=%d min=%d max=%d lut=%s\r\n",
@@ -479,6 +562,9 @@ void display_manager_update_lut_test(void) {
 }
 
 void display_manager_set_screensaver_mode(int mode) {
+    /* Touches the bus via stop_streaming_if_active() and set_partial_mode(). */
+    DISPLAY_LOCK();
+
     if (mode != screensaver_mode) {
         stop_streaming_if_active();
     }
@@ -500,19 +586,25 @@ void display_manager_set_screensaver_mode(int mode) {
         display_manager_set_partial_mode(STATIC_SAVER_PARTIAL_MODE);
     }
     power_estimate_resync_idle();
+
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_update_status(void) {
     if (!display_ready) return;
-    
+
+    /* Render and push as one unit — the frame buffers are global, so an
+     * interleaved render from another thread would be pushed out here. */
+    DISPLAY_LOCK();
+
     int64_t start_render = k_uptime_get();
     static int32_t last_dur = 0;
     int mv = battery_read_mv();
     display_status_model_t model = {0};
 
     get_system_time(&model.time);
-    model.battery_mv = mv;
-    model.battery_percent = (mv > 3000) ? 100 : (mv < 2000 ? 0 : (mv - 2000) / 10);
+    model.battery_mv = (mv < 0) ? 0 : mv;
+    model.battery_percent = battery_percent(mv);
     model.last_render_ms = last_dur;
     model.uptime_sec = (int64_t)persist_uptime_sec(); /* cumulative, survives DFU */
     model.saver_mode = screensaver_mode;
@@ -530,18 +622,15 @@ void display_manager_update_status(void) {
     model.energy_mah_x1000 = power_estimate_get_mah_x1000();
     model.estimated_current_ua = power_estimate_current_ua;
 
+    bool send_tele = false;
+    static int32_t dyn_frame_ctr = 0;
+
     if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
         display_screens_render_status_dynamic(&model);
         display_manager_update_partial();
         last_dur = (int32_t)(k_uptime_get() - start_render);
-        if (tele_enabled) {
-            static int32_t dyn_frame_ctr = 0;
-            dyn_frame_ctr++;
-            if (dyn_frame_ctr % 10 == 0) {
-                ble_printf("TELE:dynamic frame=%d last=%dms\r\n",
-                           (int)dyn_frame_ctr, (int)last_dur);
-            }
-        }
+        dyn_frame_ctr++;
+        send_tele = tele_enabled && (dyn_frame_ctr % 10 == 0);
     } else {
         display_screens_render_status_static(&model);
         bool full_refresh = (static_saver_frame_count == 0) ||
@@ -551,23 +640,39 @@ void display_manager_update_status(void) {
 
         last_dur = (int32_t)(k_uptime_get() - start_render);
     }
+
+    DISPLAY_UNLOCK();
+
+    /* Notify only after unlocking. bt_gatt_notify can block waiting for a TX
+     * buffer, and the only context that frees those is the BLE RX thread —
+     * which may itself be waiting on this lock to run a display command. */
+    if (send_tele) {
+        ble_printf("TELE:dynamic frame=%d last=%dms\r\n",
+                   (int)dyn_frame_ctr, (int)last_dur);
+    }
 }
 
 void display_manager_show_text(const char *text) {
     if (!text) return;
+    DISPLAY_LOCK();
     display_screens_render_text(text);
     perform_display_update();
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_show_palette_test(void) {
+    DISPLAY_LOCK();
     stop_streaming_if_active();
     display_screens_render_palette_test();
     perform_display_update();
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_run_tone_test(void) {
 #define TONE_TEST_PASSES 8
     if (!display_ready) return;
+
+    DISPLAY_LOCK();
 
     bool prev_custom = ssd1675a_get_use_custom_lut();
     int prev_mode = partial_mode_current;
@@ -591,11 +696,14 @@ void display_manager_run_tone_test(void) {
     display_manager_set_partial_mode(prev_mode);
     ssd1675a_set_use_custom_lut(prev_custom);
     stream_partial_count = 0;
+
+    DISPLAY_UNLOCK();
 #undef TONE_TEST_PASSES
 }
 
 void display_manager_clean(void) {
     if (!display_ready) return;
+    DISPLAY_LOCK();
     stop_streaming_if_active();
     stream_partial_count = 0;
     for (int i = 0; i < 7; i++) {
@@ -611,10 +719,12 @@ void display_manager_clean(void) {
     graphics_clear(GFX_WHITE);
     perform_display_update_flush_red();
     perform_display_update_flush_red();
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_deep_clean(int cycles) {
     if (!display_ready) return;
+    DISPLAY_LOCK();
     stop_streaming_if_active();
     stream_partial_count = 0;
     // Phase 1: white-only pre-soak — repeated VSL application kills VSH1
@@ -635,17 +745,12 @@ void display_manager_deep_clean(int cycles) {
     graphics_clear(GFX_WHITE);
     perform_display_update_flush_red();
     perform_display_update_flush_red();
+    DISPLAY_UNLOCK();
 }
 
 void display_manager_clear(void) {
     graphics_clear(GFX_WHITE);
 }
-
-
-
-// Semaphore to control screensaver loop (moved to top)
-// static K_SEM_DEFINE(sem_screensaver_wake, 0, 1);
-// static bool screensaver_enabled = true; // Moved to top
 
 void display_manager_enable_screensaver(bool enable) {
     bool prev = screensaver_enabled;
@@ -679,7 +784,11 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
     while (1) {
         /* ── Battery protection check ── */
         int mv = battery_read_mv();
-        battery_state_t bstate = battery_monitor_update(mv);
+        /* A failed ADC read must not feed the protection state machine: it
+         * would look like 0 mV and power a healthy device off. Keep the last
+         * known state and try again next cycle. */
+        battery_state_t bstate = (mv < 0) ? battery_get_state()
+                                          : battery_monitor_update(mv);
 
         /* Roll cumulative stats forward in retained RAM (~1/min). RAM-only. */
         power_estimate_account_now();   /* fold the idle interval's energy in too */
@@ -689,13 +798,10 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
             /* Power may be about to be lost: last-breath save to flash. */
             persist_save_to_flash();
 
-            /* Farewell screen: one final TURBO render, then deep sleep */
+            /* Farewell screen: one final full render, then deep sleep */
             LOG_WRN("Battery critical (%d mV) — rendering farewell", mv);
-            display_manager_set_partial_mode(0); /* TURBO for minimal power */
             display_screens_render_shutdown(mv, (int64_t)persist_uptime_sec());
-            ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
-            ssd1675a_wait_busy();
-            ssd1675a_sleep();
+            show_final_screen();
 
             /* Notify over BLE if connected, then wait a moment */
             ble_printf("BATT:SHUTDOWN mv=%d\r\n", mv);
@@ -718,9 +824,7 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
                 /* Show low-battery warning screen once (full clean update) */
                 LOG_WRN("Battery low (%d mV) — showing warning, inhibiting display", mv);
                 display_screens_render_low_battery(mv, (int64_t)persist_uptime_sec());
-                ssd1675a_display_buffer(graphics_get_buffer(), graphics_get_red_buffer());
-                ssd1675a_wait_busy();
-                ssd1675a_sleep();
+                show_final_screen();
                 low_battery_screen_shown = true;
 
                 ble_printf("BATT:LOW mv=%d\r\n", mv);
@@ -785,6 +889,9 @@ void display_manager_set_rotation(int rot) {
 }
 
 void display_manager_set_keep_on(bool enable) {
+    /* Drops the HV rails and can sleep the panel — bus work, so it takes the
+     * lock like every other path that talks to the controller. */
+    DISPLAY_LOCK();
     if (!enable) {
         stop_streaming_if_active();
     }
@@ -793,4 +900,5 @@ void display_manager_set_keep_on(bool enable) {
         power_down_after_idle_update();
     }
     power_estimate_resync_idle();
+    DISPLAY_UNLOCK();
 }

@@ -162,7 +162,12 @@ static void cmac_subkeys(const uint8_t *k, uint8_t k1[16], uint8_t k2[16])
 /* Compute the 4-byte truncated CMAC of msg[0..len) into out[0..4). */
 static void mesh_mac(const uint8_t *msg, size_t len, uint8_t out[MESH_MAC_LEN])
 {
-    const uint8_t *k = secauth_key();
+    /* Snapshot the key: this runs on the mesh thread across many bt_encrypt_be
+     * calls, while SETKEY can rewrite the live key from the BLE RX thread. A
+     * half-old/half-new key would produce a MAC no node can verify. */
+    uint8_t k[16];
+    memcpy(k, secauth_key(), sizeof(k));
+
     uint8_t k1[16], k2[16], x[16] = {0}, y[16], last[16], full[16];
     cmac_subkeys(k, k1, k2);
 
@@ -220,6 +225,17 @@ static uint8_t dst_len(uint8_t dst_type)
     case MESH_DST_ID:    return 3;
     default:             return 0;
     }
+}
+
+/* Payload bytes that still fit once this destination's address field is in the
+ * PDU: 14 for ALL, 13 for GROUP, 11 for ID. MESH_HDR_MIN counts dst_type but
+ * not the variable-length dst that follows it, so MESH_PAYLOAD_MAX is only
+ * correct for ALL — clamping GROUP/ID against it overruns pdu[MESH_PDU_MAX] by
+ * exactly dst_len() bytes when the MAC is appended. */
+static uint8_t max_payload(uint8_t dst_type)
+{
+    return (uint8_t)(MESH_PDU_MAX - MESH_HDR_MIN - dst_len(dst_type)
+                     - 1 /*opcode*/ - MESH_MAC_LEN);
 }
 
 /* ── Core: validate, dedup, relay, and locally apply one PDU ─────────────── */
@@ -304,8 +320,8 @@ static void mesh_do_originate(const uint8_t *d, uint8_t dlen)
     uint8_t opcode = d[1 + dl];
     const uint8_t *payload = &d[1 + dl + 1];
     uint8_t plen = dlen - (1 + dl + 1);
-    if (plen > MESH_PAYLOAD_MAX) {
-        plen = MESH_PAYLOAD_MAX;
+    if (plen > max_payload(dst_type)) {
+        plen = max_payload(dst_type);
     }
 
     uint8_t pdu[MESH_PDU_MAX];
@@ -385,8 +401,12 @@ int mesh_originate(enum mesh_dst dst, const uint8_t *dst_val,
 {
     struct mesh_job job = { .kind = JOB_ORIG };
     uint8_t dl = dst_len((uint8_t)dst);
-    if (plen > MESH_PAYLOAD_MAX) {
-        plen = MESH_PAYLOAD_MAX;
+
+    /* Reject rather than truncate: a silently shortened command line reaches
+     * every node as a different (usually unparseable) command, and the caller
+     * would still be told the flood was queued. */
+    if (plen > max_payload((uint8_t)dst)) {
+        return -EMSGSIZE;
     }
     uint8_t p = 0;
     job.data[p++] = (uint8_t)dst;

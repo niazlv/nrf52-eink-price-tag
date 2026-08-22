@@ -15,6 +15,7 @@
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/sys/reboot.h>
@@ -50,11 +51,6 @@ struct shell_cmd {
     uint8_t flags;
 };
 extern const struct shell_cmd commands[];
-
-/* Origin of the command currently being dispatched. Set around every dispatch;
- * the mesh reply sink (Phase 1) consults it to route replies. Phase 0 leaves it
- * at NUS. */
-static enum cmd_origin g_cmd_origin = CMD_ORIGIN_NUS;
 
 /* ── Line accumulator ───────────────────────────────────────────────────────
  * BLE NUS delivers raw chunks; we buffer until '\n' to guarantee whole commands
@@ -157,15 +153,19 @@ static bool       vs_poisoned;  /* FB corruption detected — skip frames until 
  * and restore the screensaver so the device doesn't stay frozen. */
 #define VS_WATCHDOG_MS 30000
 static struct k_work_delayable vs_watchdog_work;
+static struct k_work_sync vs_watchdog_sync;
 
-static void vs_exit_streaming(bool restore_screensaver) {
+/* Tear the stream down. Deliberately does NOT cancel the watchdog: the watchdog
+ * handler is one of the callers and cannot wait on the work it is running. */
+static void vs_teardown(bool restore_screensaver) {
+    bool was_active = vstream_active;
+
     /* Wait for any in-progress pipelined display refresh to finish before
      * powering down HV rails. Safe to call even when no refresh is active. */
     ssd1675a_wait_busy();
     ble_service_set_streaming_mode(false);
     display_manager_set_stream_write_red_plane(false);
-    k_work_cancel_delayable(&vs_watchdog_work);
-    if (vstream_active) {
+    if (was_active) {
         vs_state       = VS_IDLE;
         vstream_active = false;
         vs_frame_count = 0;
@@ -173,10 +173,20 @@ static void vs_exit_streaming(bool restore_screensaver) {
     }
     /* Video/animation wants the device to resume its saver after stop.
      * Still-photo rendering wants a sleeping display with the final image left
-     * alone, so that path passes false here. */
-    if (restore_screensaver) {
+     * alone, so that path passes false here — and a redundant stop after it
+     * must not wake the saver either, or the photo is overwritten. */
+    if (restore_screensaver && was_active) {
         display_manager_enable_screensaver(true);
     }
+}
+
+static void vs_exit_streaming(bool restore_screensaver) {
+    /* _sync, not the plain cancel: the 30 s watchdog may already be running
+     * vs_teardown on the system workqueue, and the plain cancel does not wait
+     * for a handler that has started — both contexts would then drive the SPI
+     * bus and rewrite the stream state at once. */
+    k_work_cancel_delayable_sync(&vs_watchdog_work, &vs_watchdog_sync);
+    vs_teardown(restore_screensaver);
 }
 
 static bool vs_type_is_dual(uint8_t type)
@@ -198,7 +208,13 @@ static void vs_watchdog_handler(struct k_work *work) {
     ARG_UNUSED(work);
     if (vstream_active) {
         ble_printf("VSTREAM:timeout\r\n");
-        vs_exit_streaming(true);
+        /* vs_teardown, NOT vs_exit_streaming: this runs on the system
+         * workqueue as this very work item, and vs_exit_streaming would
+         * sync-cancel the work it is executing — the completion that releases
+         * the wait only happens after this handler returns, so it would block
+         * the workqueue forever. Cancelling is pointless here anyway: the
+         * timer has already fired. */
+        vs_teardown(true);
     }
 }
 
@@ -226,6 +242,30 @@ static int hex_byte(const char *s)
     int lo = hex_nibble(s[1]);
     if (hi < 0 || lo < 0) return -1;
     return (hi << 4) | lo;
+}
+
+/* Shared "offset:HH.." prologue of FW:, RW: and LW:. Returns the hex payload
+ * and writes *offset, or NULL when the colon separator is missing. An offset
+ * that does not fit an int comes back as -1 so range_ok() rejects it. */
+static const char *parse_offset_prefix(char *args, int *offset)
+{
+    char *endptr;
+    long value = strtol(args, &endptr, 10);
+
+    if (*endptr != ':') {
+        return NULL;
+    }
+    *offset = (value < 0 || value > INT_MAX) ? -1 : (int)value;
+    return endptr + 1;
+}
+
+/* True when writing nbytes at offset stays inside a limit-sized buffer.
+ * Phrased as (offset <= limit - nbytes), NOT (offset + nbytes > limit): offset
+ * arrives straight off the wire and can be INT_MAX, where that addition is
+ * signed overflow — it wraps negative and the naive check passes. */
+static bool range_ok(int offset, int nbytes, int limit)
+{
+    return offset >= 0 && nbytes >= 0 && nbytes <= limit && offset <= limit - nbytes;
 }
 
 /* ── Vstream helpers ─────────────────────────────────────────────────────── */
@@ -423,7 +463,7 @@ static void vs_process_byte(uint8_t b) {
 
 /* ── Standard commands ───────────────────────────────────────────────────── */
 
-void cmd_help(char *args)
+static void cmd_help(char *args)
 {
     ble_printf("cmds (op A5 <op> <len> <payload>):\r\n");
     for (int i = 0; commands[i].name != NULL; i++) {
@@ -432,14 +472,14 @@ void cmd_help(char *args)
     }
 }
 
-void cmd_cls(char *args)
+static void cmd_cls(char *args)
 {
     display_manager_enable_screensaver(false);
     display_manager_clear();
     ble_printf("cleared\r\n");
 }
 
-void cmd_clean(char *args)
+static void cmd_clean(char *args)
 {
     display_manager_enable_screensaver(false);
     ble_printf("cleaning (7 cycles)...\r\n");
@@ -447,7 +487,7 @@ void cmd_clean(char *args)
     ble_printf("done\r\n");
 }
 
-void cmd_nuke(char *args)
+static void cmd_nuke(char *args)
 {
     int n = (args && *args) ? atoi(args) : 20;
     if (n < 5)  n = 5;
@@ -460,13 +500,13 @@ void cmd_nuke(char *args)
     ble_printf("NUKE: done\r\n");
 }
 
-void cmd_saver(char *args)
+static void cmd_saver(char *args)
 {
     display_manager_enable_screensaver(true);
     ble_printf("saver enabled\r\n");
 }
 
-void cmd_update(char *args)
+static void cmd_update(char *args)
 {
     if (!host_mode) ble_printf("updating...\r\n");
     int64_t t0 = k_uptime_get();
@@ -480,7 +520,7 @@ void cmd_update(char *args)
     }
 }
 
-void cmd_fast(char *args)
+static void cmd_fast(char *args)
 {
     if (!host_mode) ble_printf("fast update...\r\n");
     int64_t t0 = k_uptime_get();
@@ -494,7 +534,7 @@ void cmd_fast(char *args)
     }
 }
 
-void cmd_test(char *args)
+static void cmd_test(char *args)
 {
     ble_printf("Starting Partial Stress Test (Infinite)... Reset to stop.\r\n");
     display_manager_enable_screensaver(false);
@@ -523,7 +563,7 @@ void cmd_test(char *args)
     }
 }
 
-void cmd_mode(char *args)
+static void cmd_mode(char *args)
 {
     if (!args || !*args) { ble_printf("usage: MODE: 0-7\r\n"); return; }
     int m = atoi(args);
@@ -531,7 +571,7 @@ void cmd_mode(char *args)
     ble_printf("Mode Set: %d (0=T,1=B,2=S,3=C,4=ToneDark,5=ToneLight,6=ToneBidirFast,7=ToneBidir)\r\n", m);
 }
 
-void cmd_text(char *args)
+static void cmd_text(char *args)
 {
     if (!args || !*args) return;
     display_manager_enable_screensaver(false);
@@ -539,7 +579,7 @@ void cmd_text(char *args)
     ble_printf("drawn\r\n");
 }
 
-void cmd_paltest(char *args)
+static void cmd_paltest(char *args)
 {
     ARG_UNUSED(args);
     display_manager_enable_screensaver(false);
@@ -548,7 +588,7 @@ void cmd_paltest(char *args)
     ble_printf("PALTEST: done\r\n");
 }
 
-void cmd_tonetest(char *args)
+static void cmd_tonetest(char *args)
 {
     ARG_UNUSED(args);
     display_manager_enable_screensaver(false);
@@ -557,7 +597,7 @@ void cmd_tonetest(char *args)
     ble_printf("TONETEST: done (use CLEAN/NUKE if residual ghosting stays)\r\n");
 }
 
-void cmd_rot(char *args)
+static void cmd_rot(char *args)
 {
     if (!args || !*args) { ble_printf("usage: ROT: 0-3\r\n"); return; }
     int r = atoi(args);
@@ -565,14 +605,16 @@ void cmd_rot(char *args)
     ble_printf("rotation: %d\r\n", r);
 }
 
-void cmd_batt(char *args)
+static void cmd_batt(char *args)
 {
+    /* Keep the "bat: %d mv" shape even on a failed read — hosts sscanf it.
+     * 0 mV was the pre-existing sentinel; the error itself goes to the log. */
     int mv = battery_read_mv();
-    ble_printf("bat: %d mv\r\n", mv);
+    ble_printf("bat: %d mv\r\n", mv < 0 ? 0 : mv);
 }
 
 /* TIME HH:MM:SS DD.MM.YYYY */
-void cmd_time(char *args)
+static void cmd_time(char *args)
 {
     if (!args || strlen(args) < 10) {
         ble_printf("usage: TIME HH:MM:SS DD.MM.YYYY\r\n");
@@ -589,7 +631,7 @@ void cmd_time(char *args)
 }
 
 /* TIME=HH:MM:SS — lut_tester_host compatible; preserves current date */
-void cmd_time_eq(char *args)
+static void cmd_time_eq(char *args)
 {
     if (!args || !*args) { ble_printf("usage: TIME=HH:MM:SS\r\n"); return; }
     int h = 0, m = 0, s = 0;
@@ -602,7 +644,7 @@ void cmd_time_eq(char *args)
                h, m < 10 ? "0" : "", m, s < 10 ? "0" : "", s);
 }
 
-void cmd_dsaver(char *args)
+static void cmd_dsaver(char *args)
 {
     if (!args || !*args) {
         ble_printf("usage: DSAVER 0/1\r\n");
@@ -615,7 +657,7 @@ void cmd_dsaver(char *args)
     ble_printf("Dynamic Saver: %s\r\n", mode ? "ON" : "OFF");
 }
 
-void cmd_anim(char *args)
+static void cmd_anim(char *args)
 {
     ble_printf("Starting Animation (Reset to stop)...\r\n");
     display_manager_enable_screensaver(false);
@@ -653,7 +695,7 @@ void cmd_anim(char *args)
     // Note: end_streaming() unreachable in infinite loop; HV discharges on reset.
 }
 
-void cmd_debug_vcom(char *args)
+static void cmd_debug_vcom(char *args)
 {
     if (!args || !*args) return;
     uint32_t val = strtoul(args, NULL, 16);
@@ -661,7 +703,7 @@ void cmd_debug_vcom(char *args)
     ble_printf("VCOM=0x%02X\r\n", (uint8_t)val);
 }
 
-void cmd_debug_lut(char *args)
+static void cmd_debug_lut(char *args)
 {
     if (!args || !*args) return;
     char *colon = strchr(args, ':');
@@ -677,7 +719,7 @@ void cmd_debug_lut(char *args)
 /* ── LUT tester commands (lut_tester_host compatible) ───────────────────── */
 
 /* LUTW:HH..  — write all 70 LUT bytes at once */
-void cmd_lutw(char *args)
+static void cmd_lutw(char *args)
 {
     int expected = SSD1675A_LUT_SIZE * 2;
     int got = (int)strlen(args);
@@ -695,14 +737,13 @@ void cmd_lutw(char *args)
 }
 
 /* LW:idx:HH..  — write N bytes starting at idx */
-void cmd_lw(char *args)
+static void cmd_lw(char *args)
 {
-    char *endptr;
-    int idx = (int)strtol(args, &endptr, 10);
-    if (*endptr != ':') { ble_printf("usage: LW:idx:HH..\r\n"); return; }
-    const char *hex = endptr + 1;
+    int idx;
+    const char *hex = parse_offset_prefix(args, &idx);
+    if (!hex) { ble_printf("usage: LW:idx:HH..\r\n"); return; }
     int nbytes = (int)strlen(hex) / 2;
-    if (idx < 0 || idx + nbytes > SSD1675A_LUT_SIZE) {
+    if (!range_ok(idx, nbytes, SSD1675A_LUT_SIZE)) {
         ble_printf("LW: out of range\r\n"); return;
     }
     for (int i = 0; i < nbytes; i++) {
@@ -715,7 +756,7 @@ void cmd_lw(char *args)
 }
 
 /* L:n=HH | L:DUMP | L:RESET */
-void cmd_l_byte(char *args)
+static void cmd_l_byte(char *args)
 {
     if (strcmp(args, "DUMP") == 0) {
         ble_printf("LUT[70]:\r\n");
@@ -743,62 +784,50 @@ void cmd_l_byte(char *args)
     ble_printf("L[%d]=0x%02X — custom LUT active\r\n", idx, val);
 }
 
-/* FW:offset:HH..  — write BW frame bytes */
-void cmd_fw(char *args)
+/* Body of FW: and RW: — same wire shape, different target plane. Decodes in
+ * place, so a bad nibble part-way leaves the earlier bytes written (the
+ * host reconciles via the FAPPLY byte count). `tag` selects the reply prefix. */
+static void fb_write(char *args, uint8_t *buf, int *counter, const char *tag)
 {
-    char *endptr;
-    int offset = (int)strtol(args, &endptr, 10);
-    if (*endptr != ':') { ble_printf("FW:err no colon\r\n"); return; }
-    const char *hex = endptr + 1;
+    int offset;
+    const char *hex = parse_offset_prefix(args, &offset);
+    if (!hex) { ble_printf("%s:err no colon\r\n", tag); return; }
     int hexlen = (int)strlen(hex);
-    if (hexlen & 1) { ble_printf("FW:err odd len %d\r\n", hexlen); return; }
+    if (hexlen & 1) { ble_printf("%s:err odd len %d\r\n", tag, hexlen); return; }
     int nbytes = hexlen / 2;
-    if (offset < 0 || offset + nbytes > FB_SIZE) {
-        ble_printf("FW:OOB off=%d n=%d\r\n", offset, nbytes); return;
+    if (!range_ok(offset, nbytes, FB_SIZE)) {
+        ble_printf("%s:OOB off=%d n=%d\r\n", tag, offset, nbytes); return;
     }
-    uint8_t *buf = fb_bw();
+    if (!buf) { ble_printf("%s:no plane\r\n", tag); return; }
+
     for (int i = 0; i < nbytes; i++) {
         int b = hex_byte(hex + i * 2);
         if (b < 0) {
-            ble_printf("FW:badchar off=%d pos=%d c=%02X\r\n",
-                       offset, i, (uint8_t)hex[i * 2]);
+            ble_printf("%s:badchar off=%d pos=%d c=%02X\r\n",
+                       tag, offset, i, (uint8_t)hex[i * 2]);
             return;
         }
         buf[offset + i] = (uint8_t)b;
     }
-    fw_written += nbytes;
+    *counter += nbytes;
+}
+
+/* FW:offset:HH..  — write BW frame bytes */
+static void cmd_fw(char *args)
+{
+    fb_write(args, fb_bw(), &fw_written, "FW");
 }
 
 /* RW:offset:HH..  — write Red frame bytes */
-void cmd_rw(char *args)
+static void cmd_rw(char *args)
 {
-    char *endptr;
-    int offset = (int)strtol(args, &endptr, 10);
-    if (*endptr != ':') { ble_printf("RW:err no colon\r\n"); return; }
-    const char *hex = endptr + 1;
-    int hexlen = (int)strlen(hex);
-    if (hexlen & 1) { ble_printf("RW:err odd len %d\r\n", hexlen); return; }
-    int nbytes = hexlen / 2;
-    if (offset < 0 || offset + nbytes > FB_SIZE) {
-        ble_printf("RW:OOB off=%d n=%d\r\n", offset, nbytes); return;
-    }
-    uint8_t *buf = fb_red();
-    for (int i = 0; i < nbytes; i++) {
-        int b = hex_byte(hex + i * 2);
-        if (b < 0) {
-            ble_printf("RW:badchar off=%d pos=%d c=%02X\r\n",
-                       offset, i, (uint8_t)hex[i * 2]);
-            return;
-        }
-        buf[offset + i] = (uint8_t)b;
-    }
-    rw_written += nbytes;
+    fb_write(args, fb_red(), &rw_written, "RW");
 }
 
 /* FAPPLY — push FW/RW-written frame buffers to display.
  * Screensaver is disabled first; a short sleep lets its thread finish
  * the current render cycle before we push our frame. */
-void cmd_fapply(char *args)
+static void cmd_fapply(char *args)
 {
     display_manager_enable_screensaver(false);
     k_msleep(150);  /* wait for screensaver thread to finish current cycle */
@@ -819,7 +848,7 @@ void cmd_fapply(char *args)
 }
 
 /* SS:0/1 — screensaver on/off (lut_tester_host compatible) */
-void cmd_ss(char *args)
+static void cmd_ss(char *args)
 {
     if (!args || !*args) { ble_printf("usage: SS:0/1\r\n"); return; }
     int en = atoi(args);
@@ -828,7 +857,7 @@ void cmd_ss(char *args)
 }
 
 /* VCOM=HH — set VCOM register */
-void cmd_vcom(char *args)
+static void cmd_vcom(char *args)
 {
     if (!args || !*args) { ble_printf("usage: VCOM=HH\r\n"); return; }
     uint8_t v = (uint8_t)strtoul(args, NULL, 16);
@@ -837,7 +866,7 @@ void cmd_vcom(char *args)
 }
 
 /* HOST:0/1 — switch device into machine-readable telemetry mode */
-void cmd_host(char *args)
+static void cmd_host(char *args)
 {
     if (!args || !*args) {
         ble_printf("HOST:%s\r\n", host_mode ? "1" : "0");
@@ -850,7 +879,7 @@ void cmd_host(char *args)
 }
 
 /* STAT — snapshot of current LUT test timing stats + device state */
-void cmd_stat(char *args)
+static void cmd_stat(char *args)
 {
     int32_t frame, cur_ms, min_ms, max_ms;
     display_manager_get_lut_test_stats(&frame, &cur_ms, &min_ms, &max_ms);
@@ -861,7 +890,7 @@ void cmd_stat(char *args)
 }
 
 /* LUTUSE:0/1 — force-toggle whether lut_data[] is used for partial updates */
-void cmd_lutuse(char *args)
+static void cmd_lutuse(char *args)
 {
     if (!args || !*args) {
         ble_printf("LUTUSE:%s\r\n",
@@ -878,7 +907,7 @@ void cmd_lutuse(char *args)
  * 28 chars fits within even the smallest BLE ATT MTU (23 bytes would fail,
  * but MTU is negotiated higher in practice; and with CONFIG_BT_L2CAP_TX_MTU=247
  * it is guaranteed). We bypass ble_printf() to avoid its 128-byte snprintf cap. */
-void cmd_lget(char *args)
+static void cmd_lget(char *args)
 {
     static const char hx[] = "0123456789ABCDEF";
     char ln[32];
@@ -898,7 +927,7 @@ void cmd_lget(char *args)
 }
 
 /* LTEST / LTEST 0 — start/stop LUT test animation mode */
-void cmd_ltest(char *args)
+static void cmd_ltest(char *args)
 {
     if (args && *args == '0') {
         display_manager_set_screensaver_mode(SCREENSAVER_MODE_STATIC);
@@ -950,7 +979,7 @@ static const char *partial_mode_name(int mode)
 /* LUTSET:<name|n> — select built-in preset by name/index and disable custom LUT.
  * Accepted: TURBO/0, BALANCED/1, STABLE/2, CLEAN/3, TONE_DARK/4,
  * TONE_LIGHT/5, TONE_BIDIR_FAST/6, TONE_BIDIR/7 (case-insensitive). */
-void cmd_lutset(char *args)
+static void cmd_lutset(char *args)
 {
     if (!args || !*args) {
         ble_printf("LUTSET: usage: TURBO|BALANCED|STABLE|CLEAN|TONE_DARK|TONE_LIGHT|TONE_BIDIR_FAST|TONE_BIDIR (0-7)\r\n");
@@ -974,7 +1003,7 @@ void cmd_lutset(char *args)
  *   VLUT:LIST                  — show defined slots
  *   VLUT:CLEAR                 — clear all virtual slots
  */
-void cmd_vlut(char *args)
+static void cmd_vlut(char *args)
 {
     if (!args || !*args) {
         ble_printf("VLUT: usage: slot:base:off=val,... | slot | OFF | LIST | CLEAR\r\n");
@@ -1055,7 +1084,7 @@ void cmd_vlut(char *args)
 }
 
 /* VSTREAM:start[:preset]|stop — enter/exit binary animation streaming mode */
-void cmd_vstream(char *args)
+static void cmd_vstream(char *args)
 {
     if (!args || !*args) {
         ble_printf("VSTREAM:usage start[:TURBO|...|TONE_BIDIR_FAST]|stop\r\n");
@@ -1127,7 +1156,12 @@ static void cmd_reboot(char *args)
 static void cmd_sysinfo(char *args)
 {
     (void)args;
+    /* 0 on a failed read: SYSINFO's bat= field is parsed as an unsigned
+     * millivolt count by the host, so it must not go negative. */
     int mv = battery_read_mv();
+    if (mv < 0) {
+        mv = 0;
+    }
     int64_t uptime_s = (int64_t)persist_uptime_sec();
     uint32_t mah_x1000 = display_manager_get_energy_mah_x1000();
     int cur_ua = display_manager_get_estimated_current_ua();
@@ -1348,9 +1382,14 @@ static void cmd_bcast(char *args)
         return;
     }
 
-    int rc = mesh_originate(dst, dstval, c->opcode,
-                            (const uint8_t *)payload, (uint8_t)strlen(payload));
-    ble_printf("BCAST op=%02X -> %s\r\n", c->opcode, rc == 0 ? "queued" : "full");
+    size_t plen = strlen(payload);
+    int rc = plen > UINT8_MAX
+             ? -EMSGSIZE
+             : mesh_originate(dst, dstval, c->opcode,
+                              (const uint8_t *)payload, (uint8_t)plen);
+    const char *status = rc == 0 ? "queued"
+                       : rc == -EMSGSIZE ? "args too long" : "full";
+    ble_printf("BCAST op=%02X -> %s\r\n", c->opcode, status);
 }
 
 /* ── Command table ───────────────────────────────────────────────────────── */
@@ -1484,7 +1523,11 @@ static const struct shell_cmd *match_line(const char *line, const char **args_ou
  * the mesh layer (Phase 1) will also call for flooded commands. */
 void cmd_dispatch_opcode(uint8_t opcode, char *args, enum cmd_origin origin)
 {
-    g_cmd_origin = origin;
+    /* `origin` is not stored yet: Phase 1 will route replies by it, but a
+     * single file-scope variable would be the wrong home — the mesh dispatch
+     * thread and the BLE RX thread dispatch concurrently and would clobber
+     * each other's value. It belongs in a per-dispatch context. */
+    ARG_UNUSED(origin);
 
     const struct shell_cmd *c = find_by_opcode(opcode);
     if (c) {
@@ -1492,8 +1535,6 @@ void cmd_dispatch_opcode(uint8_t opcode, char *args, enum cmd_origin origin)
     } else {
         ble_printf("ERR:bad opcode %02X\r\n", opcode);
     }
-
-    g_cmd_origin = CMD_ORIGIN_NUS;
 }
 
 /* ── Dispatch a single complete text line ────────────────────────────────── */
