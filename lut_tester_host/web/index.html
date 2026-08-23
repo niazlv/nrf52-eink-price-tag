@@ -908,7 +908,9 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           <div id="enc-lut-box" style="display:flex;align-items:center;gap:5px">
             <span class="blbl">LUT:</span>
             <select id="enc-lut">
-              <option value="TURBO" selected>TURBO</option>
+              <option value="TURBO" selected>TURBO (14 субкадров)</option>
+              <option value="fast">FAST (10, быстрее, больше теней)</option>
+              <option value="video">VIDEO (8, самый быстрый)</option>
               <option value="BALANCED">BALANCED</option>
               <option value="STABLE">STABLE</option>
               <option value="CLEAN">CLEAN</option>
@@ -958,6 +960,9 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
             <input type="checkbox" id="enc-land" style="accent-color:var(--accent)" checked> <span id="enc-land-label">Landscape (296×128)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)" title="Кадры (W/2)×(H/2), устройство удваивает пиксели: ~4× меньше трафика BLE, картинка блоками 2×2. Прошивка 3.4.7+.">
+            <input type="checkbox" id="enc-half" style="accent-color:var(--accent)"> ½ разрешение
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
             <input type="checkbox" id="enc-loop" style="accent-color:var(--accent)"> Loop
@@ -1486,6 +1491,19 @@ const VS_TYPE_RAW2  = 3;
 const VS_TYPE_RLE2  = 4;
 const VS_TYPE_DRLE2 = 5;
 const VS_CRC_FLAG   = 0x40;  // OR into type byte → frame carries a CRC-16 trailer
+const VS_HALF_FLAG  = 0x20;  // OR into type byte → frame is (W/2)×(H/2), device pixel-doubles (fw 3.4.7+)
+
+// Host-uploaded drive tables for video (same as vstream.py's DRIVE_LUTS):
+// black = VSH1, white = VSL for (ta+tb) subframes, no red, VCOM idle. Sent
+// with LUTW: and selected by VSTREAM:start:CUSTOM (fw 3.4.7+).
+function makeDriveLut(ta, tb = 0) {
+  const lut = new Uint8Array(70);
+  lut[0] = 0x55;              // LUT0 black: Ph0 = VSH1
+  lut[7] = 0xAA;              // LUT1 white: Ph0 = VSL
+  lut[35] = ta; lut[36] = tb; // Ph0 timing: TA, TB subframes
+  return lut;
+}
+const DRIVE_LUTS = { video: makeDriveLut(0x08), fast: makeDriveLut(0x05, 0x05) };
 const VS_KEY_INTERVAL = 48;  // force a full keyframe at least every N frames
 const VS_KEY_SLACK    = 64;  // prefer a keyframe when full ≤ delta + this many bytes
 
@@ -1566,7 +1584,7 @@ function vsReset() {
   vs.ackTimes=[]; vs.dispHist=[];
   vs.creditWaiters=[]; vs.drainWaiters=[]; vs.readyWaiters=[];
   vs.resync=false; vs.resyncCount=0; vs.lastWc=null; vs.lastRs=0;
-  vs.devCrc=false; vs.useCrc=false;
+  vs.devCrc=false; vs.useCrc=false; vs.half=false;
 }
 function vsOnAck(line) {
   const m = line.match(/ms=(\d+)/);
@@ -2921,6 +2939,48 @@ async function sendBWR(bw, red, desc) {
 // ═══════════════════════════════════════════════════════════════════
 //  Test patterns (laid out from PANEL.lw × PANEL.lh at draw time)
 // ═══════════════════════════════════════════════════════════════════
+
+// Text for a 1-bpp panel. fillText is anti-aliased and canvasToPhys then
+// thresholds it, so hairline strokes vanish — the generic "monospace" is
+// Courier on iOS, and at the 10-12 px the 296×128 layout uses half of every
+// glyph is gone. crispText renders the string at 3× on a scratch canvas and
+// resolves each logical pixel by coverage (inked when ≥ cov of its 3×3
+// subpixels are), then paints solid pixels in `color`. The anchor (x, y) is
+// snapped to the logical grid so stems and bars land on whole pixels.
+// opts: color, align ('left'|'center'), baseline ('alphabetic'|'middle'),
+// bold, maxW (shrink the size until the string fits), cov.
+const CRISP_FAMILY = 'Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", "Roboto Mono", monospace';
+const crispScratch = document.createElement('canvas');
+function crispText(ctx, text, x, y, size, o = {}) {
+  const S = 3, cov = o.cov ?? 3;
+  const sc = crispScratch, sx = sc.getContext('2d');
+  const fontFor = sz => `${o.bold ? 'bold ' : ''}${sz * S}px ${CRISP_FAMILY}`;
+  const widthAt = sz => { sx.font = fontFor(sz); return sx.measureText(text).width / S; };
+  if (o.maxW) while (size > 6 && widthAt(size) > o.maxW) size--;
+  const tw = Math.ceil(widthAt(size)) + 2, th = Math.ceil(size * 1.6) + 2;   // logical px
+  if (sc.width !== tw * S || sc.height !== th * S) { sc.width = tw * S; sc.height = th * S; }
+  sx.clearRect(0, 0, sc.width, sc.height);
+  sx.font = fontFor(size); sx.fillStyle = '#000';
+  sx.textAlign = o.align || 'left'; sx.textBaseline = o.baseline || 'alphabetic';
+  const ax = sx.textAlign === 'center' ? Math.floor(tw / 2) : 1;
+  const ay = sx.textBaseline === 'middle' ? Math.floor(th / 2) : Math.ceil(size * 1.2);
+  sx.fillText(text, ax * S, ay * S);
+  const d = sx.getImageData(0, 0, sc.width, sc.height).data;
+  const ox = Math.round(x) - ax, oy = Math.round(y) - ay;
+  ctx.fillStyle = o.color || 'black';
+  for (let ly = 0; ly < th; ly++) {
+    let run = -1;
+    for (let lx = 0; lx <= tw; lx++) {
+      let n = 0;
+      if (lx < tw) for (let dy = 0; dy < S; dy++) for (let dx = 0; dx < S; dx++)
+        if (d[((ly * S + dy) * sc.width + lx * S + dx) * 4 + 3] >= 128) n++;
+      const ink = n >= cov;
+      if (ink && run < 0) run = lx;
+      if (!ink && run >= 0) { ctx.fillRect(ox + run, oy + ly, lx - run, 1); run = -1; }
+    }
+  }
+}
+
 function testPat(n) {
   const c=$('disp-canvas'), ctx=c.getContext('2d');
   ieClose();
@@ -2938,10 +2998,8 @@ function testPat(n) {
 function patTitle(ctx, w, h, text) {
   const bh = Math.max(14, Math.round(h / 9));
   ctx.fillStyle='black'; ctx.fillRect(0,0,w,bh);
-  ctx.fillStyle='white'; ctx.font=`${Math.max(10, Math.round(bh * 0.7))}px monospace`;
-  ctx.textBaseline='middle'; ctx.textAlign='left';
-  ctx.fillText(text, 4, bh / 2);
-  ctx.textBaseline='alphabetic';
+  crispText(ctx, text, 4, bh / 2, Math.max(10, Math.round(bh * 0.7)),
+            { color:'white', baseline:'middle', maxW: w - 8 });
   return bh;
 }
 
@@ -2951,11 +3009,10 @@ function patBands(ctx, w, h){
   ctx.fillStyle='#c80000'; ctx.fillRect(w - third, 0, third, h);
   ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(third + 1, 1, w - 2 * third - 2, h - 2);
   const fs = Math.max(13, Math.round(h / 9));
-  ctx.font=`bold ${fs}px monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillStyle='white';  ctx.fillText('BLACK', third / 2, h / 2);
-  ctx.fillStyle='black';  ctx.fillText('WHITE', w / 2, h / 2);
-  ctx.fillStyle='white';  ctx.fillText('RED', w - third / 2, h / 2);
-  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  const o = { align:'center', baseline:'middle', bold: fs >= 16 };   // bold smears below ~16 px
+  crispText(ctx, 'BLACK', third / 2,     h / 2, fs, { ...o, color:'white' });
+  crispText(ctx, 'WHITE', w / 2,         h / 2, fs, { ...o, color:'black' });
+  crispText(ctx, 'RED',   w - third / 2, h / 2, fs, { ...o, color:'white' });
   patTitle(ctx, w, h, `BWR COLOR BANDS TEST — ${PANEL.ctl} ${w}×${h}`);
 }
 
@@ -2967,16 +3024,17 @@ function patText(ctx, w, h){
   const boxW = Math.min(colW - 8, Math.round(w * 0.29));
   const boxH = Math.round(fs * 1.45);
   const x0 = 4, x1 = Math.floor(w / 2) + 4;
+  const inBox = top => top + boxH - Math.round(fs * 0.35);   // baseline inside a box
+  const boxLbl = color => ({ color, maxW: boxW - 8 });          // label shrinks to fit the box
   let y = bh + rowH;
-  ctx.font=`${fs}px monospace`; ctx.textBaseline='alphabetic';
   // Left column: black
-  ctx.fillStyle='black'; ctx.fillText('Hello World!', x0, y);
+  crispText(ctx, 'Hello World!', x0, y, fs);
   y += Math.round(fs * 0.6);
-  ctx.fillRect(x0, y, boxW, boxH);
-  ctx.fillStyle='white'; ctx.fillText('FILLED', x0 + 4, y + boxH - Math.round(fs * 0.35));
+  ctx.fillStyle='black'; ctx.fillRect(x0, y, boxW, boxH);
+  crispText(ctx, 'FILLED', x0 + 4, inBox(y), fs, boxLbl('white'));
   y += boxH + Math.round(fs * 0.5);
   ctx.strokeStyle='black'; ctx.lineWidth=2; ctx.strokeRect(x0, y, boxW, boxH);
-  ctx.fillStyle='black'; ctx.fillText('BORDER', x0 + 4, y + boxH - Math.round(fs * 0.35));
+  crispText(ctx, 'BORDER', x0 + 4, inBox(y), fs, boxLbl('black'));
   y += boxH + Math.round(fs * 0.8);
   // Checker of cells sized from the font, as many as fit the column
   const cw = Math.max(4, Math.round(fs * 0.7)), chh = Math.max(3, Math.round(fs * 0.55));
@@ -2985,13 +3043,13 @@ function patText(ctx, w, h){
     if((r+c)%2){ ctx.fillStyle='black'; ctx.fillRect(x0+c*cw, y+r*chh, cw, chh); }
   // Right column: red
   y = bh + rowH;
-  ctx.fillStyle='#c80000'; ctx.fillText('Red text!', x1, y);
+  crispText(ctx, 'Red text!', x1, y, fs, { color:'#c80000' });
   y += Math.round(fs * 0.6);
-  ctx.fillRect(x1, y, boxW, boxH);
-  ctx.fillStyle='white'; ctx.fillText('RED FILL', x1 + 4, y + boxH - Math.round(fs * 0.35));
+  ctx.fillStyle='#c80000'; ctx.fillRect(x1, y, boxW, boxH);
+  crispText(ctx, 'RED FILL', x1 + 4, inBox(y), fs, boxLbl('white'));
   y += boxH + Math.round(fs * 0.5);
   ctx.strokeStyle='#c80000'; ctx.lineWidth=2; ctx.strokeRect(x1, y, boxW, boxH);
-  ctx.fillStyle='#c80000'; ctx.fillText('RED BRD', x1 + 4, y + boxH - Math.round(fs * 0.35));
+  crispText(ctx, 'RED BRD', x1 + 4, inBox(y), fs, boxLbl('#c80000'));
   y += boxH + Math.round(fs * 0.8);
   const r = Math.max(10, Math.min(Math.round((h - y) / 2) - 4, Math.round(w * 0.08)));
   ctx.beginPath(); ctx.arc(x1 + boxW / 2, y + r + 2, r, 0, Math.PI*2);
@@ -3014,9 +3072,8 @@ function patGrid(ctx, w, h){
   // Diagonal single-pixel lines in the fourth column
   for(let x=3*cw;x<w;x++){ const y=top+((x-3*cw)%bandH); ctx.fillStyle='black'; ctx.fillRect(x,y,1,1); ctx.fillRect(x,top+bandH-1-((x-3*cw)%bandH),1,1); }
   const ly = top + bandH + lab;
-  ctx.fillStyle='black'; ctx.font=`${lab}px monospace`; ctx.textBaseline='alphabetic';
-  ctx.fillText('H-lines',2,ly); ctx.fillText('V-lines',cw+2,ly);
-  ctx.fillText('Checker',2*cw+2,ly); ctx.fillText('Diag',3*cw+2,ly);
+  crispText(ctx, 'H-lines', 2, ly, lab);        crispText(ctx, 'V-lines', cw + 2, ly, lab);
+  crispText(ctx, 'Checker', 2 * cw + 2, ly, lab); crispText(ctx, 'Diag', 3 * cw + 2, ly, lab);
   // Density gradient across the full width
   const gy = ly + 4, gh = h - gy - 2, steps = 8, sw = Math.floor(w / steps);
   for(let st=0;st<steps;st++){
@@ -3372,6 +3429,8 @@ async function startStream() {
   const syncMode = $('enc-sync').value;
   const lut      = toneVideo ? $('enc-tone-lut').value : $('enc-lut').value;
   const [tw, th] = vsDims(land);
+  const halfRes  = !toneVideo && $('enc-half').checked;
+  vs.half = halfRes;   // encodeVSFrame/vsWrap read it; vsReset() above cleared it
   const toneState = toneVideo ? createToneVideoState(tw, th, toneCell, {
     kind: toneServo ? 'servo' : 'temporal',
     step: parseFloat($('enc-tone-step')?.value) || 0.16,
@@ -3454,17 +3513,25 @@ async function startStream() {
     $('stream-prog').style.width = '0%';
   }
 
-  await sendBytes(new TextEncoder().encode(`LUTSET:${lut}\n`));
-  await sleep(150);
-  await sendBytes(new TextEncoder().encode(`VSTREAM:start:${lut}\n`));
+  if (DRIVE_LUTS[lut]) {
+    // Host drive table: upload it, then start with CUSTOM — a plain start
+    // resets the device to its builtin TURBO and would ignore the upload.
+    await sendBytes(new TextEncoder().encode('LUTW:' + hexOf(DRIVE_LUTS[lut]).toUpperCase() + '\n'));
+    await sleep(300);
+    await sendBytes(new TextEncoder().encode('VSTREAM:start:CUSTOM\n'));
+  } else {
+    await sendBytes(new TextEncoder().encode(`LUTSET:${lut}\n`));
+    await sleep(150);
+    await sendBytes(new TextEncoder().encode(`VSTREAM:start:${lut}\n`));
+  }
   // Device primes the display before replying ready (deep-sleep wake + HV
   // charge, ~1s) — don't blast frames into an unprimed controller.
   if (!await vsWaitReady(10000))
     animLog('⚠ нет VSTREAM:ready за 10с — старая прошивка? продолжаю');
   const renderInfo = toneVideo
     ? `tone ${toneState.kind} cell=${toneState.cell} lut=${lut}${toneServo ? ` step=${toneState.step.toFixed(2)} smooth=${toneState.smooth.toFixed(2)}` : ''}`
-    : `1bpp ${dith ? 'dither' : 'threshold'} lut=${lut}`;
-  animLog(`▶ VSTREAM:start:${lut} | ${renderInfo} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
+    : `1bpp ${dith ? 'dither' : 'threshold'} lut=${lut}${halfRes ? ' half-res' : ''}`;
+  animLog(`▶ VSTREAM:start:${DRIVE_LUTS[lut] ? 'CUSTOM(' + lut + ')' : lut} | ${renderInfo} | mode=${syncMode} rot=${rot}° ${land?'landscape':'portrait'}`);
 
   // Запускаем аудио-сопровождение если включено
   await startStreamAudio(syncMode, fps);
@@ -4241,8 +4308,46 @@ function crc16ccitt(data) {
 
 // Frame a payload. With useCrc the type byte gets the 0x40 flag and a 2-byte
 // CRC-16 over the payload is inserted before the 0xBB flush.
+// Downsample one physical plane 2×2 (majority, ties → white) to the
+// (W/2)×(H/2) plane a VS_HALF_FLAG frame carries; the device doubles it back.
+function halfPlane(buf) {
+  const pw = PANEL.pw, ph = PANEL.ph, stride = pw >> 3, hstride = pw >> 4, hh = ph >> 1;
+  const out = new Uint8Array(hstride * hh);
+  for (let r = 0; r < hh; r++) {
+    const a = 2 * r * stride, b = a + stride;
+    for (let ob = 0; ob < hstride; ob++) {
+      const wa = (buf[a + 2*ob] << 8) | buf[a + 2*ob + 1];
+      const wb = (buf[b + 2*ob] << 8) | buf[b + 2*ob + 1];
+      let o = 0;
+      for (let k = 0; k < 8; k++) {
+        const sh = 14 - 2 * k;
+        const n = ((wa >> sh) & 1) + ((wa >> (sh + 1)) & 1) + ((wb >> sh) & 1) + ((wb >> (sh + 1)) & 1);
+        if (n >= 2) o |= 0x80 >> k;
+      }
+      out[hstride * r + ob] = o;
+    }
+  }
+  return out;
+}
+
+// What goes on the wire for a frame: the frame itself, or its half-res
+// version (each plane of a dual frame separately) when the stream runs half.
+function vsWireFrame(frame) {
+  if (!vs.half) return frame;
+  const fb = fbSize();
+  if (frame.length === fb * 2) {
+    const h = new Uint8Array(fb / 2);
+    h.set(halfPlane(frame.subarray(0, fb)), 0);
+    h.set(halfPlane(frame.subarray(fb)), fb / 4);
+    return h;
+  }
+  return halfPlane(frame);
+}
+const wireFrameBytes = () => vs.half ? fbSize() / 4 : fbSize();
+
 function vsWrap(type, payload, useCrc) {
-  const t = useCrc ? (type | VS_CRC_FLAG) : type;
+  let t = useCrc ? (type | VS_CRC_FLAG) : type;
+  if (vs.half) t |= VS_HALF_FLAG;
   const ln = payload.length, extra = useCrc ? 2 : 0;
   const pkt = new Uint8Array(6 + ln + extra);
   pkt[0]=0xAA; pkt[1]=0x55; pkt[2]=t;
@@ -4257,6 +4362,8 @@ function vsWrap(type, payload, useCrc) {
 function makeVSPkt(frame, enc, prev, useCrc=false) {
   let payload, type;
   const dual = frame.length === fbSize() * 2;
+  frame = vsWireFrame(frame);
+  if (prev) prev = vsWireFrame(prev);
   if (enc===2) { // DRLE
     if (!prev) { payload=packBits(frame); type=dual ? VS_TYPE_RLE2 : VS_TYPE_RLE; }
     else {
@@ -4276,6 +4383,8 @@ function makeVSPkt(frame, enc, prev, useCrc=false) {
 // Returns {pkt, isKey}.
 function encodeVSFrame(frame, prev, enc, useCrc, forceKey, keySlack) {
   const dual = frame.length === fbSize() * 2;
+  frame = vsWireFrame(frame);
+  if (prev) prev = vsWireFrame(prev);
   if (enc===0) return { pkt: vsWrap(dual?VS_TYPE_RAW2:VS_TYPE_RAW, frame, useCrc), isKey:true };
   if (enc===1 || !prev || forceKey)
     return { pkt: vsWrap(dual?VS_TYPE_RLE2:VS_TYPE_RLE, packBits(frame), useCrc), isKey:true };
