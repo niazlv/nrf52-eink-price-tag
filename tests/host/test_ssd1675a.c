@@ -54,6 +54,18 @@ bool ssd1675a_port_busy(void)
 
 void ssd1675a_port_delay_ms(uint32_t ms) { delay_total_ms += ms; }
 
+/* The port contract's optional read-back path. A port that cannot read fills
+ * the buffer with 0xFF, which the driver reads as "no read path" rather than
+ * as data — that is exactly the behaviour this fake wants, so the probe tests
+ * exercise the no-read-path branch. */
+void ssd1675a_port_read(uint8_t cmd, uint8_t *buf, int n)
+{
+    (void)cmd;
+    for (int i = 0; i < n; i++) {
+        buf[i] = 0xFF;
+    }
+}
+
 static void capture_reset(void)
 {
     frame_count = 0;
