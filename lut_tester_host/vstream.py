@@ -272,15 +272,41 @@ def gray_to_1bpp(gray: "np.ndarray", dither: bool, invert: bool, threshold: int)
 
 # ── binary packet ─────────────────────────────────────────────────────────────
 
+def _crc16_table() -> list:
+    """Byte-wise CRC-16/CCITT-FALSE table, built once at import."""
+    tab = []
+    for i in range(256):
+        c = i << 8
+        for _ in range(8):
+            c = ((c << 1) ^ 0x1021) & 0xFFFF if (c & 0x8000) else (c << 1) & 0xFFFF
+        tab.append(c)
+    return tab
+
+_CRC16_TAB = _crc16_table()
+
 def crc16_ccitt(data: bytes) -> int:
     """CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, MSB-first).
-    Must match the device's vs_crc16_update()."""
+    Must match the device's vs_crc16_update().
+
+    Table-driven: the bit-by-bit loop was ~0.76 ms per frame, about 45% of all
+    per-frame host CPU. The device keeps a nibble table instead because its
+    constraint is RAM; here there is none, so use the full 256-entry one.
+    Both produce the standard 0x29B1 for b"123456789"."""
     crc = 0xFFFF
     for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
+        crc = ((crc << 8) & 0xFFFF) ^ _CRC16_TAB[(crc >> 8) ^ b]
     return crc
+
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    """Byte-wise XOR of two buffers — the delta between consecutive frames.
+
+    The generator-expression version was ~0.18 ms per frame and ran twice per
+    encode; numpy does it in ~0.001 ms. Length mismatch keeps the old
+    zip() behaviour (truncate to the shorter) rather than raising, so a
+    resolution change mid-stream fails the same way it always did."""
+    if NP_OK and len(a) == len(b):
+        return (np.frombuffer(a, np.uint8) ^ np.frombuffer(b, np.uint8)).tobytes()
+    return bytes(x ^ y for x, y in zip(a, b))
 
 def vs_wrap(typ: int, payload: bytes, use_crc: bool) -> bytes:
     """Frame a payload. With use_crc the type byte gets the 0x40 flag and a
@@ -301,7 +327,7 @@ def make_packet(frame: bytes, enc: int, prev: bytes | None,
         if prev is None or force_key:
             payload, typ = packbits_encode(frame), VS_RLE
         else:
-            delta = bytes(a ^ b for a, b in zip(frame, prev))
+            delta = xor_bytes(frame, prev)
             payload, typ = packbits_encode(delta), VS_DRLE
     elif enc == VS_RLE:
         payload, typ = packbits_encode(frame), VS_RLE
@@ -323,7 +349,7 @@ def encode_frame(frame: bytes, prev: bytes | None, enc: int,
     if enc == VS_RLE or prev is None or force_key:
         return vs_wrap(VS_RLE, packbits_encode(frame), use_crc), True
     # enc == VS_DRLE with a prev: delta vs opportunistic cheap keyframe.
-    delta = bytes(a ^ b for a, b in zip(frame, prev))
+    delta = xor_bytes(frame, prev)
     dpay  = packbits_encode(delta)
     fpay  = packbits_encode(frame)
     if len(fpay) <= len(dpay) + key_slack:
@@ -487,6 +513,8 @@ def print_bottleneck(session):
 
 def frame_crc(frame: bytes) -> int:
     """XOR checksum matching the device's vs_flush_frame CRC (all FB_SIZE bytes)."""
+    if NP_OK:
+        return int(np.bitwise_xor.reduce(np.frombuffer(frame, np.uint8)))
     x = 0
     for b in frame:
         x ^= b
