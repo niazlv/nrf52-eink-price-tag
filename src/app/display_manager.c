@@ -39,9 +39,30 @@ static int stream_partial_count = 0;
  *   a known clean baseline;
  * - minute ticks use the TURBO partial LUT so the panel can sleep quickly.
  */
-#define STATIC_SAVER_FULL_INTERVAL 20
+/* Two independent triggers for the full refresh, because the old single redraw
+ * counter was quietly doing two jobs at once.
+ *
+ * The clock is the schedule. Keying the schedule on a redraw counter meant
+ * every unplanned redraw counted, and display_manager_force_update() fires from
+ * eight command handlers plus display_manager_set_rotation() — so a phone
+ * talking to the tag pulled the next ~9 s full cycle arbitrarily close, and
+ * "every 20 minutes" really meant "every 20 redraws, however often those come".
+ *
+ * The count is the ghosting ceiling, and it has to stay. Partial waveforms do
+ * not DC-balance the panel; only a full cycle does. Without a cap on CONSECUTIVE
+ * partials a busy host could run hundreds of them inside one 20-minute window
+ * and never clear the accumulated charge. The streaming path keeps the same
+ * guard for the same reason (STREAM_REFRESH_INTERVAL).
+ *
+ * On an idle tag the minute tick hits the clock first and the ceiling never
+ * binds; under host traffic the ceiling takes over. */
+#define STATIC_SAVER_FULL_INTERVAL 20        /* minutes between full refreshes */
+#define STATIC_SAVER_MAX_PARTIALS  60        /* ceiling on consecutive partials */
 #define STATIC_SAVER_PARTIAL_MODE 0
-static int static_saver_frame_count = 0;
+/* Partial refreshes drawn since the last full one; reset by every full one. */
+static int static_saver_partials_since_full = 0;
+/* Uptime of the last full refresh; 0 = none yet, so the first frame is full. */
+static int64_t static_saver_last_full_ms = 0;
 
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
@@ -119,8 +140,40 @@ K_MUTEX_DEFINE(display_lock);
 #define DISPLAY_LOCK()   k_mutex_lock(&display_lock, K_FOREVER)
 #define DISPLAY_UNLOCK() k_mutex_unlock(&display_lock)
 
+/* The screensaver thread's own drawing must not queue behind a long
+ * maintenance cycle. display_manager_deep_clean() can own the display for
+ * fifteen minutes, and the top of that thread's loop is ALSO the battery
+ * protection and persist cycle — waiting K_FOREVER here meant a CLEAN or NUKE
+ * silently disabled low-battery shutdown for its whole duration. Skipping a
+ * status frame costs nothing: the next tick draws it. Anything that must not
+ * be dropped keeps DISPLAY_LOCK(). */
+#define DISPLAY_LOCK_OR_SKIP()                                    \
+	do {                                                          \
+		if (k_mutex_lock(&display_lock, K_SECONDS(2)) != 0) { \
+			return;                                       \
+		}                                                     \
+	} while (0)
+
 static bool should_power_down_after_update(void);
 static void load_frame(void);
+
+/* The on-screen gauge is redrawn every frame — up to 10 Hz on the dynamic
+ * saver — for a value that moves over minutes, and each read is a blocking
+ * SAADC conversion. Ten seconds of staleness is invisible on a battery icon.
+ * A failed read is not cached: the negative value makes the next call retry. */
+static int cached_batt_mv = -1;
+static int64_t cached_batt_ms = 0;
+
+static int battery_mv_for_display(void)
+{
+    int64_t now = k_uptime_get();
+
+    if (cached_batt_mv < 0 || (now - cached_batt_ms) >= 10 * 1000) {
+        cached_batt_mv = battery_read_mv();
+        cached_batt_ms = now;
+    }
+    return cached_batt_mv;
+}
 
 /* Full refreshes use the panel's OTP waveform instead of the working table.
  * On by default for a panel the table was never tuned for (the 400x300). */
@@ -336,6 +389,27 @@ static int maintenance_countdown(int current_count, int interval)
     int phase = next_count % interval;
 
     return (phase == 0) ? 0 : (interval - phase);
+}
+
+/* The "A:" field: how much slack is left before the next full refresh, counted
+ * against whichever of the two triggers is closer. Both are "how many more
+ * ticks", and on the idle minute tick a tick IS a minute, so the number reads
+ * the same as the old counter did. */
+static int maintenance_countdown_static(int64_t last_full_ms, int64_t now_ms,
+                                        int interval_min, int partials_done,
+                                        int max_partials)
+{
+    if (last_full_ms == 0) {
+        return 0;   /* nothing drawn yet: the next frame is the full one */
+    }
+
+    int64_t elapsed_min = (now_ms - last_full_ms) / (60 * 1000);
+    int by_clock = interval_min - (int)elapsed_min;
+    int by_count = max_partials - partials_done;
+
+    int remaining = (by_clock < by_count) ? by_clock : by_count;
+
+    return (remaining < 0) ? 0 : remaining;
 }
 
 /* What the boot-time probe decided. 128x296 B/W/R is the compile-time default
@@ -753,7 +827,7 @@ void display_manager_update_lut_test(void) {
 
     /* Held across the render too: the frame buffers are shared, so another
      * thread rendering its own screen mid-way would be pushed out here. */
-    DISPLAY_LOCK();
+    DISPLAY_LOCK_OR_SKIP();
 
     int64_t now = k_uptime_get();
     int32_t delta_ms = 0;
@@ -818,7 +892,8 @@ void display_manager_set_screensaver_mode(int mode) {
         display_manager_reset_lut_test();
         k_sem_give(&sem_screensaver_wake);
     } else {
-        static_saver_frame_count = 0;
+        static_saver_partials_since_full = 0;
+        static_saver_last_full_ms = 0;
         display_manager_set_keep_on(false);
         display_manager_set_partial_mode(STATIC_SAVER_PARTIAL_MODE);
     }
@@ -832,11 +907,11 @@ void display_manager_update_status(void) {
 
     /* Render and push as one unit — the frame buffers are global, so an
      * interleaved render from another thread would be pushed out here. */
-    DISPLAY_LOCK();
+    DISPLAY_LOCK_OR_SKIP();
 
     int64_t start_render = k_uptime_get();
     static int32_t last_dur = 0;
-    int mv = battery_read_mv();
+    int mv = battery_mv_for_display();
     display_status_model_t model = {0};
 
     get_system_time(&model.time);
@@ -854,7 +929,10 @@ void display_manager_update_status(void) {
     model.power_after_update = should_power_down_after_update();
     model.maintenance_countdown =
         (screensaver_mode == SCREENSAVER_MODE_STATIC)
-            ? maintenance_countdown(static_saver_frame_count, STATIC_SAVER_FULL_INTERVAL)
+            ? maintenance_countdown_static(static_saver_last_full_ms, start_render,
+                                           STATIC_SAVER_FULL_INTERVAL,
+                                           static_saver_partials_since_full,
+                                           STATIC_SAVER_MAX_PARTIALS)
             : maintenance_countdown(stream_partial_count, STREAM_REFRESH_INTERVAL);
     model.energy_mah_x1000 = power_estimate_get_mah_x1000();
     model.estimated_current_ua = power_estimate_current_ua;
@@ -870,9 +948,19 @@ void display_manager_update_status(void) {
         send_tele = tele_enabled && (dyn_frame_ctr % 10 == 0);
     } else {
         render_scene(scene_status_static, &model);
-        bool full_refresh = (static_saver_frame_count == 0) ||
-                            ((static_saver_frame_count % STATIC_SAVER_FULL_INTERVAL) == 0);
-        static_saver_frame_count++;
+        /* Whichever comes first: the schedule, or the ghosting ceiling.
+         * See STATIC_SAVER_FULL_INTERVAL for why it takes both. */
+        bool full_refresh =
+            (static_saver_last_full_ms == 0) ||
+            ((start_render - static_saver_last_full_ms) >=
+             (int64_t)STATIC_SAVER_FULL_INTERVAL * 60 * 1000) ||
+            (static_saver_partials_since_full >= STATIC_SAVER_MAX_PARTIALS);
+        if (full_refresh) {
+            static_saver_last_full_ms = start_render;
+            static_saver_partials_since_full = 0;
+        } else {
+            static_saver_partials_since_full++;
+        }
         display_manager_update_static_saver(full_refresh);
 
         last_dur = (int32_t)(k_uptime_get() - start_render);
@@ -1010,7 +1098,8 @@ void display_manager_enable_screensaver(bool enable) {
     screensaver_enabled = enable;
     power_estimate_resync_idle();
     if (enable && !prev) {
-        static_saver_frame_count = 0;
+        static_saver_partials_since_full = 0;
+        static_saver_last_full_ms = 0;
         k_sem_give(&sem_screensaver_wake);
     } else if (!enable && keep_display_on) {
         /* Entering image mode from dynamic screensaver: stop streaming and
@@ -1033,19 +1122,38 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
     k_sleep(K_SECONDS(2));
 
     bool low_battery_screen_shown = false;
+    int mv = -1;
+    battery_state_t bstate = battery_get_state();
+    int64_t last_maintenance_ms = 0;
 
     while (1) {
-        /* ── Battery protection check ── */
-        int mv = battery_read_mv();
-        /* A failed ADC read must not feed the protection state machine: it
-         * would look like 0 mV and power a healthy device off. Keep the last
-         * known state and try again next cycle. */
-        battery_state_t bstate = (mv < 0) ? battery_get_state()
-                                          : battery_monitor_update(mv);
+        /* ── Battery protection + stats roll-up ──
+         *
+         * Rate-limited, because this loop does not run at one speed. On the
+         * static saver it ticks once a minute and every pass through here was
+         * fine; the dynamic and LUT-test modes spin it at 4-10 Hz, and there
+         * this block was running hundreds of times more often than anything it
+         * measures changes — a blocking SAADC conversion plus persist_tick()'s
+         * two CRC32 passes under a spinlock, per animation frame.
+         *
+         * Thirty seconds is the same cadence the BATT_LOW branch below already
+         * settled on, so protection is no less responsive than it was. */
+        int64_t now_ms = k_uptime_get();
+        if (last_maintenance_ms == 0 ||
+            (now_ms - last_maintenance_ms) >= 30 * 1000) {
+            last_maintenance_ms = now_ms;
 
-        /* Roll cumulative stats forward in retained RAM (~1/min). RAM-only. */
-        power_estimate_account_now();   /* fold the idle interval's energy in too */
-        persist_tick();
+            mv = battery_read_mv();
+            /* A failed ADC read must not feed the protection state machine: it
+             * would look like 0 mV and power a healthy device off. Keep the last
+             * known state and try again next cycle. */
+            bstate = (mv < 0) ? battery_get_state()
+                              : battery_monitor_update(mv);
+
+            /* Roll cumulative stats forward in retained RAM. RAM-only. */
+            power_estimate_account_now();   /* folds the idle interval in too */
+            persist_tick();
+        }
 
         if (bstate == BATT_CRITICAL || bstate == BATT_SHUTDOWN) {
             /* Power may be about to be lost: last-breath save to flash. */
