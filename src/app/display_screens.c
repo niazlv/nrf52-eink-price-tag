@@ -250,7 +250,7 @@ void display_screens_render_status_dynamic(const display_status_model_t *model)
 
     for (int y = 0; y < life_h; y++) {
         for (int x = 0; x < life_w; x++) {
-            if (life_world.cells[y][x]) {
+            if (life_get(&life_world, x, y)) {
                 graphics_fill_rect(x * cell, y * cell, cell - 1, cell - 1, GFX_BLACK);
             }
         }

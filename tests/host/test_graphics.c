@@ -318,6 +318,151 @@ static void test_rects(void)
     graphics_draw_rect(0, 0, 5, -1, GFX_BLACK);
 }
 
+/*
+ * graphics_fill_rect() takes a span/memset shortcut instead of calling
+ * graphics_draw_pixel() per pixel. The shortcut is only allowed to be faster,
+ * never different — so drive both against the same canvas and compare the
+ * planes byte for byte, across every rotation, render mode and colour, and
+ * with rectangles that land off-canvas, on byte boundaries and between them.
+ */
+static uint8_t ref_bw[2 * BUFFER_SIZE];
+static uint8_t ref_red[2 * BUFFER_SIZE];
+
+static void fill_rect_per_pixel(int x, int y, int w, int h, int color)
+{
+    for (int yy = y; yy < y + h; yy++) {
+        for (int xx = x; xx < x + w; xx++) {
+            graphics_draw_pixel(xx, yy, color);
+        }
+    }
+}
+
+static void compare_fill(int rot, int mode, int color, const int r[4], bool with_red)
+{
+    const size_t plane = (size_t)GRAPHICS_BUFFER_SIZE(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    graphics_init_panel(DISPLAY_WIDTH, DISPLAY_HEIGHT, with_red);
+    graphics_set_rotation(rot);
+    graphics_set_render_mode(mode);
+    graphics_clear(GFX_WHITE);
+    fill_rect_per_pixel(r[0], r[1], r[2], r[3], color);
+    memcpy(ref_bw, graphics_get_buffer(), plane);
+    if (with_red) {
+        memcpy(ref_red, graphics_get_red_buffer(), plane);
+    }
+
+    graphics_init_panel(DISPLAY_WIDTH, DISPLAY_HEIGHT, with_red);
+    graphics_set_rotation(rot);
+    graphics_set_render_mode(mode);
+    graphics_clear(GFX_WHITE);
+    graphics_fill_rect(r[0], r[1], r[2], r[3], color);
+
+    T_ASSERT_MSG(memcmp(ref_bw, graphics_get_buffer(), plane) == 0,
+                 "bw differs: rot=%d mode=%d color=%d rect=%d,%d,%d,%d red=%d",
+                 rot, mode, color, r[0], r[1], r[2], r[3], (int)with_red);
+    if (with_red) {
+        T_ASSERT_MSG(memcmp(ref_red, graphics_get_red_buffer(), plane) == 0,
+                     "red differs: rot=%d mode=%d color=%d rect=%d,%d,%d,%d",
+                     rot, mode, color, r[0], r[1], r[2], r[3]);
+    }
+}
+
+static void test_fill_rect_matches_per_pixel(void)
+{
+    const int W = DISPLAY_WIDTH, H = DISPLAY_HEIGHT;
+    /* GFX_TRANSPARENT and 99 are not drawable: both paths must leave the
+     * canvas alone. GRAY/PINK are checkerboards and keep the per-pixel path. */
+    const int colors[] = {
+        GFX_BLACK, GFX_WHITE, GFX_RED, GFX_GRAY, GFX_PINK, GFX_TRANSPARENT, 99,
+    };
+    const int rects[][4] = {
+        {0, 0, H, W},          /* whole logical canvas (rotation 1 default) */
+        {0, 0, W, H},
+        {0, 0, 1, 1},          /* single pixel */
+        {7, 0, 1, 9},          /* last bit of a byte */
+        {8, 0, 1, 9},          /* first bit of the next byte */
+        {3, 5, 17, 23},        /* both edges mid-byte */
+        {0, 0, 8, 8},          /* exactly one byte wide */
+        {13, 29, 64, 41},
+        {-5, -5, 20, 20},      /* clipped at the origin */
+        {W - 3, H - 3, 40, 40},/* clipped at the far corner */
+        {-40, -40, 10, 10},    /* entirely off-canvas */
+        {5, 5, 0, 10},         /* degenerate */
+        {5, 5, 10, -2},
+    };
+
+    for (int rot = 0; rot < 4; rot++) {
+        for (unsigned c = 0; c < sizeof(colors) / sizeof(colors[0]); c++) {
+            for (unsigned i = 0; i < sizeof(rects) / sizeof(rects[0]); i++) {
+                compare_fill(rot, GFX_RENDER_NORMAL, colors[c], rects[i], true);
+                compare_fill(rot, GFX_RENDER_NORMAL, colors[c], rects[i], false);
+                compare_fill(rot, GFX_RENDER_RED_MASK, colors[c], rects[i], true);
+                if (t_failures) {
+                    return; /* one report is enough to debug from */
+                }
+            }
+        }
+    }
+
+    /* Leave the module in the state the other tests expect. */
+    graphics_set_render_mode(GFX_RENDER_NORMAL);
+    graphics_init();
+}
+
+/* graphics_canvas_init() takes the buffer size from the caller, so a canvas can
+ * legally be given fewer bytes than stride*height. draw_pixel drops the pixels
+ * that fall past the end; the span path must drop exactly the same ones and no
+ * more — the case where it would be tempting to skip the whole row. */
+static void test_fill_rect_short_buffer(void)
+{
+    enum { W = 32, H = 16, FULL = (W * H) / 8, SHORT = FULL - 5 };
+    static uint8_t bw_ref[FULL], red_ref[FULL];
+    static uint8_t bw_fast[FULL], red_fast[FULL];
+    graphics_canvas_t canvas;
+    graphics_canvas_t *saved = graphics_get_canvas();
+
+    const int rects[][4] = {
+        {0, 0, W, H}, {2, 3, 27, 12}, {8, 8, 8, 8}, {0, H - 2, W, 2},
+    };
+    const int colors[] = { GFX_BLACK, GFX_WHITE, GFX_RED };
+
+    for (int rot = 0; rot < 4; rot++) {
+        for (unsigned c = 0; c < sizeof(colors) / sizeof(colors[0]); c++) {
+            for (unsigned i = 0; i < sizeof(rects) / sizeof(rects[0]); i++) {
+                memset(bw_ref, 0xFF, FULL); memset(red_ref, 0x00, FULL);
+                graphics_canvas_init(&canvas, W, H, bw_ref, red_ref, SHORT);
+                graphics_set_canvas(&canvas);
+                graphics_set_rotation(rot);
+                fill_rect_per_pixel(rects[i][0], rects[i][1],
+                                    rects[i][2], rects[i][3], colors[c]);
+
+                memset(bw_fast, 0xFF, FULL); memset(red_fast, 0x00, FULL);
+                graphics_canvas_init(&canvas, W, H, bw_fast, red_fast, SHORT);
+                graphics_set_canvas(&canvas);
+                graphics_set_rotation(rot);
+                graphics_fill_rect(rects[i][0], rects[i][1],
+                                   rects[i][2], rects[i][3], colors[c]);
+
+                T_ASSERT_MSG(memcmp(bw_ref, bw_fast, FULL) == 0,
+                             "short-buffer bw differs: rot=%d color=%d rect=%d,%d,%d,%d",
+                             rot, colors[c], rects[i][0], rects[i][1],
+                             rects[i][2], rects[i][3]);
+                T_ASSERT_MSG(memcmp(red_ref, red_fast, FULL) == 0,
+                             "short-buffer red differs: rot=%d color=%d rect=%d,%d,%d,%d",
+                             rot, colors[c], rects[i][0], rects[i][1],
+                             rects[i][2], rects[i][3]);
+                if (t_failures) {
+                    graphics_set_canvas(saved);
+                    return;
+                }
+            }
+        }
+    }
+
+    graphics_set_canvas(saved);
+    graphics_init();
+}
+
 int main(void)
 {
     T_RUN(test_init_defaults);
@@ -330,5 +475,7 @@ int main(void)
     T_RUN(test_battery_icon);
     T_RUN(test_custom_canvas);
     T_RUN(test_rects);
+    T_RUN(test_fill_rect_matches_per_pixel);
+    T_RUN(test_fill_rect_short_buffer);
     return t_report("graphics");
 }
