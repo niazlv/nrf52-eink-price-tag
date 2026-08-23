@@ -96,6 +96,23 @@ static inline void clk_pulse(void)
     SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CLK);
 }
 
+/* One bit: data line, then a clock pulse. Each GPIO store is an APB write of
+ * ~3 cycles (~47 ns) at 64 MHz, which already exceeds the controllers' 25 ns
+ * minimum clock half-period and data setup; a single NOP before the rising
+ * edge keeps margin on the setup side. Unrolled: no loop counter, no shift. */
+#define SPI_BIT(mask)                                                     \
+    do {                                                                  \
+        if (mask) {                                                       \
+            SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_MOSI);               \
+        } else {                                                          \
+            SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_MOSI);               \
+        }                                                                 \
+        __NOP();                                                          \
+        SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_CLK);                    \
+        __NOP();                                                          \
+        SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CLK);                    \
+    } while (0)
+
 void ssd1675a_port_write9(uint8_t byte, bool is_data)
 {
     if (!configured) {
@@ -104,24 +121,15 @@ void ssd1675a_port_write9(uint8_t byte, bool is_data)
 
     SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CS);
 
-    /* 1. Command/data bit (0 = command, 1 = data) */
-    if (is_data) {
-        SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_MOSI);
-    } else {
-        SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_MOSI);
-    }
-    clk_pulse();
-
-    /* 2. Eight data bits, MSB first */
-    for (int i = 0; i < 8; i++) {
-        if (byte & 0x80) {
-            SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_MOSI);
-        } else {
-            SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_MOSI);
-        }
-        byte <<= 1;
-        clk_pulse();
-    }
+    SPI_BIT(is_data);          /* 1. Command/data bit (0 = command, 1 = data) */
+    SPI_BIT(byte & 0x80);      /* 2. Eight data bits, MSB first */
+    SPI_BIT(byte & 0x40);
+    SPI_BIT(byte & 0x20);
+    SPI_BIT(byte & 0x10);
+    SPI_BIT(byte & 0x08);
+    SPI_BIT(byte & 0x04);
+    SPI_BIT(byte & 0x02);
+    SPI_BIT(byte & 0x01);
 
     SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_CS);
 }

@@ -87,6 +87,7 @@ static int plane_size(void)  { return (int)graphics_get_canvas()->buffer_size; }
 /* vstream frame size on the wire: the plane size at VSTREAM:start. FB_SIZE is
  * only the 128x296 default before the first stream. */
 static uint16_t vs_fb = FB_SIZE;
+static bool vs_half;   /* current frame carries VS_HALF_FLAG */
 
 /* ── Binary vstream (animation streaming over BLE) ──────────────────────────
  *
@@ -128,6 +129,10 @@ static uint16_t vs_fb = FB_SIZE;
  * encoding (0x00..0x05). Frames without this bit stay byte-for-byte the old
  * format, so old hosts and old firmware keep interoperating. */
 #define VS_CRC_FLAG  0x40u
+/* Type-byte flag: the frame is (W/2) x (H/2) and is pixel-doubled on decode.
+ * A lossy 4x payload cut for video on the 400x300 panel, where BLE, not the
+ * display, paces the stream. Low bits still select the encoding. */
+#define VS_HALF_FLAG 0x20u
 #define VS_TYPE_MASK 0x3Fu
 
 typedef enum {
@@ -298,22 +303,55 @@ static void vs_reset_frame(void) {
     vs_crc_rx = 0;
 }
 
+/* Bytes of one plane on the wire: the panel plane, or a quarter of it for a
+ * half-resolution frame ((W/2) x (H/2), see VS_HALF_FLAG). */
+static inline uint16_t vs_plane_bytes(void)
+{
+    return vs_half ? (uint16_t)(vs_fb / 4) : vs_fb;
+}
+
+/* Half-resolution frames land as 2x2 pixel blocks: each decoded byte (8
+ * half-pixels) becomes two bytes in each of two framebuffer rows through a
+ * nibble-doubling table. Doubling is linear over XOR, so a DRLE delta applied
+ * this way on top of a half-res keyframe is exactly the doubled half-res
+ * image — no extra buffer, no per-frame state beyond vs_dec. */
+static const uint8_t vs_nib_dbl[16] = {
+    0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F,
+    0xC0, 0xC3, 0xCC, 0xCF, 0xF0, 0xF3, 0xFC, 0xFF,
+};
+
 static inline void vs_write_byte(uint8_t b) {
     const bool dual = vs_type_is_dual(vs_type);
-    const uint16_t max_dec = dual ? (vs_fb * 2) : vs_fb;
+    const uint16_t plane = vs_plane_bytes();
+    const uint16_t max_dec = dual ? (plane * 2) : plane;
     if (vs_dec >= max_dec) return;
 
     uint8_t *fb;
     uint16_t off = vs_dec;
-    if (dual && off >= vs_fb) {
+    if (dual && off >= plane) {
         fb = fb_red();
-        off -= vs_fb;
+        off -= plane;
     } else {
         fb = fb_bw();
     }
 
     if (fb) {   /* a B/W-only panel has no red plane: swallow that half */
-        fb[off] = vs_type_is_delta(vs_type) ? (fb[off] ^ b) : b;
+        const bool delta = vs_type_is_delta(vs_type);
+        if (!vs_half) {
+            fb[off] = delta ? (fb[off] ^ b) : b;
+        } else {
+            const int stride = ssd1675a_width() / 8;   /* full-res bytes per row */
+            const int hstride = stride / 2;
+            const int hy = off / hstride, hx = off % hstride;
+            uint8_t *p0 = fb + (2 * hy) * stride + 2 * hx;
+            uint8_t *p1 = p0 + stride;
+            const uint8_t d0 = vs_nib_dbl[b >> 4], d1 = vs_nib_dbl[b & 0x0F];
+            if (delta) {
+                p0[0] ^= d0; p0[1] ^= d1; p1[0] ^= d0; p1[1] ^= d1;
+            } else {
+                p0[0] = d0;  p0[1] = d1;  p1[0] = d0;  p1[1] = d1;
+            }
+        }
     }
     vs_dec++;
 }
@@ -347,7 +385,7 @@ static void vs_rle_feed(uint8_t b) {
 
 static void vs_flush_frame(void) {
     const bool dual = vs_type_is_dual(vs_type);
-    const uint16_t max_dec = dual ? (vs_fb * 2) : vs_fb;
+    const uint16_t max_dec = dual ? (vs_plane_bytes() * 2) : vs_plane_bytes();
 
     /* Flush any trailing run bytes that arrived at end of compressed stream. */
     if (!vs_type_is_raw(vs_type)) {
@@ -423,7 +461,8 @@ static void vs_process_byte(uint8_t b) {
         break;
     case VS_TYPE_RD:
         vs_has_crc = (b & VS_CRC_FLAG) != 0;
-        vs_type    = b & VS_TYPE_MASK;
+        vs_half    = (b & VS_HALF_FLAG) != 0;
+        vs_type    = b & VS_TYPE_MASK & (uint8_t)~VS_HALF_FLAG;
         vs_state   = (vs_type <= VS_TYPE_DRLE2) ? VS_LEN_HI : VS_IDLE;
         break;
     case VS_LEN_HI:
@@ -1142,7 +1181,7 @@ static void cmd_vlut(char *args)
 static void cmd_vstream(char *args)
 {
     if (!args || !*args) {
-        ble_printf("VSTREAM:usage start[:TURBO|...|TONE_BIDIR_FAST]|stop\r\n");
+        ble_printf("VSTREAM:usage start[:TURBO|...|TONE_BIDIR_FAST|CUSTOM]|stop\r\n");
         return;
     }
     if (args[0] == '0' || strncmp(args, "stop", 4) == 0) {
@@ -1155,11 +1194,18 @@ static void cmd_vstream(char *args)
         int mode = 0;  /* Backward-compatible default: TURBO. */
 
         while (*mode_arg == ':' || *mode_arg == '=' || *mode_arg == ' ') mode_arg++;
+        bool use_custom = false;
         if (*mode_arg) {
-            mode = parse_partial_mode_name(mode_arg);
-            if (mode < 0) {
-                ble_printf("VSTREAM:bad lut '%s'\r\n", mode_arg);
-                return;
+            if (strncasecmp(mode_arg, "CUSTOM", 6) == 0) {
+                /* Stream with the host-uploaded LUTW: table instead of a
+                 * builtin preset — how a host A/Bs drive waveforms. */
+                use_custom = true;
+            } else {
+                mode = parse_partial_mode_name(mode_arg);
+                if (mode < 0) {
+                    ble_printf("VSTREAM:bad lut '%s'\r\n", mode_arg);
+                    return;
+                }
             }
         }
 
@@ -1169,7 +1215,7 @@ static void cmd_vstream(char *args)
         graphics_clear(GFX_WHITE);  /* ensure FB starts white before first RLE frame */
         display_manager_set_keep_on(true);
         display_manager_set_stream_write_red_plane(false);
-        ssd1675a_set_use_custom_lut(false);
+        ssd1675a_set_use_custom_lut(use_custom);
         display_manager_set_partial_mode(mode);
         /* Prime the display before replying ready: wakes the controller from
          * deep sleep (where BUSY idles high and vs_flush_frame's wait_busy
@@ -1185,7 +1231,7 @@ static void cmd_vstream(char *args)
         vs_poisoned    = false;
         vstream_active = true;
         k_work_reschedule(&vs_watchdog_work, K_MSEC(VS_WATCHDOG_MS));
-        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE/RAW2/RLE2/DRLE2 crc=opt(+0x40) fmt=AA55 tt LL LL [payload] [crcHi crcLo] BB stop=CCDD/CCDE\r\n",
+        ble_printf("VSTREAM:ready lut=%s type=RAW/RLE/DRLE/RAW2/RLE2/DRLE2 crc=opt(+0x40) half=opt(+0x20) fmt=AA55 tt LL LL [payload] [crcHi crcLo] BB stop=CCDD/CCDE\r\n",
                    partial_mode_name(mode));
         return;
     }
@@ -1346,10 +1392,10 @@ static void cmd_sysinfo(char *args)
                persist_boot_count(), persist_fw_update_count(),
                persist_refreshes_total(), persist_refreshes_since_fw());
     /* Identity + security on the same logical line (host buffers until '\n'). */
-    ble_printf(" layout=%d serial=%s sec=%d authed=%d panel=%s\r\n",
+    ble_printf(" layout=%d serial=%s sec=%d authed=%d panel=%s phy=%d\r\n",
                APP_LAYOUT_ID, factory_serial(),
                secauth_enforced() ? 1 : 0, secauth_is_authed() ? 1 : 0,
-               display_manager_panel_name());
+               display_manager_panel_name(), ble_service_get_phy());
 }
 
 /* STATS — read persisted statistics (live RAM copy + flash record), for manual

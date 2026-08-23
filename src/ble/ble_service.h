@@ -35,6 +35,10 @@ int ble_service_send(const char *data, uint16_t len);
  */
 void ble_printf(const char *fmt, ...);
 
+/** Current connection's TX PHY: 2 (LE 2M), 1 (LE 1M) or 0 (no connection /
+ *  PHY info unavailable). For SYSINFO, so a host can see what it got. */
+int ble_service_get_phy(void);
+
 /**
  * @brief Check if BLE is connected
  */

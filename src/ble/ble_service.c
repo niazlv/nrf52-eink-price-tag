@@ -538,6 +538,18 @@ bool ble_service_get_streaming_mode(void)
 	return ble_streaming_mode;
 }
 
+int ble_service_get_phy(void)
+{
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	struct bt_conn_info info;
+
+	if (current_conn && bt_conn_get_info(current_conn, &info) == 0 && info.le.phy) {
+		return info.le.phy->tx_phy == BT_GAP_LE_PHY_2M ? 2 : 1;
+	}
+#endif
+	return 0;
+}
+
 const char *ble_service_get_device_name(void)
 {
 	return device_name;
