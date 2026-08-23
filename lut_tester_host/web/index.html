@@ -967,7 +967,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <div class="bgrid">
             <button class="btn"     onclick="send('CLEAN\n')" title="Цикл очистки 7× B/W/R">Очистка <small>CLEAN</small></button>
             <button class="btn bad" onclick="nukeDialog()" title="Глубокая очистка призраков, ~15 мин">Глубокая <small>NUKE</small></button>
-            <button class="btn"     onclick="sendTime()" title="Передать текущее время">Время <small>TIME</small></button>
+            <button class="btn"     onclick="syncTime()" title="Передать текущее время и дату">Время и дата <small>TIME</small></button>
             <button class="btn"     onclick="send('BATT\n')" title="Запросить напряжение батареи">Батарея <small>BATT</small></button>
             <button class="btn bad" onclick="rebootDevice()" title="Перезагрузить устройство">Перезагрузка <small>REBOOT</small></button>
           </div>
@@ -1305,9 +1305,11 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
         </div>
         <div class="brow" style="margin-top:12px">
           <button class="btn" onclick="requestSysinfo()">🔄 Обновить</button>
+          <button class="btn" onclick="syncTime()" title="Передать ценнику текущее время и дату с этого устройства">🕐 Синхронизировать</button>
           <button class="btn bad" onclick="send('REBOOT\n')">⟳ Перезагрузить</button>
           <span class="muted" id="sys-last-update"></span>
         </div>
+        <div class="hint">Часы ценника отсчитываются от времени сборки и не переживают потерю питания: после каждого сброса дату и время надо выставлять заново. При подключении это делается автоматически, «Синхронизировать» — то же самое вручную.</div>
       </section>
 
       <section class="card m4">
@@ -2314,18 +2316,29 @@ function parseLget(line) {
 // ═══════════════════════════════════════════════════════════════════
 //  Device commands
 // ═══════════════════════════════════════════════════════════════════
-function sendTime() {
-  const n = new Date();
-  sendRaw_(`TIME=${n.getHours()}:${n.getMinutes()}:${n.getSeconds()}`);
-}
-// Полная установка: время + дата (нужно после прошивки/первой загрузки, когда
-// на устройстве стоит только build-дата). Прошивка хранит компоненты «как есть»
-// (mktime/gmtime без TZ), поэтому шлём ЛОКАЛЬНЫЕ числа — на экране ценника они
-// и отобразятся как местное время.
+// Время + дата одной командой. Раньше кнопка слала «TIME=HH:MM:SS», который
+// оставляет на ценнике прежнюю дату — а она после сброса стоит на дате сборки,
+// потому что часы отсчитываются от неё и потерю питания не переживают. Так что
+// отдельная «установка только времени» смысла не имела: дату всё равно надо
+// выставлять при каждом сбросе.
+//
+// Прошивка хранит компоненты «как есть» (mktime/gmtime без TZ), поэтому шлём
+// ЛОКАЛЬНЫЕ числа — на экране ценника они и отобразятся как местное время.
 function sendFullTime() {
   const n = new Date();
   sendRaw_(`TIME ${n.getHours()}:${n.getMinutes()}:${n.getSeconds()} ` +
            `${n.getDate()}.${n.getMonth() + 1}.${n.getFullYear()}`);
+}
+// То же, но с ответом пользователю — вешается на кнопки, в отличие от
+// автоматики при подключении, которая работает молча.
+function syncTime() {
+  if (!connected) { uiToast('Сначала подключись к ценнику'); return; }
+  const n = new Date();
+  const p = v => String(v).padStart(2, '0');
+  sendFullTime();
+  autoTimeDoneThisConn = true;   // выставили руками — автоматике уже нечего делать
+  uiToast(`Время и дата переданы: ${p(n.getHours())}:${p(n.getMinutes())} ` +
+          `${p(n.getDate())}.${p(n.getMonth() + 1)}.${n.getFullYear()}`, 'ok');
 }
 // Часы ценника отсчитываются от build-времени, пока их кто-то не выставит, и
 // НЕ переживают потерю питания. После OTA/первой загрузки они показывают build —
