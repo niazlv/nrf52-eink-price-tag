@@ -291,14 +291,26 @@ static bool range_ok(int offset, int nbytes, int limit)
 /* ── Vstream helpers ─────────────────────────────────────────────────────── */
 
 /* CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, MSB-first) — running update.
- * Must match the host's crc16_ccitt(). Table-free: 8 shifts/byte is negligible
- * next to SPI/LUT time and avoids a 512-byte table on a RAM-tight build. */
+ * Must match the host's crc16_ccitt().
+ *
+ * Nibble table, not the byte table the RAM budget can't afford and not the
+ * table-free shift loop that came before it: 16 entries is 32 bytes of .rodata
+ * and zero RAM, and it turns eight shift-and-test iterations per byte into two
+ * lookups. On a RAW2 frame the old loop ran 240 000 iterations — about 15 ms of
+ * the receive path, on the BLE RX thread, per frame.
+ *
+ * Equivalence to the shift loop was checked exhaustively over the whole state
+ * space (all 65536 CRC values x 256 input bytes) and against the standard
+ * "123456789" -> 0x29B1 vector. */
+static const uint16_t vs_crc16_nib[16] = {
+    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
+    0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF,
+};
+
 static inline uint16_t vs_crc16_update(uint16_t crc, uint8_t b)
 {
-    crc ^= (uint16_t)b << 8;
-    for (int i = 0; i < 8; i++)
-        crc = (crc & 0x8000u) ? (uint16_t)((crc << 1) ^ 0x1021u)
-                              : (uint16_t)(crc << 1);
+    crc = (uint16_t)((crc << 4) ^ vs_crc16_nib[((crc >> 12) ^ (b >> 4)) & 0x0Fu]);
+    crc = (uint16_t)((crc << 4) ^ vs_crc16_nib[((crc >> 12) ^ (b & 0x0Fu)) & 0x0Fu]);
     return crc;
 }
 
@@ -413,13 +425,21 @@ static void vs_flush_frame(void) {
         }
     }
 
-    /* XOR checksum of the decoded framebuffer — legacy host integrity field. */
-    const uint8_t *fb = fb_bw();
+    /* XOR checksum of the decoded framebuffer — legacy host integrity field,
+     * superseded by the wire CRC-16 below (the `wc`/`rs` fields). Computing it
+     * walks the whole framebuffer — 15 000 bytes on a 400x300 panel, 30 000
+     * when both planes are live — and it sat right before the wait-for-BUSY,
+     * so it landed squarely in the gap between frames. Only host_mode consumes
+     * the value, so only host_mode pays for it; everyone else reports 00 and
+     * gets the milliseconds back. */
     uint8_t crc = 0;
-    for (int i = 0; i < vs_fb; i++) crc ^= fb[i];
-    if (dual) {
-        const uint8_t *fr = fb_red();   /* NULL on a B/W-only panel */
-        for (int i = 0; fr && i < vs_fb; i++) crc ^= fr[i];
+    if (host_mode) {
+        const uint8_t *fb = fb_bw();
+        for (int i = 0; i < vs_fb; i++) crc ^= fb[i];
+        if (dual) {
+            const uint8_t *fr = fb_red();   /* NULL on a B/W-only panel */
+            for (int i = 0; fr && i < vs_fb; i++) crc ^= fr[i];
+        }
     }
 
     /* Wire-CRC verdict (L0). A frame with no CRC trailer is trusted as before.
@@ -1764,6 +1784,16 @@ static const struct shell_cmd *match_line(const char *line, const char **args_ou
 {
     for (int i = 0; commands[i].name != NULL; i++) {
         const char *cmd = commands[i].name;
+
+        /* One-byte reject before the calls. The registry is 54 entries and
+         * "FW:" sits 32 of them in, so a frame upload — 62-313 lines, each
+         * re-walking the table — was paying a strlen() plus a strncmp() call
+         * per entry per line, thousands of them per frame. Comparing the first
+         * character first drops all but the handful of entries that share it,
+         * and cannot change the outcome: a differing first byte already
+         * guarantees strncmp() is non-zero for any non-empty name. */
+        if (cmd[0] != line[0]) continue;
+
         int cmd_len = (int)strlen(cmd);
 
         if (strncmp(line, cmd, cmd_len) != 0) continue;

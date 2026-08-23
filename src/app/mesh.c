@@ -51,7 +51,15 @@ struct seen_ent { uint8_t src[3]; uint16_t seq; bool used; };
 static struct seen_ent seen[DEDUP_SLOTS];
 static uint8_t seen_idx;
 
-static bool seen_check_and_add(const uint8_t src[3], uint16_t seq)
+/* Split in two on purpose. The check is read-only and safe to run against an
+ * unauthenticated PDU, so it can happen BEFORE the CMAC and spare a duplicate
+ * the three blocking bt_encrypt_be() round-trips it used to pay — in a fleet of
+ * N tags every flooded command arrives N-1 extra times.
+ *
+ * The add must stay AFTER the CMAC passes. Adding an unverified (src, seq)
+ * would let anyone fill these 16 slots with forgeries and get the real command
+ * discarded as a duplicate. Verified in, unverified never. */
+static bool seen_check(const uint8_t src[3], uint16_t seq)
 {
     for (int i = 0; i < DEDUP_SLOTS; i++) {
         if (seen[i].used && seen[i].seq == seq &&
@@ -59,11 +67,15 @@ static bool seen_check_and_add(const uint8_t src[3], uint16_t seq)
             return true;   /* already processed */
         }
     }
+    return false;
+}
+
+static void seen_add(const uint8_t src[3], uint16_t seq)
+{
     memcpy(seen[seen_idx].src, src, 3);
     seen[seen_idx].seq = seq;
     seen[seen_idx].used = true;
     seen_idx = (seen_idx + 1) % DEDUP_SLOTS;
-    return false;
 }
 
 /* ── Work item / job queue ──────────────────────────────────────────────── */
@@ -153,8 +165,27 @@ static void cmac_shift_left(const uint8_t in[16], uint8_t out[16])
     }
 }
 
+/* CMAC subkeys depend on the key and nothing else, but deriving them costs a
+ * bt_encrypt_be() — a blocking HCI LE_Encrypt round-trip to the controller,
+ * one of the three every PDU used to pay. Cache them against a snapshot of the
+ * key: a 16-byte compare replaces the round-trip, and comparing the key IS the
+ * invalidation, so SETKEY needs no hook here.
+ *
+ * Only ever touched from the mesh thread (receive) and originate, both of which
+ * already serialise on it. */
+static uint8_t cmac_cached_key[16];
+static uint8_t cmac_cached_k1[16];
+static uint8_t cmac_cached_k2[16];
+static bool cmac_cache_valid;
+
 static void cmac_subkeys(const uint8_t *k, uint8_t k1[16], uint8_t k2[16])
 {
+    if (cmac_cache_valid && memcmp(cmac_cached_key, k, 16) == 0) {
+        memcpy(k1, cmac_cached_k1, 16);
+        memcpy(k2, cmac_cached_k2, 16);
+        return;
+    }
+
     uint8_t zero[16] = {0}, l[16];
     bt_encrypt_be(k, zero, l);
     cmac_shift_left(l, k1);
@@ -165,6 +196,11 @@ static void cmac_subkeys(const uint8_t *k, uint8_t k1[16], uint8_t k2[16])
     if (k1[0] & 0x80) {
         k2[15] ^= 0x87;
     }
+
+    memcpy(cmac_cached_key, k, 16);
+    memcpy(cmac_cached_k1, k1, 16);
+    memcpy(cmac_cached_k2, k2, 16);
+    cmac_cache_valid = true;
 }
 
 /* Compute the 4-byte truncated CMAC of msg[0..len) into out[0..4). */
@@ -278,17 +314,22 @@ static void mesh_handle_pdu(const uint8_t *pdu, uint8_t len, bool trusted)
         return;
     }
 
+    /* Cheap reject first: a PDU we have already handled costs nothing to drop,
+     * and in a fleet most receptions are exactly that. */
+    if (seen_check(src, seq)) {
+        return;   /* duplicate / loop / replay */
+    }
+
     if (!trusted) {
         uint8_t want[MESH_MAC_LEN];
         mesh_mac_over_pdu(pdu, (uint8_t)(len - MESH_MAC_LEN), want);
         if (memcmp(want, mac, MESH_MAC_LEN) != 0) {
-            return;   /* not from a fleet member */
+            return;   /* not from a fleet member — and NOT remembered, so a
+                       * forgery cannot evict the genuine PDU from the cache */
         }
     }
 
-    if (seen_check_and_add(src, seq)) {
-        return;   /* duplicate / loop / replay */
-    }
+    seen_add(src, seq);
 
     /* Relay first (with TTL-1) so the flood keeps spreading even if the local
      * handler below blocks on a slow e-ink refresh. */
