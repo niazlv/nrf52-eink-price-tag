@@ -154,7 +154,7 @@ def _rssi_bar(rssi: int, lo: int = -100, hi: int = -40, width: int = 10) -> str:
     filled = round(width * frac)
     return "▮" * filled + "▯" * (width - filled)
 
-async def scan_matching(match_fn, timeout: float = 12.0, settle: float = 3.0):
+async def scan_matching(match_fn, timeout: float = 25.0, settle: float = 3.0):
     """Collect every advertiser accepted by match_fn. After the first hit keep
     scanning `settle` more seconds so a second nearby device is not missed."""
     found = {}            # address -> (dev, adv) with the latest adv (and RSSI)

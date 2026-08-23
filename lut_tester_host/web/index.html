@@ -1585,6 +1585,7 @@ function vsReset() {
   vs.creditWaiters=[]; vs.drainWaiters=[]; vs.readyWaiters=[];
   vs.resync=false; vs.resyncCount=0; vs.lastWc=null; vs.lastRs=0;
   vs.devCrc=false; vs.useCrc=false; vs.half=false;
+  vs.shown=0;   // ACKs with wc≠bad and rs=0: frames the panel actually displayed
 }
 function vsOnAck(line) {
   const m = line.match(/ms=(\d+)/);
@@ -1593,6 +1594,10 @@ function vsOnAck(line) {
   const rs = line.match(/rs=(\d+)/); vs.lastRs = rs ? +rs[1] : 0;
   if (vs.lastRs) { vs.resync = true; vs.resyncCount++; }
   vs.acked++;
+  // The device ACKs every frame it decoded, including ones it refused to show
+  // (wire-CRC bad, or a delta while poisoned until the next keyframe) — those
+  // are the "frozen" moments a viewer sees. Count what was shown separately.
+  if (vs.lastWc !== 'bad' && !vs.lastRs) vs.shown = (vs.shown || 0) + 1;
   vs.ackTimes.push(performance.now()); if (vs.ackTimes.length>21) vs.ackTimes.shift();
   vs.dispHist.push(vs.lastMs);          if (vs.dispHist.length>20) vs.dispHist.shift();
   if (vs.inflight>0) vs.inflight--;
@@ -2686,8 +2691,14 @@ async function sendPhotoPassGuaranteed(frame, prev, label, retries=4) {
   return { bytes, ok, tries };
 }
 
+// The photo tone passes are single-plane frames: TONE_DARK / TONE_LIGHT key the
+// LUT on the B/W bit alone (the red=1 rows LUT2/LUT3 are no-ops), so they run
+// on a single-buffer panel as well — its red RAM is zeroed by the CLEAR+UPDATE
+// base (display_buffer writes 0x00 for a NULL red plane). Only tone-servo
+// *video* needs the red plane as a hold bit; that check lives in startStream().
+// The pulse-strength slider was calibrated on the 2.9"; another panel needs
+// its own value.
 async function sendCanvasTone() {
-  if (!PANEL.redPlane) { alert('Тоновые режимы используют красную плоскость как управляющий бит — на этой панели (B/W буфер) недоступны. Выбери «Дизер / BWR».'); return; }
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
 
@@ -2702,6 +2713,7 @@ async function sendCanvasTone() {
   vsReset();
 
   logI(`Отправляю canvas тонами: ${maxPulse} тёмных + ${lightPasses} белых импульсов, max=${usedMax}`);
+  if (!PANEL.redPlane) logI(`  ${PANEL.ctl}: отклик на импульс не калиброван — подбирай «Сила имп.» по результату`);
 
   try {
     await sendBytes(new TextEncoder().encode('HOST:1\n'));
@@ -2840,7 +2852,6 @@ function canvasToToneSoftLevels(maxPulse) {
 }
 
 async function sendCanvasToneSoft() {
-  if (!PANEL.redPlane) { alert('Тоновые режимы используют красную плоскость как управляющий бит — на этой панели (B/W буфер) недоступны. Выбери «Дизер / BWR».'); return; }
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
 
@@ -2854,6 +2865,7 @@ async function sendCanvasToneSoft() {
   vsReset();
 
   logI(`Отправляю canvas (мягкий тон): ${maxPulse} импульсов SOFT_DARK, max=${usedMax}`);
+  if (!PANEL.redPlane) logI(`  ${PANEL.ctl}: отклик на импульс не калиброван — подбирай «Сила имп.» по результату`);
 
   try {
     await sendBytes(new TextEncoder().encode('HOST:1\n'));
@@ -3410,6 +3422,13 @@ function stopStream() {
 async function startStream() {
   if (!connected){ alert('Не подключено'); return; }
   if (!animFileType){ alert('Загрузи файл анимации'); return; }
+  // Servo tones send two planes and use the red one as a per-pixel hold bit;
+  // a single-buffer panel's firmware swallows that half, so the servo would
+  // run blind. Temporal tones and mono are single-plane and fine.
+  if (currentAnimRenderMode() === 'tone-servo' && !PANEL.redPlane) {
+    alert('«Тона servo» используют красную плоскость как hold-бит — на этой панели (один B/W буфер) недоступны. Выбери «Тона temporal» или моно.');
+    return;
+  }
   streamRunning=true; streamStop=false; vsReset();
   $('btn-stream').textContent='⏸ Pause';
 
@@ -3545,14 +3564,20 @@ async function startStream() {
 
   const statusTxt = (head, pktLen, extra='') => {
     const elapsed=(performance.now()-t0)/1000;
-    const fps = elapsed>0 ? vs.acked/elapsed : 0;
     const cyc=vsCycleMs(), disp=vsDispMs(), net=Math.max(0,cyc-disp);
+    // fps = frames the panel actually showed, over the last ~20 ACKs (the
+    // cycle), not a since-start average of every ACK: an average hides stalls
+    // and counts frames the device refused (CRC bad / waiting for a keyframe).
+    const shown = vs.shown || 0, dropped = vs.acked - shown;
+    const okShare = vs.acked ? shown / vs.acked : 1;
+    const fps = cyc > 0 ? (1000 / cyc) * okShare : 0;
+    const avg = elapsed > 0 ? shown / elapsed : 0;
     const buf = animFrameProducer ? (() => {
       const s = animFrameProducer.stats();
       return ` | enc=${s.ready}/${s.total} buf=${s.ahead}`;
     })() : '';
-    return `${head} ${fps.toFixed(1)}fps | cyc~${cyc.toFixed(0)} disp~${disp.toFixed(0)} `+
-           `net~${net.toFixed(0)}ms | pkt=${pktLen}B${buf}${extra}`;
+    return `${head} ${fps.toFixed(1)}fps (avg ${avg.toFixed(1)}${dropped ? `, drop ${dropped}` : ''}) | `+
+           `cyc~${cyc.toFixed(0)} disp~${disp.toFixed(0)} net~${net.toFixed(0)}ms | pkt=${pktLen}B${buf}${extra}`;
   };
 
   // Pipelined send: waits only when the in-flight window (vs.window) is full,
