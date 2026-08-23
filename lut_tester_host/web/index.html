@@ -406,6 +406,38 @@ input[type=text].lc{   /* specificity ≥ the generic input rule, on every break
 #ui-toast.err{border-color:#4a2020;background:#2a1414;color:#ffb3b3}
 #ui-toast.ok{border-color:#1e4030;background:#162a22;color:#b8f0d6}
 
+/* ── Connection states: idle · busy · on · err ── */
+.conn.busy{border-color:#4a3010;color:#f5c98a}
+.conn.err {border-color:#4a2020;color:#ffb3b3}
+.conn.on  {border-color:#1e4030}
+.dot.busy{background:var(--orange);animation:dotspin 1s linear infinite}
+.dot.err {background:var(--red)}
+@keyframes dotspin{
+  0%,100%{transform:scale(1);opacity:1}
+  50%{transform:scale(.55);opacity:.45}
+}
+#btn-conn:disabled{opacity:.55}
+
+/* ── Header chips: battery, live stream ── */
+#batt-chip,#live-chip{
+  font-size:11px;font-weight:600;border-radius:999px;padding:4px 10px;white-space:nowrap;
+  border:1px solid var(--border);background:var(--bg3);color:var(--fg2);font-family:var(--mono);
+}
+#batt-chip[hidden],#live-chip[hidden]{display:none}
+#batt-chip.warn{color:var(--orange);border-color:#4a3010;background:#2a1e08}
+#batt-chip.bad {color:var(--red);border-color:#4a2020;background:#2a1414}
+#live-chip{color:var(--green);border-color:#1e4030;background:#162a22;cursor:pointer;animation:livepulse 1.8s ease-in-out infinite}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+/* ── Nav markers: live stream, pending update ── */
+.tab.live,.tab.badge{position:relative}
+.tab.live::after,.tab.badge::after{
+  content:'';position:absolute;top:5px;right:6px;
+  width:8px;height:8px;border-radius:50%;border:2px solid var(--bg2);
+}
+.tab.live::after {background:var(--green);animation:livepulse 1.8s ease-in-out infinite}
+.tab.badge::after{background:var(--accent)}
+
 /* ── Send status bar (bytes · speed · time; fixed, visible on every tab) ── */
 #send-bar{
   position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:98;
@@ -480,10 +512,13 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
   body{min-height:100vh;min-height:100dvh;display:block;overflow-x:hidden;font-size:14px}
 
   .hdr{gap:8px;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}
-  .hdr-row{display:flex;align-items:center;gap:8px;width:100%;min-width:0}
+  .hdr-row{display:flex;align-items:center;gap:8px;width:100%;min-width:0;flex-wrap:wrap}
   .brand{font-size:14px}
   .brand small{display:none}
-  .conn{flex:1 1 0;order:0;padding:5px 10px;font-size:12px}
+  /* Own row: with the battery/stream chips in play the pill got squeezed to
+     "Скан…" — the one line that must stay readable. */
+  .conn{order:9;flex:1 1 100%;min-height:30px;padding:4px 10px;font-size:12px}
+  #batt-chip,#live-chip{padding:3px 8px}
   #mtu-txt{display:none}
   #btn-conn{order:0;min-width:0;flex:0 0 auto;padding-left:12px;padding-right:12px}
   #net-chip{order:0}
@@ -587,11 +622,13 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
       <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i></span>
       E·INK <small>nRF52 controller</small>
     </div>
-    <div class="conn" title="Состояние подключения">
+    <div class="conn" id="conn-pill" title="Состояние подключения">
       <span class="dot" id="dot"></span>
       <span id="st-txt">Не подключено</span>
       <span id="mtu-txt"></span>
     </div>
+    <span id="batt-chip" hidden title="Заряд ценника"></span>
+    <span id="live-chip" hidden onclick="tab('anim')" title="Идёт стрим — открыть «Анимацию»"></span>
     <span id="net-chip" hidden>⚡ офлайн</span>
     <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Подключить</button>
     <button class="btn icon" id="hdr-more-btn" onclick="hdrMore()" title="Какой ценник искать" aria-label="Параметры подключения" aria-expanded="false" aria-controls="hdr-more">
@@ -626,7 +663,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
     <svg viewBox="0 0 24 24"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>
     <span>Ценник</span>
   </div>
-  <div class="tab" role="button" tabindex="0" onclick="tab('anim')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('anim')}">
+  <div class="tab" id="nav-anim" role="button" tabindex="0" onclick="tab('anim')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('anim')}">
     <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
     <span>Анимация</span>
   </div>
@@ -634,7 +671,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
     <svg viewBox="0 0 24 24"><path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h8M18 18h2"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></svg>
     <span>LUT</span>
   </div>
-  <div class="tab" role="button" tabindex="0" onclick="tab('sys')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('sys')}">
+  <div class="tab" id="nav-sys" role="button" tabindex="0" onclick="tab('sys')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('sys')}">
     <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
     <span>Система</span>
   </div>
@@ -667,6 +704,9 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
             <div class="pbar"><div class="pfill" id="send-prog" style="width:0%"></div></div>
             <div id="send-info" class="pinfo"></div>
           </div>
+        </div>
+        <div id="disp-empty" class="pinfo" style="margin-top:8px">
+          Пусто — выбери картинку, впиши текст или нажми тестовый паттерн
         </div>
 
         <div class="frow" style="margin-top:12px">
@@ -1836,7 +1876,7 @@ const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;
 async function gattConnectRetry(device, tries = 3) {
   for (let i = 1; ; i++) {
     try {
-      setStatus(`Подключение… попытка ${i}/${tries}`, false);
+      setStatus(`Подключение… попытка ${i}/${tries}`, false, 'busy');
       return await device.gatt.connect();
     } catch (e) {
       logE(`GATT (${i}/${tries}): ${e.message}`);
@@ -1868,7 +1908,7 @@ async function bleConnect() {
   } else {
     filters = [{services: [NUS_SVC]}];
   }
-  setStatus('Сканирую…', false);
+  setStatus('Сканирую…', false, 'busy');
   try {
     bleDevice = await navigator.bluetooth.requestDevice({
       filters,
@@ -1895,7 +1935,10 @@ async function bleConnect() {
     sendRaw_('HOST:1');
     onSysConnect();
   } catch(e) {
-    setStatus('Ошибка: ' + e.message, false);
+    // Closing the device chooser is a normal outcome, not a failure to shout about.
+    const cancelled = /cancel/i.test(e.message);
+    setStatus(cancelled ? 'Не подключено' : 'Ошибка: ' + e.message, false, cancelled ? 'idle' : 'err');
+    if (cancelled) { logI('Выбор ценника отменён'); return; }
     logE(e.message);
     if (/Connection attempt failed|GATT operation|not connected|range/i.test(e.message)) {
       logI('Частые причины и что сделать:');
@@ -1920,6 +1963,9 @@ function onBleDisc() {
   autoAuthTried = false; authBusy = false;
   setStatus('Не подключено', false);
   $('btn-conn').textContent = 'Подключить';
+  liveStop();                    // a dropped link ends any stream indicator
+  battChip(null);                // the charge belongs to the tag we just lost
+  navBadge('nav-sys', false);
   currentDeviceName = '';
   nfcRefresh();
   // Не тащим статус приёма на следующий ценник: у него он может быть другим,
@@ -2128,9 +2174,71 @@ function sendRaw_(cmd) {
 // ═══════════════════════════════════════════════════════════════════
 //  Status
 // ═══════════════════════════════════════════════════════════════════
-function setStatus(msg, on) {
+// Connection state drives the header pill, the dot and the Connect button.
+// state: idle (grey) · busy (amber, scanning/connecting) · on (green) · err (red).
+// Legacy calls pass (msg, bool); the state is then derived from the bool.
+function setStatus(msg, on, state) {
+  const st = state || (on ? 'on' : 'idle');
   $('st-txt').textContent = msg;
-  $('dot').className = 'dot' + (on ? ' on' : '');
+  $('dot').className = 'dot' + (st === 'on' ? ' on' : st === 'idle' ? '' : ' ' + st);
+  const pill = $('conn-pill'); if (pill) pill.className = 'conn ' + st;
+  const btn = $('btn-conn');
+  if (btn) {                       // no double-tap while the chooser/GATT is busy
+    btn.disabled = st === 'busy';
+    btn.textContent = st === 'busy' ? 'Подключение…' : (connected ? 'Отключить' : 'Подключить');
+  }
+  // The device filter only matters before connecting — reclaim its row on phones
+  // so the header stays two lines with the battery/stream chips in place.
+  const gear = $('hdr-more-btn'), row = $('hdr-more');
+  if (gear) gear.hidden = connected;
+  if (row && connected && isPhoneLayout()) {
+    row.hidden = true;
+    if (gear) gear.setAttribute('aria-expanded', 'false');
+  }
+}
+
+// ── Live indicators: stream chip, battery chip, update badge ────────
+// The stream chip polls vs state instead of hooking the hot send loop.
+let liveTimer = null;
+function vsFps() {
+  const cyc = vsCycleMs();
+  const okShare = vs.acked ? (vs.shown || 0) / vs.acked : 1;
+  return cyc > 0 ? (1000 / cyc) * okShare : 0;
+}
+function liveStart() {
+  const chip = $('live-chip'), nav = $('nav-anim');
+  if (chip) chip.hidden = false;
+  if (nav) nav.classList.add('live');
+  clearInterval(liveTimer);
+  const tick = () => {
+    if (!chip) return;
+    const fps = vsFps();
+    chip.textContent = '● Стрим' + (fps > 0.05 ? ` ${fps.toFixed(1)} fps` : '');
+  };
+  tick();
+  liveTimer = setInterval(tick, 700);
+}
+function liveStop() {
+  clearInterval(liveTimer); liveTimer = null;
+  const chip = $('live-chip'), nav = $('nav-anim');
+  if (chip) chip.hidden = true;
+  if (nav) nav.classList.remove('live');
+}
+function battChip(pct, mv, low) {
+  const el = $('batt-chip');
+  if (!el) return;
+  if (pct == null) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = `🔋 ${pct}%`;
+  el.title = `Батарея ценника: ${mv} mV`;
+  el.className = low || pct <= 20 ? 'bad' : pct <= 50 ? 'warn' : '';
+}
+function navBadge(id, on) {
+  const el = $(id); if (el) el.classList.toggle('badge', !!on);
+}
+// The preview starts blank; the hint disappears once anything is drawn on it.
+function dispEmpty(show) {
+  const el = $('disp-empty'); if (el) el.style.display = show ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2323,6 +2431,7 @@ function clearCanvas() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, PANEL.lw, PANEL.lh);
+  dispEmpty(true);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2461,6 +2570,7 @@ function ieSet() {
 
 function renderImg() {
   if (!IE.img) return;
+  dispEmpty(false);
   const cv = $('disp-canvas'), ctx = cv.getContext('2d');
   // 1) Compose on offscreen canvas
   const LW = PANEL.lw, LH = PANEL.lh;
@@ -3224,6 +3334,7 @@ function crispText(ctx, text, x, y, size, o = {}) {
 function testPat(n) {
   const c=$('disp-canvas'), ctx=c.getContext('2d');
   ieClose();
+  dispEmpty(false);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const w = PANEL.lw, h = PANEL.lh;
   ctx.fillStyle='white'; ctx.fillRect(0,0,w,h);
@@ -3659,6 +3770,7 @@ async function startStream() {
   }
   streamRunning=true; streamStop=false; vsReset();
   $('btn-stream').textContent='⏸ Pause';
+  liveStart();                   // header chip + nav marker: visible from any tab
 
   const encType  = parseInt($('enc-type').value);
   const detectedFps = (animVideoEl && animVideoEl._detectedFps) || 30;
@@ -3958,6 +4070,7 @@ async function startStream() {
     try { await sendBytes(VS_STOP_VIDEO, true); } catch(e) {}
     await sleep(300);
     streamRunning=false; streamStop=false;
+    liveStop();
     $('btn-stream').textContent='▶ Stream';
     $('stream-st').textContent='Завершено';
     $('stream-prog').style.width='0%';
@@ -5228,6 +5341,7 @@ function updateSysUI() {
     $('sys-batt').innerHTML = `<span style="color:${color}">${label}</span>`;
     $('sys-batt-bar').style.width = pct + '%';
     $('sys-batt-pct').textContent = atCeiling ? '100%+' : pct + '%';
+    battChip(pct, s.battMv, s.battLow);   // header chip: charge without leaving the tab
   }
 
   // Energy
@@ -5266,12 +5380,18 @@ function parseBattAlert(line) {
   const mvM = line.match(/mv=(\d+)/);
   const mv = mvM ? +mvM[1] : 0;
   if (line.startsWith('BATT:LOW')) {
+    sysState.battLow = true;
+    if (mv) { sysState.battMv = mv; updateSysUI(); }   // repaint the header chip red
     logE(`⚠ BATTERY LOW: ${mv} mV — display updates inhibited`);
     dfuLog(`⚠ Battery low: ${mv} mV`, 'wrn');
   } else if (line.startsWith('BATT:SHUTDOWN')) {
+    sysState.battLow = true;
+    if (mv) { sysState.battMv = mv; updateSysUI(); }
     logE(`🔴 BATTERY CRITICAL: ${mv} mV — device entering deep sleep!`);
     dfuLog(`🔴 Shutdown: ${mv} mV — deep sleep`, 'err');
   } else if (line.startsWith('BATT:OK')) {
+    sysState.battLow = false;
+    if (mv) { sysState.battMv = mv; updateSysUI(); }
     logI(`✓ Battery recovered: ${mv} mV`);
   }
 }
@@ -5577,12 +5697,13 @@ async function checkForUpdate() {
 function checkVersionMismatch() {
   if (!serverManifest || !sysState.fwVersion) return;
   const v = pickVariant(serverManifest, sysState.layout);
-  if (!v || !v.version) { $('dfu-banner').style.display = 'none'; hideFwToast(); return; }
+  if (!v || !v.version) { $('dfu-banner').style.display = 'none'; navBadge('nav-sys', false); hideFwToast(); return; }
   if (versionCompare(v.version, sysState.fwVersion) > 0) {
     showUpdateBanner(v.version, v.size, v.notes);
     showFwToast(v.version, v.size, v.notes);
   } else {
     $('dfu-banner').style.display = 'none';
+    navBadge('nav-sys', false);
     hideFwToast();
   }
 }
@@ -5600,6 +5721,7 @@ function versionCompare(a, b) {
 
 function showUpdateBanner(version, size, notes) {
   $('dfu-banner').style.display = '';
+  navBadge('nav-sys', true);        // dot on the System tab until it is installed
   $('dfu-banner-ver').textContent = `v${version}`;
   $('dfu-banner-size').textContent = size ? (size / 1024).toFixed(1) + ' KB' : '';
   $('dfu-banner-notes').textContent = notes || '';
