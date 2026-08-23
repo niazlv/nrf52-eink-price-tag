@@ -49,7 +49,27 @@ target_sources(app PRIVATE
 
 zephyr_include_directories(src lib)
 
+# The image is built -Os (CONFIG_SIZE_OPTIMIZATIONS) from when flash was the
+# binding constraint. It is not any more — ~32 KB spare there against ~96% of
+# RAM used — so the two files that dominate per-frame CPU are worth building
+# for speed. Costs a little flash, nothing in RAM.
+#
+# Deliberately NOT applied to lib/eink/port/ssd1675a_port_zephyr_nrf.c: its
+# 9-bit bit-bang meets the panel's setup/hold with counted __NOP()s measured
+# under -Os, and re-timing that needs a scope on real hardware, not a guess.
+set_source_files_properties(
+  lib/gfx/graphics.c
+  lib/gfx/dither.c
+  PROPERTIES COMPILE_OPTIONS "-O2")
+
 # Frame-buffer arena, sized for the largest panel this image can drive: a
 # 400x300 B/W plane is 15000 B; the 128x296 B/W/R default uses 9472 B of it.
 # display_manager picks the layout at boot from the panel probe.
-target_compile_definitions(app PRIVATE GRAPHICS_ARENA_BYTES=15000)
+#
+# Now a Kconfig value (CONFIG_EINK_FRAME_ARENA_BYTES) rather than a literal:
+# an image built for a fleet with no 400x300 panels can set it to 9472 and get
+# 5528 bytes of RAM back — on this build that is several times the remaining
+# headroom. It has to go through Kconfig because a -D passed after `--` lands
+# in the sysbuild cache, not in the application image.
+target_compile_definitions(app PRIVATE
+  GRAPHICS_ARENA_BYTES=${CONFIG_EINK_FRAME_ARENA_BYTES})

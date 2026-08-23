@@ -18,6 +18,24 @@ config BT_NUS_SECURITY_ENABLED
 	  which the mesh scanner needs, and access is already gated by the
 	  app-level challenge-response in src/app/secauth.c.
 
+config EINK_FRAME_ARENA_BYTES
+	int "Frame-buffer arena size, bytes"
+	default 15000
+	help
+	  Static .bss arena that display_manager carves the frame planes out of
+	  at boot, sized for the largest panel this image can drive.
+
+	    15000 - 400x300 B/W, one plane. Also covers the 128x296 B/W/R pair
+	            (2 x 4736 = 9472), so a single image drives both panels.
+	     9472 - 128x296 B/W/R only. Frees 5528 bytes of RAM, several times
+	            the headroom this build otherwise has.
+
+	  The cost of shrinking it is not a crash: graphics_init_panel() refuses
+	  a layout that does not fit and detect_panel() falls back to 128x296, so
+	  a 400x300 panel would be driven as if it were the small one - a wrong
+	  picture. Only shrink this for a fleet you know has no 400x300 panels,
+	  and build the large panel its own image.
+
 config SETTINGS
 	default y
 
