@@ -62,6 +62,20 @@ def set_panel(w: int, h: int):
     global DISP_W, DISP_H, FB_SIZE
     DISP_W, DISP_H, FB_SIZE = w, h, w * h // 8
 
+def wire_frame_bytes() -> int:
+    """Bytes of one plane as the device decodes it: the panel plane, or a
+    quarter of it for --half frames."""
+    return FB_SIZE // 4 if VS_HALF else FB_SIZE
+
+def half_frame(frame: bytes) -> bytes:
+    """Downsample a physical 1-bpp plane 2x2 (majority; ties → white) to the
+    (W/2) x (H/2) plane a VS_HALF_FLAG frame carries. The device doubles it
+    back, so the stream costs ~4x less for 2x2-block pictures."""
+    bits = np.unpackbits(np.frombuffer(frame, np.uint8)).reshape(DISP_H, DISP_W)
+    h2, w2 = DISP_H // 2, DISP_W // 2
+    blocks = bits[:h2 * 2, :w2 * 2].reshape(h2, 2, w2, 2).sum(axis=(1, 3))
+    return np.packbits((blocks >= 2).astype(np.uint8), axis=1).tobytes()
+
 def set_panel_from_header(w: int, h: int):
     """An .ebf stores the frame geometry it was encoded for; adopt it. A legacy
     landscape file (296x128) is the portrait panel seen sideways."""
@@ -86,6 +100,8 @@ VS_RAW  = 0x00
 VS_RLE  = 0x01
 VS_DRLE = 0x02
 VS_CRC_FLAG = 0x40   # OR into the type byte → frame carries a CRC-16 trailer
+VS_HALF_FLAG = 0x20  # OR into the type byte → frame is (W/2)x(H/2), device pixel-doubles
+VS_HALF = False      # set by --half: every frame is downsampled 2x2 before encoding
 
 ENC_NAMES = {'raw': VS_RAW, 'rle': VS_RLE, 'drle': VS_DRLE}
 
@@ -271,6 +287,8 @@ def vs_wrap(typ: int, payload: bytes, use_crc: bool) -> bytes:
     2-byte CRC-16 over the payload is inserted before the 0xBB flush."""
     ln = len(payload)
     t = (typ | VS_CRC_FLAG) if use_crc else typ
+    if VS_HALF:
+        t |= VS_HALF_FLAG
     pkt = bytes([VS_HDR1, VS_HDR2, t, (ln >> 8) & 0xFF, ln & 0xFF]) + payload
     if use_crc:
         c = crc16_ccitt(payload)
@@ -549,7 +567,7 @@ class VStreamSession:
 
         if wc == "bad":
             print(f"\n  [WIRE CRC BAD] frame {frame_no} — payload corrupt, resyncing")
-        elif dec is not None and dec >= 0 and dec != FB_SIZE and wc != "bad":
+        elif dec is not None and dec >= 0 and dec != wire_frame_bytes() and wc != "bad":
             print(f"\n  [WARN] incomplete decode: dec={dec}/{FB_SIZE}")
         if rs:
             self._resync = True
@@ -569,7 +587,7 @@ class VStreamSession:
             return True
         return False
 
-    async def start(self, pre_cmds=()):
+    async def start(self, pre_cmds=(), post_cmds=(), start_cmd=b"VSTREAM:start\n"):
         await self.client.start_notify(NUS_TX, self._notify)
         # Setup commands (e.g. LUTW: video LUT) must land before VSTREAM:start —
         # the device loads the active LUT while priming the display.
@@ -577,13 +595,19 @@ class VStreamSession:
             await self._raw(cmd)
             await asyncio.sleep(0.3)   # device reply prints as a dev> line
         self._ready.clear()
-        await self._raw(b"VSTREAM:start\n")
+        await self._raw(start_cmd)
         # Device primes the display before replying ready (deep-sleep wake +
         # HV charge can take ~1s); don't start blasting frames until then.
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=10.0)
         except asyncio.TimeoutError:
             print("  [WARN] no VSTREAM:ready within 10s — old firmware? continuing anyway")
+        # VSTREAM:start resets the device to its builtin LUT (backward-compatible
+        # default), so a custom drive table uploaded with LUTW: must be switched
+        # on again here, before the first frame's begin_streaming picks the table.
+        for cmd in post_cmds:
+            await self._raw(cmd)
+            await asyncio.sleep(0.3)
 
     async def stop(self):
         await self._raw(VS_STOP)
@@ -630,6 +654,8 @@ async def play_guaranteed(session: VStreamSession, frames, total: int,
                           use_crc: bool = False, key_interval: int = 48,
                           key_slack: int = 64):
     """Send every frame; pace is dictated by display speed only."""
+    if VS_HALF:
+        frames = ((i, half_frame(f) if f is not None else None) for i, f in frames)
     prev, count, since_key = None, 0, 0
     acked0 = session.acked          # session persists across --loop iterations
     t0 = time.time()
@@ -642,7 +668,7 @@ async def play_guaranteed(session: VStreamSession, frames, total: int,
             pkt, is_key = encode_frame(frame, prev, enc, use_crc, force, key_slack)
             # With wire CRC the device's wc=/rs= drives recovery; without it keep
             # the legacy XOR-8 sanity check by passing the expected frame.
-            if not await session.send(pkt, expected_frame=None if use_crc else frame):
+            if not await session.send(pkt, expected_frame=None if (use_crc or VS_HALF) else frame):
                 break
             prev = frame
             since_key = 0 if is_key else since_key + 1
@@ -666,6 +692,8 @@ async def play_sync(session: VStreamSession, frames, total: int,
                     use_crc: bool = False, key_interval: int = 48,
                     key_slack: int = 64):
     """Real-time sync to original timestamps; skip frames that are already late."""
+    if VS_HALF:
+        frames = ((i, half_frame(f) if f is not None else None) for i, f in frames)
     SKIP_TOL = 0.010   # 10ms tolerance before marking a frame as late
     prev = None
     count, skipped, since_key = 0, 0, 0
@@ -699,7 +727,7 @@ async def play_sync(session: VStreamSession, frames, total: int,
             force = (prev is None or session.take_resync()
                      or (key_interval and since_key >= key_interval))
             pkt, is_key = encode_frame(frame, prev, enc, use_crc, force, key_slack)
-            if not await session.send(pkt, expected_frame=None if use_crc else frame):
+            if not await session.send(pkt, expected_frame=None if (use_crc or VS_HALF) else frame):
                 break
             prev = frame
             since_key = 0 if is_key else since_key + 1
@@ -732,6 +760,8 @@ async def run_play(args):
     path = Path(args.file)
     enc  = ENC_NAMES.get(args.enc.lower(), VS_DRLE)
     set_panel(*PANELS[args.panel])
+    global VS_HALF
+    VS_HALF = bool(getattr(args, 'half', False))
 
     rot   = getattr(args, 'rotate', 0)
     scale = getattr(args, 'scale', 'fit')
@@ -798,13 +828,17 @@ async def run_play(args):
               f"  rotate={rot}°  scale={scale}\n")
 
         session = VStreamSession(client, mtu=mtu, window=args.window)
-        pre_cmds = []
+        pre_cmds, post_cmds = [], []
+        start_cmd = b"VSTREAM:start\n"
         if args.lut in DRIVE_LUTS:
             pre_cmds.append(b"LUTW:" + DRIVE_LUTS[args.lut].hex().upper().encode() + b"\n")
+            # VSTREAM:start:CUSTOM (fw 3.4.7+) streams with the LUTW: table;
+            # a plain start always resets to the builtin TURBO.
+            start_cmd = b"VSTREAM:start:CUSTOM\n"
         elif args.lut == 'turbo':
             pre_cmds.append(b"LUTUSE:0\n")   # builtin TURBO (112ms wave)
         # 'keep': don't touch whatever LUT the device currently uses
-        await session.start(pre_cmds)
+        await session.start(pre_cmds, post_cmds, start_cmd)
         use_crc = (not args.no_crc) and session.dev_crc
         print(f"  wire-CRC {'ON' if use_crc else 'off'}"
               f"{'' if session.dev_crc else ' — device has no CRC support'}"
@@ -1015,6 +1049,9 @@ def build_parser():
                     help="Override playback fps (0=use source fps)")
     pl.add_argument("--panel",      default="128x296", choices=sorted(PANELS),
                     help="Target panel for a video source (an .ebf carries its own)")
+    pl.add_argument("--half",       action="store_true",
+                    help="Send (W/2)x(H/2) frames, pixel-doubled on the device: ~4x less "
+                         "BLE per frame, 2x2-block picture (fw 3.4.7+)")
     pl.add_argument("--landscape",  action="store_true", help="swap axes (296×128 on the 2.9\")")
     pl.add_argument("--rotate",     type=int, default=0, choices=[0, 90, 180, 270],
                     help="Rotate source clockwise before scaling (video only, default: 0)")
