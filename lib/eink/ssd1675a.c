@@ -526,6 +526,44 @@ void ssd1675a_load_plane(bool red, const uint8_t *buffer)
     write_plane(red ? 0x26 : 0x24, buffer);
 }
 
+void ssd1675a_load_rows(bool red, const uint8_t *buffer, int y0, int y1)
+{
+    if (!bus_ready() || !buffer) {
+        return;
+    }
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (y1 > panel_height - 1) {
+        y1 = panel_height - 1;
+    }
+    if (y1 < y0) {
+        return;
+    }
+
+    const int stride = panel_width / 8;
+
+    /* Narrow the Y window so the X-then-Y auto-increment wraps inside it,
+     * point at its first row and stream the rows straight from the buffer. */
+    send_cmd(0x45);
+    send_data(y0 & 0xFF);
+    send_data((y0 >> 8) & 0xFF);
+    send_data(y1 & 0xFF);
+    send_data((y1 >> 8) & 0xFF);
+    set_ram_pointer(0, y0);
+    send_cmd(red ? 0x26 : 0x24);
+    for (int i = y0 * stride; i < (y1 + 1) * stride; i++) {
+        send_data(buffer[i]);
+    }
+
+    /* Full window back, so the next plain plane write behaves as always. */
+    send_cmd(0x45);
+    send_data(0x00);
+    send_data(0x00);
+    send_data((panel_height - 1) & 0xFF);
+    send_data(((panel_height - 1) >> 8) & 0xFF);
+}
+
 /* ── Identification / probing ───────────────────────────────────────────── */
 
 uint8_t ssd1675a_read_status(void)

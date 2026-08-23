@@ -9,6 +9,7 @@
 #include <zephyr/sys/poweroff.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include <eink/ssd1675a.h>
 #include <gfx/graphics.h>
 #include <zephyr/logging/log.h>
@@ -593,7 +594,24 @@ void display_manager_update_partial(void) {
 
 
 
-void display_manager_update_partial_nowait(void) {
+/* Rows y0..y1 of the B/W plane, or everything when the range covers the
+ * plane, is empty-but-meant-as-full (y1 == INT_MAX) or the red plane is
+ * streamed as well (its rows are not tracked). y1 < y0 writes nothing. */
+static void write_partial_stream_rows(int y0, int y1)
+{
+    const int last = ssd1675a_height() - 1;
+
+    if (stream_write_red_plane || (y0 <= 0 && y1 >= last)) {
+        write_partial_stream_buffers();
+        return;
+    }
+    if (y1 < y0) {
+        return;
+    }
+    ssd1675a_load_rows(false, graphics_get_buffer(), y0, y1);
+}
+
+static void update_partial_nowait_rows(int y0, int y1) {
     if (!display_ready) return;
 
     /* Non-streaming path must always block — fall back to regular update. */
@@ -625,16 +643,24 @@ void display_manager_update_partial_nowait(void) {
     power_estimate_set_current(POWER_DISPLAY_PARTIAL_UA);
     if (!streaming_active) {
         ssd1675a_init_partial();
-        write_partial_stream_buffers();
+        write_partial_stream_buffers();     /* first frame: the whole plane */
         ssd1675a_begin_streaming();
         streaming_active = true;
     } else {
-        write_partial_stream_buffers();
+        write_partial_stream_rows(y0, y1);
     }
     /* Trigger display refresh but return immediately — display runs in background. */
     ssd1675a_trigger_frame_stream_nowait();
 
     DISPLAY_UNLOCK();
+}
+
+void display_manager_update_partial_nowait(void) {
+    update_partial_nowait_rows(0, INT_MAX);
+}
+
+void display_manager_update_partial_rows_nowait(int y0, int y1) {
+    update_partial_nowait_rows(y0, y1);
 }
 
 void display_manager_set_partial_mode(int mode) {

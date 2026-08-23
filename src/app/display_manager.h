@@ -101,6 +101,15 @@ void display_manager_update_partial(void);
 void display_manager_update_partial_nowait(void);
 
 /**
+ * @brief Like display_manager_update_partial_nowait(), but only rows
+ *        y0..y1 of the B/W plane are sent to the controller (y1 < y0: none —
+ *        the refresh still runs on the RAM as it is). Streaming deltas use
+ *        it to pay bus time only for the rows they changed. Falls back to a
+ *        full write when the red plane is streamed too.
+ */
+void display_manager_update_partial_rows_nowait(int y0, int y1);
+
+/**
  * @brief Streaming animation mode: charge HV rails once, then call
  *        update_frame_stream() per frame (~LUT wave time only), then end_streaming().
  */

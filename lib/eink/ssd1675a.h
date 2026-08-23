@@ -114,6 +114,12 @@ void ssd1675a_display_buffer_fast(const uint8_t *bw_buffer);
  *  e.g. a red mask first, then the B/W image. NULL clears the plane. */
 void ssd1675a_load_plane(bool red, const uint8_t *buffer);
 
+/** Load only rows @p y0..@p y1 (inclusive, gate lines) of one plane from a
+ *  full-size @p buffer, through a RAM window, without touching the rest.
+ *  For streaming: a delta frame knows which rows changed, and the bus cost
+ *  drops with the row count. The full window is restored afterwards. */
+void ssd1675a_load_rows(bool red, const uint8_t *buffer, int y0, int y1);
+
 /** Load both planes without triggering a refresh (tone-servo video path). */
 void ssd1675a_display_buffers_fast(const uint8_t *bw_buffer, const uint8_t *red_buffer);
 

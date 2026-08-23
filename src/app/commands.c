@@ -88,6 +88,15 @@ static int plane_size(void)  { return (int)graphics_get_canvas()->buffer_size; }
  * only the 128x296 default before the first stream. */
 static uint16_t vs_fb = FB_SIZE;
 static bool vs_half;   /* current frame carries VS_HALF_FLAG */
+/* Rows a delta frame actually changed (full-res gate lines); only these go
+ * over the bus at flush. INT_MAX/-1 = nothing changed. */
+static int vs_dirty_y0 = INT_MAX, vs_dirty_y1 = -1;
+
+static inline void vs_mark_dirty(int row)
+{
+    if (row < vs_dirty_y0) vs_dirty_y0 = row;
+    if (row > vs_dirty_y1) vs_dirty_y1 = row;
+}
 
 /* ── Binary vstream (animation streaming over BLE) ──────────────────────────
  *
@@ -296,6 +305,8 @@ static inline uint16_t vs_crc16_update(uint16_t crc, uint8_t b)
 static void vs_reset_frame(void) {
     vs_prx = 0;
     vs_dec = 0;
+    vs_dirty_y0 = INT_MAX;
+    vs_dirty_y1 = -1;
     vs_rle.mode = 0;
     vs_rle.count = 0;
     vs_rle.val = 0;
@@ -337,10 +348,13 @@ static inline void vs_write_byte(uint8_t b) {
 
     if (fb) {   /* a B/W-only panel has no red plane: swallow that half */
         const bool delta = vs_type_is_delta(vs_type);
+        const int stride = ssd1675a_width() / 8;   /* full-res bytes per row */
         if (!vs_half) {
             fb[off] = delta ? (fb[off] ^ b) : b;
+            if (delta && b) {
+                vs_mark_dirty(off / stride);
+            }
         } else {
-            const int stride = ssd1675a_width() / 8;   /* full-res bytes per row */
             const int hstride = stride / 2;
             const int hy = off / hstride, hx = off % hstride;
             uint8_t *p0 = fb + (2 * hy) * stride + 2 * hx;
@@ -348,6 +362,10 @@ static inline void vs_write_byte(uint8_t b) {
             const uint8_t d0 = vs_nib_dbl[b >> 4], d1 = vs_nib_dbl[b & 0x0F];
             if (delta) {
                 p0[0] ^= d0; p0[1] ^= d1; p1[0] ^= d0; p1[1] ^= d1;
+                if (b) {
+                    vs_mark_dirty(2 * hy);
+                    vs_mark_dirty(2 * hy + 1);
+                }
             } else {
                 p0[0] = d0;  p0[1] = d1;  p1[0] = d0;  p1[1] = d1;
             }
@@ -431,7 +449,13 @@ static void vs_flush_frame(void) {
         int64_t t1 = k_uptime_get();
         display_manager_set_keep_on(true);
         display_manager_set_stream_write_red_plane(dual);
-        display_manager_update_partial_nowait();
+        if (vs_type_is_delta(vs_type) && !dual) {
+            /* Only the rows the delta touched need to reach the controller;
+             * an unchanged frame writes nothing and just refreshes. */
+            display_manager_update_partial_rows_nowait(vs_dirty_y0, vs_dirty_y1);
+        } else {
+            display_manager_update_partial_nowait();
+        }
         int64_t t2 = k_uptime_get();
         wait_ms = (int32_t)(t1 - t0);
         spi_ms = (int32_t)(t2 - t1);
@@ -444,10 +468,13 @@ static void vs_flush_frame(void) {
     /* ACK: legacy fields (f/ms/dec/crc) plus the wire-CRC verdict wc and a
      * resync request rs=1 (host should send a full keyframe). Old hosts simply
      * ignore the two trailing fields. */
-    ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x wc=%s rs=%d w=%d s=%d\r\n",
+    const int rows = (vs_type_is_delta(vs_type) && !dual)
+                         ? ((vs_dirty_y1 >= vs_dirty_y0) ? vs_dirty_y1 - vs_dirty_y0 + 1 : 0)
+                         : ssd1675a_height();
+    ble_printf("TELE:vs f=%d ms=%d dec=%d crc=%02x wc=%s rs=%d w=%d s=%d r=%d\r\n",
                vs_frame_count, (int)ms, (int)vs_dec, (unsigned)crc,
                vs_has_crc ? (crc_bad ? "bad" : "ok") : "na",
-               want_resync ? 1 : 0, (int)wait_ms, (int)spi_ms);
+               want_resync ? 1 : 0, (int)wait_ms, (int)spi_ms, rows);
 }
 
 static void vs_process_byte(uint8_t b) {

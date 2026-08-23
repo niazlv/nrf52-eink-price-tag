@@ -96,21 +96,21 @@ static inline void clk_pulse(void)
     SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CLK);
 }
 
-/* One bit: data line, then a clock pulse. Each GPIO store is an APB write of
- * ~3 cycles (~47 ns) at 64 MHz, which already exceeds the controllers' 25 ns
- * minimum clock half-period and data setup; a single NOP before the rising
- * edge keeps margin on the setup side. Unrolled: no loop counter, no shift. */
-#define SPI_BIT(mask)                                                     \
+/* One bit is two stores to the OUT register: {data, CLK low} then {data,
+ * CLK high}. Against the SSD1619A/SSD1675 write timings (datasheet table
+ * 12-2): SI setup 10 ns and both clock half-periods 25 ns are covered by the
+ * ~31-47 ns between consecutive APB stores at 64 MHz; SI hold 40 ns after the
+ * rising edge needs the NOP before the next bit's store; CS high ≥ 100 ns
+ * between bytes is the two NOPs after CS plus the call overhead. The other
+ * pins of the port are carried along from a read of OUT at the start of the
+ * byte — nothing but the display thread drives P0 outputs on these boards.
+ * Measured: 1.4 µs per 9-bit frame, down from 2.0 with OUTSET/OUTCLR. */
+#define SPI_BIT(base, cond)                                               \
     do {                                                                  \
-        if (mask) {                                                       \
-            SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_MOSI);               \
-        } else {                                                          \
-            SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_MOSI);               \
-        }                                                                 \
+        uint32_t v_ = (base) | ((cond) ? PIN_MASK(SSD1675A_PIN_MOSI) : 0u); \
+        SPI_PORT->OUT = v_;                                               \
+        SPI_PORT->OUT = v_ | PIN_MASK(SSD1675A_PIN_CLK);                  \
         __NOP();                                                          \
-        SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_CLK);                    \
-        __NOP();                                                          \
-        SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CLK);                    \
     } while (0)
 
 void ssd1675a_port_write9(uint8_t byte, bool is_data)
@@ -119,19 +119,25 @@ void ssd1675a_port_write9(uint8_t byte, bool is_data)
         return;
     }
 
-    SPI_PORT->OUTCLR = PIN_MASK(SSD1675A_PIN_CS);
+    /* CS low, CLK low, MOSI low; every other pin as it is now. */
+    const uint32_t base = SPI_PORT->OUT & ~(PIN_MASK(SSD1675A_PIN_CS) |
+                                            PIN_MASK(SSD1675A_PIN_CLK) |
+                                            PIN_MASK(SSD1675A_PIN_MOSI));
+    SPI_PORT->OUT = base;
 
-    SPI_BIT(is_data);          /* 1. Command/data bit (0 = command, 1 = data) */
-    SPI_BIT(byte & 0x80);      /* 2. Eight data bits, MSB first */
-    SPI_BIT(byte & 0x40);
-    SPI_BIT(byte & 0x20);
-    SPI_BIT(byte & 0x10);
-    SPI_BIT(byte & 0x08);
-    SPI_BIT(byte & 0x04);
-    SPI_BIT(byte & 0x02);
-    SPI_BIT(byte & 0x01);
+    SPI_BIT(base, is_data);        /* 1. Command/data bit (0 = command, 1 = data) */
+    SPI_BIT(base, byte & 0x80);    /* 2. Eight data bits, MSB first */
+    SPI_BIT(base, byte & 0x40);
+    SPI_BIT(base, byte & 0x20);
+    SPI_BIT(base, byte & 0x10);
+    SPI_BIT(base, byte & 0x08);
+    SPI_BIT(base, byte & 0x04);
+    SPI_BIT(base, byte & 0x02);
+    SPI_BIT(base, byte & 0x01);
 
-    SPI_PORT->OUTSET = PIN_MASK(SSD1675A_PIN_CS);
+    SPI_PORT->OUT = base;                                   /* CLK low */
+    SPI_PORT->OUT = base | PIN_MASK(SSD1675A_PIN_CS);       /* CS high */
+    __NOP(); __NOP();
 }
 
 /* Read path for the probe/identification commands. Deliberately slower than
