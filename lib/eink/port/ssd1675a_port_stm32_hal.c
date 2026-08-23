@@ -97,11 +97,41 @@ void ssd1675a_port_reset(bool asserted)
                       asserted ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
+/* Park the whole interface before the rail goes, and bring it back after — see
+ * ssd1675a_port.h for why. Every line matters, not just CS: write9() returns
+ * with MOSI still holding the last data bit, so half the time it is the one
+ * sitting high against a dead panel. BUSY goes to analog mode, the STM32 way of
+ * switching an input buffer off, so a floating pin costs nothing either. */
 void ssd1675a_port_power(bool on)
 {
 #ifdef SSD1675A_VCC_PORT
-    HAL_GPIO_WritePin(SSD1675A_VCC_PORT, SSD1675A_VCC_PIN,
-                      on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    GPIO_InitTypeDef busy = {0};
+    busy.Pin  = SSD1675A_BUSY_PIN;
+    busy.Pull = GPIO_NOPULL;
+
+    if (on) {
+        /* Rail up and settled before anything drives a line into it. */
+        HAL_GPIO_WritePin(SSD1675A_VCC_PORT, SSD1675A_VCC_PIN, GPIO_PIN_RESET);
+        HAL_Delay(2);
+
+        busy.Mode = GPIO_MODE_INPUT;
+        HAL_GPIO_Init(SSD1675A_BUSY_PORT, &busy);
+
+        HAL_GPIO_WritePin(SSD1675A_CLK_PORT, SSD1675A_CLK_PIN, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(SSD1675A_MOSI_PORT, SSD1675A_MOSI_PIN, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(SSD1675A_CS_PORT, SSD1675A_CS_PIN, GPIO_PIN_SET);
+        return;
+    }
+
+    HAL_GPIO_WritePin(SSD1675A_CS_PORT, SSD1675A_CS_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(SSD1675A_CLK_PORT, SSD1675A_CLK_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(SSD1675A_MOSI_PORT, SSD1675A_MOSI_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(SSD1675A_RST_PORT, SSD1675A_RST_PIN, GPIO_PIN_RESET);
+
+    busy.Mode = GPIO_MODE_ANALOG;
+    HAL_GPIO_Init(SSD1675A_BUSY_PORT, &busy);
+
+    HAL_GPIO_WritePin(SSD1675A_VCC_PORT, SSD1675A_VCC_PIN, GPIO_PIN_SET);
 #else
     (void)on;   /* panel wired to a permanent rail */
 #endif

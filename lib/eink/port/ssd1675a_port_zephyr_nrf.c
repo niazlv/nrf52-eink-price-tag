@@ -212,13 +212,57 @@ void ssd1675a_port_reset(bool asserted)
     gpio_pin_set(gpio_dev, SSD1675A_PIN_RST, asserted ? 0 : 1);
 }
 
+/*
+ * Switching the rail is only half of powering the panel down.
+ *
+ * The interface pins keep whatever the last transaction left them at: write9()
+ * ends with CS high and reset_controller() ends with RST high. Drive either of
+ * them into a panel whose VDD is gone and current flows out of the pin, through
+ * the panel's input protection diode and into its dead supply net — the panel
+ * ends up phantom-powered through the back door, in an undefined state, for as
+ * long as the picture stays up. BUSY has the mirror problem: left as an input
+ * with no pull, it floats around mid-rail once the panel stops driving it, and
+ * the nRF input buffer burns shoot-through current sitting there.
+ *
+ * On a tag that shows a static image for weeks this runs 24/7, so park every
+ * line at or below the panel's own rail before cutting it, and put them back
+ * afterwards. Order matters in both directions.
+ */
 void ssd1675a_port_power(bool on)
 {
     if (!configured) {
         return;
     }
-    /* Active low: the rail hangs off a high-side P-MOS. */
-    gpio_pin_set(gpio_dev, SSD1675A_PIN_VCC, on ? 0 : 1);
+
+    if (on) {
+        /* Rail first, and let it actually come up before any line is driven —
+         * otherwise CS goes high into a panel whose VDD is still ramping, which
+         * is the same diode path this function exists to avoid, just narrower.
+         * ssd1675a_power_on() adds its own settling delay after this returns. */
+        gpio_pin_set(gpio_dev, SSD1675A_PIN_VCC, 0);   /* active low: rail on */
+        k_msleep(2);
+
+        gpio_pin_configure(gpio_dev, SSD1675A_PIN_BUSY, GPIO_INPUT);
+        gpio_pin_configure(gpio_dev, SSD1675A_PIN_CLK, GPIO_OUTPUT_INACTIVE);
+        gpio_pin_configure(gpio_dev, SSD1675A_PIN_MOSI, GPIO_OUTPUT_INACTIVE);
+        gpio_pin_configure(gpio_dev, SSD1675A_PIN_CS, GPIO_OUTPUT_ACTIVE);
+        gpio_pin_set(gpio_dev, SSD1675A_PIN_CS, 1);    /* idle high */
+        gpio_pin_set(gpio_dev, SSD1675A_PIN_CLK, 0);
+        /* RST is left to the driver: reset_controller() drives it as part of
+         * the wake-up sequence, and ssd1675a_init_partial() always takes that
+         * path after a power-off (power_off marks the controller asleep). */
+        return;
+    }
+
+    /* Lines down first, rail second — the reverse would leave a window where
+     * driven pins face a collapsing supply. */
+    gpio_pin_set(gpio_dev, SSD1675A_PIN_CS, 0);
+    gpio_pin_set(gpio_dev, SSD1675A_PIN_CLK, 0);
+    gpio_pin_set(gpio_dev, SSD1675A_PIN_MOSI, 0);
+    gpio_pin_set(gpio_dev, SSD1675A_PIN_RST, 0);   /* active low = held in reset */
+    gpio_pin_configure(gpio_dev, SSD1675A_PIN_BUSY, GPIO_DISCONNECTED);
+
+    gpio_pin_set(gpio_dev, SSD1675A_PIN_VCC, 1);   /* rail off */
 }
 
 bool ssd1675a_port_busy(void)

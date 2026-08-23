@@ -60,6 +60,15 @@ void ssd1675a_port_reset(bool asserted);
  * Switch the panel supply rail. @p on true means "powered". Boards that wire
  * the panel straight to a permanent rail can leave this empty — the driver
  * only uses it to save idle current between refreshes.
+ *
+ * On a board that really does gate the rail, cutting it is not enough: a port
+ * must also park CS, CLK, MOSI and RST low and stop driving BUSY *before* the
+ * rail drops, and restore them after it comes back. A pin left high faces an
+ * unpowered panel and pushes current through its input protection diode into
+ * the dead supply net, which both leaks and leaves the controller
+ * phantom-powered in an undefined state; a floating BUSY input costs the MCU's
+ * input buffer as well. On a battery device that shows one picture for weeks
+ * this is the difference between "panel off" and "panel mostly off".
  */
 void ssd1675a_port_power(bool on);
 
