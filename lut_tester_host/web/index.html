@@ -21,8 +21,10 @@
   --bg3:    #171a26;
   --bg4:    #1f2333;
   --border: #262b3d;
+  --border2:#343a52;
   --fg:     #e7e9f2;
   --fg2:    #8b91ab;
+  --fg3:    #5d6380;
   --accent: #6aa3ff;
   --green:  #46d39a;
   --red:    #f25555;
@@ -34,138 +36,286 @@
   --vsh2:   #d09040;
   --paper:  #f2efe6;
   --ink-r:  #d8362a;
-  --r:      10px;
-  --r-s:    7px;
+  --r:      14px;
+  --r-s:    9px;
+  --nav-h:  62px;
   --sans:   ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --mono:   ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{
-  font-family:var(--sans);
-  background:var(--bg);color:var(--fg);
-  display:flex;flex-direction:column;font-size:12px;
+  font-family:var(--sans);font-size:13px;line-height:1.35;
+  background:
+    radial-gradient(120% 60% at 50% -12%, #151a2c 0%, transparent 62%),
+    var(--bg);
+  color:var(--fg);display:flex;flex-direction:column;
+  -webkit-font-smoothing:antialiased;
 }
-
-/* ── Header ── */
-.hdr{
-  background:var(--bg2);border-bottom:1px solid var(--border);
-  padding:7px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;
-}
-.hdr-title{font-size:14px;font-weight:700;color:var(--accent);letter-spacing:.3px}
-.hdr-sep{color:var(--border);font-size:16px}
-
-/* ── Status dot ── */
-.dot{width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block;transition:background .3s}
-.dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+a{color:var(--accent)}
+.muted{color:var(--fg2);font-size:12px}
+.center{text-align:center}
+.mono{font-family:var(--mono)}
+.grow{flex:1 1 auto}
+.hide{display:none !important}
+[hidden]{display:none !important}
+@media (min-width: 901px){ .hdr-more[hidden]{display:flex !important} }  /* desktop: filter row always visible */
 
 /* ── Buttons ── */
 .btn{
-  background:var(--bg3);color:var(--fg2);
-  border:1px solid var(--border);padding:3px 9px;border-radius:4px;
-  cursor:pointer;font-family:inherit;font-size:11px;line-height:1.25;
-  transition:all .12s;white-space:nowrap;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  min-height:34px;padding:6px 12px;border-radius:var(--r-s);
+  border:1px solid var(--border);
+  background:linear-gradient(180deg,#1b1f2d,var(--bg3));color:var(--fg);
+  font:600 13px/1.2 var(--sans);cursor:pointer;white-space:nowrap;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.045);
+  transition:background .12s,border-color .12s,transform .08s,opacity .12s;
 }
-.btn:hover{background:var(--bg4);color:var(--fg);border-color:var(--accent)}
-.btn:active{transform:scale(.97)}
-.btn:focus-visible,
-select:focus-visible,
-input:focus-visible,
-textarea:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent);outline-offset:2px}
+.btn:hover{background:var(--bg4);border-color:var(--accent)}
+.btn:active{transform:translateY(1px) scale(.985)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.tab:focus-visible{
+  outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent);outline-offset:2px;
+}
 .btn.acc {background:#162340;color:var(--accent);border-color:#2a4a80}
 .btn.ok  {background:#162a22;color:var(--green);border-color:#1e4030}
 .btn.bad {background:#2a1414;color:var(--red);border-color:#4a2020}
 .btn.warn{background:#2a1e08;color:var(--orange);border-color:#4a3010}
 .btn.pur {background:#1e1230;color:var(--purple);border-color:#3a2060}
 .btn.ylw {background:#221c08;color:var(--yellow);border-color:#3a3010}
-.btn.big {padding:5px 14px;font-size:12px;font-weight:700}
-.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.big {min-height:42px;padding:9px 16px;font-size:14px;font-weight:700;border-radius:11px}
+.btn.sm  {min-height:28px;padding:3px 9px;font-size:11px}
+.btn.ghost{background:transparent;box-shadow:none;color:var(--fg2)}
+.btn.ghost:hover{color:var(--fg)}
+.btn.icon{width:36px;min-width:36px;padding:0}
+.btn.icon svg{width:18px;height:18px}
+.btn small{display:block;font:500 10px/1 var(--mono);opacity:.65;letter-spacing:.3px}
+.btn.cmd{flex-direction:column;gap:4px;min-height:52px;padding:8px 10px;line-height:1.15;white-space:normal;text-align:center}
+.seg{display:inline-flex;gap:0;border-radius:var(--r-s);overflow:hidden;border:1px solid var(--border)}
+.seg .btn{border:0;border-radius:0;box-shadow:none;flex:1 1 auto}
+.seg .btn + .btn{border-left:1px solid var(--border)}
 
-/* ── Select / Input ── */
-select,input[type=text],input[type=number],textarea{
+/* ── Inputs ── */
+select,input[type=text],input[type=number],input[type=password],textarea{
   background:var(--bg3);color:var(--fg);border:1px solid var(--border);
-  padding:3px 7px;border-radius:4px;font-family:inherit;font-size:11px;outline:none;
-  min-width:0;
+  padding:6px 10px;border-radius:var(--r-s);font-family:var(--mono);font-size:13px;
+  min-height:34px;min-width:0;outline:none;
 }
-select:hover,input[type=text]:focus,input[type=number]:focus,textarea:focus{border-color:var(--accent)}
-select{cursor:pointer}
+select{cursor:pointer;font-family:var(--sans);font-weight:500}
+select:hover,input:focus,textarea:focus{border-color:var(--accent)}
+input[type=range]{
+  flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:28px;
+  background:transparent;outline:none;cursor:pointer;padding:0;border:none;
+}
+input[type=range]::-webkit-slider-runnable-track{height:5px;background:var(--bg4);border-radius:3px}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;margin-top:-6.5px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--bg2);box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:grab;
+}
+input[type=range]::-moz-range-track{height:5px;background:var(--bg4);border-radius:3px}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--accent);border:2px solid var(--bg2);cursor:grab}
+input[type=range]:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent);outline-offset:2px}
+input[type=file]{display:none}
 
-/* ── Tabs ── */
+/* Checkbox chips */
+.chks{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chk{
+  display:inline-flex;align-items:center;gap:8px;min-height:34px;
+  padding:5px 12px 5px 9px;border:1px solid var(--border);border-radius:999px;
+  background:var(--bg3);color:var(--fg2);font-size:12.5px;font-weight:500;cursor:pointer;user-select:none;
+  transition:background .12s,border-color .12s,color .12s;
+}
+.chk input{accent-color:var(--accent);width:16px;height:16px;margin:0;flex-shrink:0}
+.chk:has(input:checked){color:var(--fg);border-color:#2a4a80;background:#162340}
+
+/* ── Header ── */
+.hdr{
+  flex-shrink:0;border-bottom:1px solid var(--border);
+  background:color-mix(in srgb, var(--bg2) 86%, transparent);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  padding:calc(8px + env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 8px max(14px,env(safe-area-inset-left));
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.hdr-row{display:contents}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:15px;letter-spacing:.5px;color:var(--fg);white-space:nowrap;order:0}
+.brand .inks{display:flex;gap:3px;align-items:center}
+.brand .inks i{width:9px;height:9px;border-radius:50%;display:block}
+.inks .k{background:#06070a;box-shadow:inset 0 0 0 1.5px #2d3346}
+.inks .w{background:var(--paper)}
+.inks .r{background:var(--ink-r)}
+.brand small{font-weight:500;color:var(--fg2);font-size:10px;letter-spacing:.7px}
+.hdr-more{display:flex;align-items:center;gap:8px;order:1;flex:0 1 420px;min-width:0}
+.hdr-more label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);flex:1;min-width:0}
+.hdr-more select{flex:1;min-width:0}
+#hdr-more-btn{display:none}
+#btn-conn{order:2;min-width:128px}
+.conn{
+  order:3;display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 180px;
+  padding:6px 12px;border:1px solid var(--border);border-radius:999px;
+  background:var(--bg3);font-size:12px;color:var(--fg2);min-height:34px;
+}
+#st-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#mtu-txt{font-family:var(--mono);font-size:11px;color:var(--fg3);white-space:nowrap;margin-left:auto}
+#net-chip{
+  order:4;font-size:11px;font-weight:600;color:var(--orange);
+  border:1px solid #4a3010;background:#2a1e08;border-radius:999px;padding:4px 10px;white-space:nowrap;
+}
+#net-chip[hidden]{display:none}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--red);display:inline-block;flex-shrink:0;transition:background .3s}
+.dot.on{background:var(--green);animation:dotpulse 2.2s ease-in-out infinite}
+@keyframes dotpulse{
+  0%,100%{box-shadow:0 0 4px var(--green)}
+  50%{box-shadow:0 0 12px var(--green), 0 0 3px var(--green)}
+}
+
+#pwa-warn{
+  display:flex;align-items:center;gap:10px;flex-shrink:0;
+  padding:8px 14px;font-size:12px;line-height:1.45;color:#f5c98a;
+  background:linear-gradient(180deg,#2a1e08,#241a08);border-bottom:1px solid #4a3010;
+}
+#pwa-warn[hidden]{display:none}
+
+/* ── Navigation ── */
 .tabs{
-  display:flex;gap:2px;padding:5px 14px 0;
-  background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;
+  display:flex;gap:6px;padding:8px 14px;flex-shrink:0;align-items:center;
+  border-bottom:1px solid var(--border);
 }
-.tab{
-  padding:5px 15px;border-radius:4px 4px 0 0;cursor:pointer;
-  color:var(--fg2);border:1px solid transparent;border-bottom:none;transition:all .12s;
+.tab,.nav-con{
+  display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:10px;
+  border:1px solid transparent;color:var(--fg2);font-weight:600;cursor:pointer;user-select:none;
+  transition:background .12s,color .12s,border-color .12s;
 }
-.tab:hover{color:var(--fg);background:var(--bg3)}
-.tab.on{color:var(--accent);background:var(--bg);border-color:var(--border);border-bottom-color:var(--bg);margin-bottom:-1px}
+.tab svg,.nav-con svg{width:18px;height:18px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tab:hover,.nav-con:hover{color:var(--fg);background:var(--bg3)}
+.tab.on{
+  background:var(--bg3);border-color:var(--border);color:var(--fg);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+             0 0 18px -8px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.tab.on svg{color:var(--accent)}
+.nav-con{margin-left:auto}
+body:has(#bot-con:not(.collapsed)) .nav-con{color:var(--fg);background:var(--bg3);border-color:var(--border)}
 
-/* ── Content / panels ── */
+/* ── Content / columns ── */
 .content{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .content > .tp{display:none;flex:1;overflow:hidden;min-height:0}
-.content > .tp.on{display:flex}
-.prow{display:flex;gap:10px;flex:1;overflow:hidden;padding:10px;min-height:0}
-.pcol{display:flex;flex-direction:column;gap:8px;overflow:hidden;min-height:0;min-width:0}
-.pscroll{overflow-y:auto}
+.content > .tp.on{display:flex;animation:tfade .18s ease}
+@keyframes tfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.prow{display:grid;gap:12px;flex:1;min-height:0;overflow:hidden;padding:12px 14px;width:100%}
+.pcol{display:flex;flex-direction:column;gap:12px;min-height:0;min-width:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:2px}
+#tp-tag  .prow{grid-template-columns:minmax(340px,460px) minmax(0,1fr)}
+#tp-anim .prow{grid-template-columns:minmax(0,1fr) minmax(340px,440px)}
+#tp-lut  .prow{grid-template-columns:minmax(440px,520px) minmax(0,1fr)}
+#tp-sys  .prow{grid-template-columns:minmax(0,1fr) minmax(340px,420px)}
 
-/* ── Card ── */
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:9px 11px}
+/* ── Cards ── */
+.card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;flex-shrink:0;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03), 0 10px 26px -22px rgba(0,0,0,.9);
+}
 .ctitle{
-  font-size:10px;font-weight:700;color:var(--fg2);
-  text-transform:uppercase;letter-spacing:.8px;margin-bottom:7px;
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  font-size:11px;font-weight:700;color:var(--fg2);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px;
 }
-
-/* ── Button rows ── */
-.brow{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
-.blbl{color:var(--yellow);font-size:10px;white-space:nowrap;margin-right:1px}
-.brow > div[style*="display:flex"]{min-width:0}
-
-/* ── Display canvas ── */
-#disp-canvas,
-#anim-preview{
-  border:1px solid var(--border);border-radius:4px;image-rendering:pixelated;display:block;
+.ctitle .sub{font-weight:500;text-transform:none;letter-spacing:0;color:var(--fg3);font-family:var(--mono);font-size:10.5px}
+details.card{padding:0}
+details.card > summary{
+  list-style:none;cursor:pointer;user-select:none;min-height:46px;
+  display:flex;align-items:center;gap:8px;padding:12px 14px;
+  font-size:11px;font-weight:700;color:var(--fg2);text-transform:uppercase;letter-spacing:1.2px;
 }
+details.card > summary::-webkit-details-marker{display:none}
+details.card > summary::after{
+  content:'';margin-left:auto;width:8px;height:8px;flex-shrink:0;
+  border-right:2px solid var(--fg3);border-bottom:2px solid var(--fg3);
+  transform:rotate(-45deg);transition:transform .15s;
+}
+details.card[open] > summary::after{transform:rotate(45deg)}
+details.card > summary:hover{color:var(--fg)}
+details.card > .dbody{padding:0 14px 14px}
+details.sub{border:1px solid var(--border);border-radius:var(--r-s);background:var(--bg3)}
+details.sub > summary{list-style:none;cursor:pointer;padding:9px 12px;font-size:12px;font-weight:600;color:var(--fg2);display:flex;align-items:center;min-height:38px}
+details.sub > summary::-webkit-details-marker{display:none}
+details.sub > summary::after{content:'';margin-left:auto;width:7px;height:7px;border-right:2px solid var(--fg3);border-bottom:2px solid var(--fg3);transform:rotate(-45deg);transition:transform .15s}
+details.sub[open] > summary::after{transform:rotate(45deg)}
+details.sub > .dbody{padding:0 12px 12px}
+.hint{font-size:12px;color:var(--fg2);line-height:1.45;margin-top:8px}
+.hint b{color:var(--fg)}
+.gtitle{font-size:11px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:1px;margin:14px 0 8px}
+.gtitle:first-child{margin-top:0}
+
+/* ── Rows & grids ── */
+.brow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+.cmdgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}
+.frow{display:flex;align-items:center;gap:10px;margin-top:8px;min-width:0}
+.frow > .lbl{font-size:12px;color:var(--fg2);flex:0 0 96px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.frow > select,.frow > input[type=text],.frow > input[type=number],.frow > input[type=password]{flex:1}
+.frow > .val{font-family:var(--mono);font-size:12px;color:var(--yellow);flex:0 0 44px;text-align:right;font-variant-numeric:tabular-nums}
+.frow > .seg{flex:1}
+.tonebox{flex-direction:column;align-items:stretch;width:100%;gap:0}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;align-items:center}
+.kv > span:nth-child(odd){color:var(--fg2)}
+.kv > span:nth-child(even){font-family:var(--mono);word-break:break-all}
+.stat3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.stat3 > div > div:first-child{font-size:11px;color:var(--fg2);margin-bottom:3px}
+.stat3 > div > div:last-child{font-family:var(--mono);font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.ti{display:inline-flex;gap:6px;align-items:center;font-size:11px;background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:3px 10px;white-space:nowrap}
+.ti:empty{display:none}
+.tl{color:var(--fg2)}.tv{color:var(--yellow);font-weight:700;font-family:var(--mono)}
+
+/* ── Display bezel + canvases ── */
+.bezel{
+  background:linear-gradient(180deg,#191c28,#101218);
+  border:1px solid var(--border);border-radius:16px;padding:14px 14px 10px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.045), 0 14px 34px -24px #000;
+}
+.bezel .scrn{display:flex;justify-content:center}
+#disp-canvas,#anim-preview{
+  display:block;max-width:100%;height:auto !important;image-rendering:pixelated;
+  border-radius:3px;border:1px solid #3a4158;background:#fff;
+  box-shadow:0 0 0 5px #0b0d13, 0 0 0 6px #2d3346;
+}
+#disp-canvas{background:var(--paper)}
+#disp-canvas.grabby{cursor:grab;touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
+#disp-canvas.grabby:active{cursor:grabbing}
+.bezel-label{
+  display:flex;justify-content:space-between;gap:8px;align-items:center;
+  font-size:9.5px;letter-spacing:1.4px;color:#565d78;text-transform:uppercase;margin-top:12px;padding:0 2px;
+}
+.bezel-label .inks{display:inline-flex;gap:3px;align-items:center}
+.bezel-label .inks i{width:6px;height:6px;border-radius:50%;display:block}
+#send-box{margin-top:10px}
+.pinfo{font-size:11px;color:var(--fg2);text-align:center;margin-top:4px;font-variant-numeric:tabular-nums;font-family:var(--mono)}
+#ie-orig{touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
 
 /* ── Drop zone ── */
 .dropzone{
-  border:2px dashed var(--border);border-radius:6px;
-  padding:18px 10px;text-align:center;color:var(--fg2);
-  cursor:pointer;transition:all .15s;
+  min-height:76px;display:flex;flex-direction:column;justify-content:center;gap:3px;
+  border:1.5px dashed var(--border2);border-radius:12px;padding:12px 14px;text-align:center;
+  color:var(--fg2);cursor:pointer;transition:all .15s;
 }
 .dropzone:hover,.dropzone.over{border-color:var(--accent);color:var(--fg);background:#141422}
+.dz-t{font-size:14px;font-weight:600;color:var(--fg)}
+.dz-s{font-size:11.5px}
 
 /* ── Image editor ── */
-.ierow{display:flex;align-items:center;gap:6px;margin-top:5px;min-width:0}
-.ielbl{font-size:9px;color:var(--fg2);width:44px;flex-shrink:0;text-transform:uppercase;letter-spacing:.4px}
-.ieval{font-size:9px;color:var(--yellow);width:36px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums}
-.ierow input[type=range]{
-  flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:18px;
-  background:transparent;outline:none;cursor:pointer;padding:0;border:none;
-}
-.ierow input[type=range]::-webkit-slider-runnable-track{height:4px;background:var(--bg4);border-radius:2px}
-.ierow input[type=range]::-webkit-slider-thumb{
-  -webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border-radius:50%;
-  background:var(--accent);border:2px solid var(--bg2);cursor:grab;
-}
-.ierow input[type=range]::-moz-range-track{height:4px;background:var(--bg4);border-radius:2px}
-.ierow input[type=range]::-moz-range-thumb{
-  width:10px;height:10px;border-radius:50%;
-  background:var(--accent);border:2px solid var(--bg2);cursor:grab;
-}
-.ierow input[type=range]:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent);outline-offset:2px}
-#disp-canvas.grabby{cursor:grab;touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
-#disp-canvas.grabby:active{cursor:grabbing}
-#ie-orig{touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
-.iehint{font-size:9px;color:var(--fg2);margin-top:5px;line-height:1.4}
-.iebar select{flex:1;min-width:0}
+.iebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.iebar select{flex:1 1 160px}
+.iebtns{display:flex;gap:6px;flex:1 1 auto}
+.iebtns .btn{flex:1;min-width:40px;padding-left:6px;padding-right:6px;font-size:15px}
+.ierow{display:flex;align-items:center;gap:10px;margin-top:8px;min-width:0}
+.ielbl{font-size:12px;color:var(--fg2);width:68px;flex-shrink:0}
+.ieval{font-family:var(--mono);font-size:12px;color:var(--yellow);width:46px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums}
+.ierow select{flex:1}
 
 /* ── LUT cells ── */
-.lc{
-  width:33px;padding:2px 3px;text-align:center;font-size:11px;
-  border-radius:3px;background:var(--bg3);color:var(--fg);
-  border:1px solid var(--border);outline:none;font-family:inherit;
+.lutgrid{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px}
+input[type=text].lc{   /* specificity ≥ the generic input rule, on every breakpoint */
+  width:37px;min-height:0;padding:4px 2px;text-align:center;font-size:12px;
+  border-radius:5px;background:var(--bg3);color:var(--fg);
+  border:1px solid var(--border);outline:none;font-family:var(--mono);
 }
 .lc:focus{border-color:var(--accent)}
 .lc.lc0{color:#d4d4d4}.lc.lc1{color:#98c379}.lc.lc2,.lc.lc3{color:#e06c75}.lc.lc4{color:#566}
@@ -173,383 +323,326 @@ select{cursor:pointer}
 .lc.bad{border-color:var(--red);color:var(--red)}
 
 /* ── DC balance ── */
-.dcrow{display:flex;align-items:center;gap:7px;margin-bottom:3px}
-.dclbl{font-size:9px;width:76px;flex-shrink:0}
-.dctrack{flex:1;height:11px;background:var(--bg3);border-radius:2px;position:relative;overflow:hidden}
+.dcrow{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.dclbl{font-size:11px;width:80px;flex-shrink:0}
+.dctrack{flex:1;height:12px;background:var(--bg3);border-radius:3px;position:relative;overflow:hidden}
 .dcfill{position:absolute;top:0;bottom:0;transition:all .1s}
-.dccenter{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--border)}
-.dcval{font-size:9px;width:130px;flex-shrink:0}
+.dccenter{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--border2)}
+.dcval{font-size:11px;width:140px;flex-shrink:0;font-family:var(--mono)}
 
-/* ── Console ── */
+/* ── Waveform ── */
+.wfwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:8px}
+#wf-canvas{display:block;width:100%;height:260px;border:1px solid var(--border);border-radius:8px;background:#0c0d14}
+.mob-only{display:none}
+
+/* ── Console / logs ── */
 .con{
-  flex:1;overflow-y:auto;font-size:10px;padding:6px 8px;
-  background:#08080e;border-radius:4px;line-height:1.5;min-height:0;
+  flex:1;overflow-y:auto;font-family:var(--mono);font-size:11px;padding:7px 9px;
+  background:#07080d;border:1px solid #14161f;border-radius:8px;line-height:1.5;min-height:0;
+  overscroll-behavior:contain;
 }
 .con .rx{color:var(--green)}.con .tx{color:var(--accent)}
 .con .inf{color:var(--fg2)}.con .err{color:var(--red)}.con .ts{color:#383858}
+.con .ok{color:var(--green)}.con .wrn{color:var(--orange)}
+.logcard{display:flex;flex-direction:column;flex:1 0 auto;min-height:160px}
+.logcard .ctitle{flex-shrink:0}
+.logcard .con{min-height:120px}
+#stream-st{font-family:var(--mono);font-size:11px;color:var(--fg2);padding:8px 0 2px;min-height:18px}
 
 /* ── Progress ── */
-.pbar{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-top:6px}
-.pfill{height:100%;background:var(--accent);border-radius:2px;transition:width .2s}
-
-/* ── Tele bar ── */
-.tbar{
-  background:#0a0a12;border-top:1px solid var(--border);
-  padding:4px 14px;display:flex;gap:18px;align-items:center;flex-shrink:0;
-}
-.ti{display:flex;gap:5px;align-items:center;font-size:10px}
-.tl{color:var(--fg2)}.tv{color:var(--yellow);font-weight:700;min-width:50px}
-
-/* ── Scrollbar ── */
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-track{background:var(--bg2)}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-::-webkit-scrollbar-thumb:hover{background:var(--fg2)}
-
-/* ── Waveform canvas ── */
-#wf-canvas{display:block;width:100%;border:1px solid var(--border);border-radius:4px}
-
-/* ── Stream status ── */
-#stream-st{font-size:10px;color:var(--fg2);padding:3px 0}
+.pbar{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:6px}
+.pfill{height:100%;background:var(--accent);border-radius:3px;transition:width .2s}
 
 /* ── Bottom console panel ── */
 #bot-con{
-  background:var(--bg2);
-  display:flex;flex-direction:column;flex-shrink:0;
-  min-height:24px;height:150px;
-  transition:height .15s ease;
+  background:var(--bg2);border-top:1px solid var(--border);
+  display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;
+  min-height:40px;height:200px;transition:height .15s ease;
 }
-#bot-con.collapsed{height:24px !important}
+#bot-con.collapsed{height:40px !important}
 #bot-resize{
-  height:5px;cursor:ns-resize;flex-shrink:0;
+  height:6px;cursor:ns-resize;flex-shrink:0;position:relative;transition:background .12s;
   background:linear-gradient(to bottom,transparent 2px,var(--border) 2px,var(--border) 3px,transparent 3px);
-  position:relative;transition:background .12s;
 }
 #bot-resize:hover,#bot-resize.drag{
   background:linear-gradient(to bottom,transparent 1px,var(--accent) 1px,var(--accent) 4px,transparent 4px);
 }
 #bot-hdr{
-  display:flex;align-items:center;gap:8px;padding:3px 10px;
-  font-size:10px;font-weight:700;color:var(--fg2);
-  text-transform:uppercase;letter-spacing:.6px;flex-shrink:0;
-  user-select:none;cursor:default;
+  display:flex;align-items:center;gap:8px;padding:2px 10px 2px 14px;min-height:28px;
+  font-size:11px;font-weight:700;color:var(--fg2);text-transform:uppercase;letter-spacing:.8px;
+  flex-shrink:0;user-select:none;
 }
-#bot-body{
-  display:flex;flex-direction:column;flex:1;overflow:hidden;
-  min-height:0;padding:0 8px 5px;gap:5px;
-}
+#bot-hdr .sp{flex:1}
+#bot-body{display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:0 12px 8px;gap:6px}
 #bot-con.collapsed #bot-body{display:none}
-#bot-con.collapsed #bot-hdr{opacity:.7}
+#bot-con.collapsed #bot-hdr{opacity:.75}
+.tbar{display:flex;gap:6px;align-items:center;flex-shrink:0;overflow-x:auto;scrollbar-width:none;padding:1px 0}
+.tbar::-webkit-scrollbar{display:none}
+.tbar .ti{flex:0 0 auto}
+.cmdrow{display:flex;gap:6px;flex-shrink:0;align-items:center}
+.cmdrow input{flex:1}
+.quick{display:flex;gap:4px;flex-shrink:0;overflow-x:auto;scrollbar-width:none}
+.quick::-webkit-scrollbar{display:none}
+.quick .btn{flex:0 0 auto;font-family:var(--mono);font-weight:500}
 
-/* ── Responsive layout ── */
-#vs-grid,
-#tim-grid{overflow-x:auto;-webkit-overflow-scrolling:touch}
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--fg2)}
 
-@media (max-width: 900px) {
-  html,body{height:auto;min-height:100%;overflow:auto}
-  body{min-height:100vh;overflow-x:hidden}
-
-  .hdr{
-    flex-wrap:wrap;align-items:center;gap:8px;
-    padding:8px max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));
-  }
-  .hdr-title{flex:1 0 100%;font-size:13px}
-  .hdr-sep{display:none}
-  #dev-name{width:auto !important;flex:1 1 220px}
-  #st-txt{flex:1 1 160px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #mtu-txt{margin-left:0 !important}
-  .hdr > div[style*="flex:1"]{display:none}
-
-  .tabs{
-    position:sticky;top:0;z-index:10;overflow-x:auto;scrollbar-width:none;
-    padding:5px 8px 0;background:var(--bg2);
-  }
-  .tabs::-webkit-scrollbar{display:none}
-  .tab{flex:1 0 auto;min-width:max-content;padding:8px 14px;text-align:center}
-
-  .content{display:block;overflow:visible}
-  .content > .tp{overflow:visible}
-  .content > .tp.on{display:block}
-  .prow{flex-direction:column;overflow:visible;padding:8px;min-height:0}
-  .pcol{width:100% !important;flex:0 0 auto !important;overflow:visible}
-  .pscroll{overflow:visible}
-  .card{padding:10px}
-  #disp-canvas,
-  #anim-preview{max-width:100%;height:auto}
-
-  #bot-con{height:180px;max-height:45vh}
-  #bot-resize{height:12px;cursor:ns-resize;touch-action:none}
-  .tbar{
-    overflow-x:auto;gap:12px;
-    padding:6px 10px calc(6px + env(safe-area-inset-bottom));
-  }
-  .tbar .ti{flex:0 0 auto}
+/* ── Toasts ── */
+#sw-toast,#ui-toast{
+  position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:99;
+  display:flex;gap:11px;align-items:center;
+  background:var(--bg3);border:1px solid var(--border);border-radius:13px;
+  padding:9px 9px 9px 14px;font-size:12.5px;color:var(--fg);
+  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,440px);
+  animation:tfade .2s ease;
 }
+#sw-toast[hidden]{display:none}
+#ui-toast{padding:10px 14px;pointer-events:none;opacity:0;transition:opacity .2s;animation:none;line-height:1.4}
+#ui-toast.show{opacity:1}
+#ui-toast.err{border-color:#4a2020;background:#2a1414;color:#ffb3b3}
+#ui-toast.ok{border-color:#1e4030;background:#162a22;color:#b8f0d6}
 
-@media (max-width: 640px) {
-  body{font-size:13px}
-  .hdr{padding:8px 8px}
-  .hdr .btn{flex:1 1 110px}
-  #btn-conn{flex:1 1 130px}
-
-  .btn{
-    min-height:40px;padding:9px 11px;font-size:13px;
-    white-space:normal;overflow-wrap:anywhere;
-  }
-  .btn.big{padding:10px 12px;font-size:14px}
-  select,input[type=text],input[type=number],textarea{
-    min-height:40px;padding:8px 10px;font-size:16px;
-  }
-  textarea{font-size:14px}
-
-  .brow{gap:6px}
-  .brow > .btn{flex:1 1 132px}
-  .brow > input[type=text],
-  .brow > select{flex:1 1 100%}
-  .brow > input[type=number]{flex:1 1 92px}
-  .brow > div[style*="display:flex"]{flex:1 1 100% !important}
-  .brow > label{flex:1 1 145px;min-height:32px}
-  .blbl{font-size:11px}
-
-  .ctitle{line-height:1.4;overflow-wrap:anywhere}
-  .dropzone{
-    min-height:86px;display:flex;flex-direction:column;
-    justify-content:center;gap:2px;
-  }
-
-  #disp-canvas,
-  #anim-preview{width:100% !important;height:auto !important;max-width:296px}
-
-  /* Image editor on touch */
-  .ierow{gap:8px;margin-top:9px}
-  .ielbl{font-size:11px;width:64px}
-  .ieval{font-size:11px;width:46px}
-  .ierow input[type=range]{height:32px}
-  .ierow input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px}
-  .ierow input[type=range]::-webkit-slider-thumb{width:22px;height:22px;margin-top:-8px}
-  .ierow input[type=range]::-moz-range-track{height:6px;border-radius:3px}
-  .ierow input[type=range]::-moz-range-thumb{width:18px;height:18px}
-  .iebar{flex-wrap:wrap}
-  .iebar select{flex:1 1 100%}
-  .iebar .btn{flex:1 1 0}
-  .iehint{font-size:10px}
-
-  .con{font-size:11px;min-height:120px}
-
-  .dcrow{flex-wrap:wrap;gap:5px 7px}
-  .dclbl{width:78px}
-  .dcval{width:auto;flex:1 1 100%;padding-left:85px}
-
-  #bot-hdr{padding:6px 8px;gap:6px}
-  #bot-hdr .btn{flex:0 0 auto;min-height:32px;padding:5px 8px}
-  #bot-body{padding:0 8px 8px}
+/* ── Send status bar (bytes · speed · time; fixed, visible on every tab) ── */
+#send-bar{
+  position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:98;
+  width:min(92vw,540px);background:var(--bg3);border:1px solid #2a4a80;border-radius:13px;
+  padding:9px 12px 0;box-shadow:0 16px 48px -16px #000;font-size:12.5px;overflow:hidden;animation:tfade .2s ease;
 }
+.sb-row{display:flex;align-items:center;gap:10px;min-height:26px}
+.sb-ico{font-size:15px;flex-shrink:0;color:var(--accent);width:18px;text-align:center}
+.sb-txt{flex:1;min-width:0;font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1.3;overflow-wrap:anywhere}
+.sb-track{height:4px;background:var(--bg4);margin:8px -12px 0}
+.sb-fill{height:100%;width:0;background:var(--accent);transition:width .2s}
+#send-bar.refresh .sb-fill{animation:sbpulse 1s ease-in-out infinite}
+#send-bar.done{border-color:#1e4030}  #send-bar.done .sb-fill{background:var(--green)}   #send-bar.done .sb-ico{color:var(--green)}
+#send-bar.warn,#send-bar.stop{border-color:#4a3010}
+#send-bar.warn .sb-fill,#send-bar.stop .sb-fill{background:var(--orange)}
+#send-bar.warn .sb-ico,#send-bar.stop .sb-ico{color:var(--orange)}
+#send-bar.error{border-color:#4a2020} #send-bar.error .sb-fill{background:var(--red)}  #send-bar.error .sb-ico{color:var(--red)}
+@keyframes sbpulse{0%,100%{opacity:1}50%{opacity:.4}}
+body.sending .send-btn{opacity:.45;pointer-events:none}
+body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-inset-bottom))}
+
+#fw-toast{
+  position:fixed;left:50%;top:calc(10px + env(safe-area-inset-top));transform:translateX(-50%);z-index:100;
+  display:flex;gap:11px;align-items:center;
+  background:linear-gradient(180deg,#101830,#0c1220);border:1px solid #2a4a80;border-radius:13px;
+  padding:9px 9px 9px 14px;font-size:12.5px;color:var(--fg);
+  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,440px);
+  animation:tfade .2s ease;touch-action:pan-y;cursor:grab;user-select:none;
+}
+#fw-toast[hidden]{display:none}
+#fw-toast .fwt-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+#fw-toast .fwt-ver{font-weight:700}
+#fw-toast .fwt-sub{font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#fw-toast .fwt-x{padding:4px 8px}
+
+/* ── System tab ── */
+#dfu-banner{border-color:#2a4a80;background:linear-gradient(180deg,#101830,#0c1220);animation:tfade .3s ease}
+#dfu-banner .bn{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#dfu-banner .bn-txt{flex:1 1 180px;min-width:0}
+#dfu-banner .bn-t{font-size:14px;font-weight:700;color:var(--accent)}
+.battbar{position:relative;height:30px;background:var(--bg3);border-radius:8px;overflow:hidden;margin-bottom:10px}
+#sys-batt-bar{position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,var(--red),var(--orange) 30%,var(--green) 70%);border-radius:8px;transition:width .5s ease}
+#sys-batt-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--fg);text-shadow:0 1px 2px #000}
+#nfc-url{width:100%;font-size:11px;color:var(--fg2)}
+#dfu-slots{margin-top:8px;font-size:11.5px;font-family:var(--mono);color:var(--fg2)}
+#dfu-file-info,#dfu-prog-text{font-family:var(--mono);font-size:11.5px;margin-top:6px}
+#dfu-file-info{color:var(--yellow)}
+#dfu-prog-text{color:var(--fg2)}
 
 @media (hover: none) {
-  .btn:hover{background:var(--bg3);color:var(--fg2);border-color:var(--border)}
+  .btn:hover{background:linear-gradient(180deg,#1b1f2d,var(--bg3));border-color:var(--border)}
   .btn.acc:hover{background:#162340;color:var(--accent);border-color:#2a4a80}
   .btn.ok:hover{background:#162a22;color:var(--green);border-color:#1e4030}
   .btn.bad:hover{background:#2a1414;color:var(--red);border-color:#4a2020}
   .btn.warn:hover{background:#2a1e08;color:var(--orange);border-color:#4a3010}
   .btn.pur:hover{background:#1e1230;color:var(--purple);border-color:#3a2060}
   .btn.ylw:hover{background:#221c08;color:var(--yellow);border-color:#3a3010}
+  .btn.ghost:hover{background:transparent;color:var(--fg2)}
+  .tab:hover{color:var(--fg2);background:transparent}
+  .tab.on:hover{color:var(--fg);background:var(--bg3)}
 }
-
-/* ═══════════════════════════════════════════════════════
-   v2 — оболочка приложения и рескин
-   sans — интерфейс · mono — данные · BWR — идентичность
-   ═══════════════════════════════════════════════════════ */
-body{
-  background:
-    radial-gradient(120% 60% at 50% -12%, #151a2c 0%, transparent 62%),
-    var(--bg);
-  -webkit-font-smoothing:antialiased;
-}
-select,input[type=text],input[type=number],textarea,.con,
-.tl,.tv,.ieval,.lc,#stream-st,#mtu-txt{font-family:var(--mono)}
-select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
-
-/* ── Кнопки: мягкая глубина ── */
-.btn{
-  border-radius:var(--r-s);font-family:var(--sans);font-weight:600;
-  background:linear-gradient(180deg,#1b1f2d,var(--bg3));
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.045);
-}
-.btn:active{transform:translateY(1px) scale(.985)}
-.btn.big{border-radius:9px}
-
-/* ── Карточки ── */
-.card{
-  border-radius:var(--r);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.03), 0 10px 26px -22px rgba(0,0,0,.9);
-}
-.ctitle{letter-spacing:1.3px}
-
-/* ── Шапка: бренд + стекло ── */
-.hdr{
-  background:color-mix(in srgb, var(--bg2) 86%, transparent);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  padding-top:calc(7px + env(safe-area-inset-top));
-}
-.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:14px;letter-spacing:.5px;color:var(--fg);white-space:nowrap}
-.brand .inks{display:flex;gap:3px;align-items:center}
-.brand .inks i{width:9px;height:9px;border-radius:50%;display:block}
-.inks .k{background:#06070a;box-shadow:inset 0 0 0 1.5px #2d3346}
-.inks .w{background:var(--paper)}
-.inks .r{background:var(--ink-r)}
-.brand small{font-weight:500;color:var(--fg2);font-size:10px;letter-spacing:.7px}
-
-/* ── Индикатор связи ── */
-.dot{width:9px;height:9px}
-.dot.on{animation:dotpulse 2.2s ease-in-out infinite}
-@keyframes dotpulse{
-  0%,100%{box-shadow:0 0 4px var(--green)}
-  50%{box-shadow:0 0 12px var(--green), 0 0 3px var(--green)}
-}
-
-/* ── Вкладки: сегментный переключатель ── */
-.tabs{gap:5px;padding:8px 14px;background:transparent;border-bottom:1px solid var(--border)}
-.tab{
-  border-radius:9px;border:1px solid transparent;border-bottom:1px solid transparent;
-  font-weight:600;color:var(--fg2);
-}
-.tab.on{
-  background:var(--bg3);border-color:var(--border);color:var(--fg);margin-bottom:0;
-  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
-             0 0 18px -8px color-mix(in srgb, var(--accent) 60%, transparent);
-}
-@media (max-width:900px){
-  .tabs{padding:8px;background:color-mix(in srgb, var(--bg) 78%, transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
-}
-.content > .tp.on{animation:tfade .18s ease}
-@keyframes tfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-
-/* ── Фирменный элемент: e-ink модуль в безеле ── */
-.bezel{
-  background:linear-gradient(180deg,#191c28,#101218);
-  border:1px solid var(--border);border-radius:16px;
-  padding:15px 16px 10px;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.045), 0 14px 34px -24px #000;
-}
-.bezel .scrn{display:flex;justify-content:center}
-#disp-canvas{
-  border-radius:3px;border:1px solid #3a4158;
-  box-shadow:0 0 0 5px #0b0d13, 0 0 0 6px #2d3346;
-  background:var(--paper);
-}
-.bezel-label{
-  display:flex;justify-content:space-between;gap:8px;
-  font-size:9px;letter-spacing:1.6px;color:#565d78;text-transform:uppercase;
-  margin-top:10px;padding:0 2px;
-}
-.bezel-label .inks{display:inline-flex;gap:3px;align-items:center}
-.bezel-label .inks i{width:6px;height:6px;border-radius:50%;display:block}
-
-/* ── Телеметрия: чипы ── */
-.tbar{
-  background:color-mix(in srgb, var(--bg2) 82%, transparent);
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
-  padding-top:6px;padding-bottom:calc(6px + env(safe-area-inset-bottom));
-}
-.ti{background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:2px 10px}
-.tv{min-width:0}
-
-/* ── Консоль ── */
-#bot-hdr{font-family:var(--sans)}
-.con{border:1px solid #14161f;background:#07080d}
-
-/* ── PWA: установка, сеть, обновление ── */
-#net-chip{
-  font-size:10px;font-weight:600;color:var(--orange);
-  border:1px solid #4a3010;background:#2a1e08;border-radius:999px;padding:2px 9px;white-space:nowrap;
-}
-#sw-toast{
-  position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));
-  transform:translateX(-50%);z-index:99;
-  display:flex;gap:11px;align-items:center;
-  background:var(--bg3);border:1px solid var(--border);border-radius:13px;
-  padding:9px 9px 9px 14px;font-size:12px;color:var(--fg);
-  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,420px);
-  animation:tfade .2s ease;
-}
-#sw-toast[hidden]{display:none}
-
-/* Firmware-update toast (свайпом смахивается; см. fwToast* в JS) */
-#fw-toast{
-  position:fixed;left:50%;top:calc(10px + env(safe-area-inset-top));
-  transform:translateX(-50%);z-index:100;
-  display:flex;gap:11px;align-items:center;
-  background:linear-gradient(180deg,#101830,#0c1220);
-  border:1px solid #2a4a80;border-radius:13px;
-  padding:9px 9px 9px 14px;font-size:12px;color:var(--fg);
-  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,420px);
-  animation:tfade .2s ease;touch-action:pan-y;cursor:grab;user-select:none;
-}
-#fw-toast[hidden]{display:none}
-#fw-toast .fwt-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
-#fw-toast .fwt-ver{font-weight:700}
-#fw-toast .fwt-sub{font-size:10px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#fw-toast .fwt-x{padding:4px 8px}
-
-#pwa-warn{
-  display:flex;align-items:center;gap:9px;flex-shrink:0;
-  padding:7px 12px;font-size:11px;line-height:1.45;color:#f5c98a;
-  background:linear-gradient(180deg,#2a1e08,#241a08);
-  border-bottom:1px solid #4a3010;
-}
-#pwa-warn[hidden]{display:none}
-#pwa-warn a{color:var(--accent)}
-
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none !important;transition:none !important}
 }
 
-/* ── System / DFU tab ── */
-#tp-sys .card{transition:border-color .3s}
-#dfu-banner{animation:tfade .3s ease}
-#sys-batt-bar{transition:width .5s ease}
+/* ═══════════════════════════════════════════════════════
+   Mobile & tablet (≤900px): document scroll, bottom nav,
+   console as a bottom sheet, cards reordered per tab (.m1…)
+   ═══════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+  html,body{height:auto;min-height:100%;overflow:auto}
+  body{min-height:100vh;min-height:100dvh;display:block;overflow-x:hidden;font-size:14px}
+
+  .hdr{gap:8px;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}
+  .hdr-row{display:flex;align-items:center;gap:8px;width:100%;min-width:0}
+  .brand{font-size:14px}
+  .brand small{display:none}
+  .conn{flex:1 1 0;order:0;padding:5px 10px;font-size:12px}
+  #mtu-txt{display:none}
+  #btn-conn{order:0;min-width:0;flex:0 0 auto;padding-left:12px;padding-right:12px}
+  #net-chip{order:0}
+  #hdr-more-btn{display:inline-flex;flex:0 0 auto}
+  .hdr-more{width:100%;flex:1 1 100%;margin-top:2px;flex-wrap:wrap}
+  .hdr-more[hidden]{display:none}
+  .hdr-more label{flex:1 1 220px}
+  #btn-install{flex:1 1 200px}
+
+  /* bottom navigation */
+  .tabs{
+    position:fixed;left:0;right:0;bottom:0;z-index:40;gap:2px;
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom));
+    background:color-mix(in srgb, var(--bg2) 92%, transparent);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border-top:1px solid var(--border);border-bottom:none;
+  }
+  .tab,.nav-con{
+    flex:1 1 0;flex-direction:column;justify-content:center;gap:3px;margin:0;
+    padding:6px 2px;min-height:48px;font-size:10.5px;font-weight:600;border-radius:10px;
+  }
+  .tab svg,.nav-con svg{width:22px;height:22px}
+  .tab.on{box-shadow:none}
+
+  .content{display:block;overflow:visible;padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 14px)}
+  .content > .tp{overflow:visible}
+  .content > .tp.on{display:block}
+  .prow{display:flex !important;flex-direction:column;overflow:visible;padding:10px;gap:10px}
+  .pcol{display:contents}
+  .card{order:20}
+  .m1{order:1}.m2{order:2}.m3{order:3}.m4{order:4}.m5{order:5}.m6{order:6}
+  .m7{order:7}.m8{order:8}.m9{order:9}.m10{order:10}.m11{order:11}.m12{order:12}
+  .logcard{flex:none;min-height:0}
+  .logcard .con{height:200px;flex:none}
+
+  .btn{min-height:40px;padding:8px 12px;font-size:13.5px}
+  .btn.big{min-height:46px;font-size:15px}
+  .btn.sm{min-height:32px;font-size:12px}
+  .btn.cmd{min-height:58px}
+  .bgrid > .btn,.cmdgrid > .btn{white-space:normal}
+  select,input[type=text],input[type=number],input[type=password],textarea{min-height:42px;padding:8px 12px;font-size:16px}
+  textarea{font-size:14px}
+  .chk{min-height:40px;font-size:13.5px}
+  .chk input{width:18px;height:18px}
+  .frow{gap:8px;margin-top:10px}
+  .frow > .lbl{flex:0 0 88px;font-size:12.5px}
+  .frow > .val{font-size:13px}
+  .ierow{gap:8px;margin-top:10px}
+  .ielbl{font-size:12.5px;width:72px}
+  .ieval{font-size:13px}
+  input[type=range]{height:36px}
+  input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px}
+  input[type=range]::-webkit-slider-thumb{width:24px;height:24px;margin-top:-9px}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px}
+  .iebtns .btn{font-size:18px}
+  .kv{font-size:13px;gap:8px 12px}
+  .hint{font-size:12.5px}
+  .dz-t{font-size:15px}
+  .dz-s{font-size:12px}
+  .dropzone{min-height:84px}
+  .con{font-size:12px}
+  input[type=text].lc{width:40px;min-height:0;font-size:13px;padding:7px 2px}
+  .dcrow{flex-wrap:wrap;gap:4px 8px}
+  .dcval{width:auto;flex:1 1 100%;padding-left:88px}
+  #wf-canvas{min-width:680px}   /* 7 phases need room: scroll sideways instead of squeezing */
+  .mob-only{display:inline}
+
+  /* console: bottom sheet above the nav */
+  #bot-con{
+    position:fixed;left:0;right:0;z-index:30;
+    bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));
+    height:min(48vh,400px) !important;
+    border-top:1px solid var(--border2);border-radius:16px 16px 0 0;
+    box-shadow:0 -18px 48px -20px #000;
+  }
+  #bot-con.collapsed{height:0 !important;visibility:hidden;pointer-events:none;border:0;box-shadow:none}
+  #bot-resize{display:none}
+  #bot-hdr{min-height:40px;padding:6px 10px 4px 14px}
+  #bot-body{padding:0 10px 10px}
+  .tbar{gap:5px}
+  .tbar .ti{font-size:11px}
+
+  #sw-toast,#ui-toast,#send-bar{bottom:calc(var(--nav-h) + 14px + env(safe-area-inset-bottom))}
+  body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(var(--nav-h) + 80px + env(safe-area-inset-bottom))}
+  #fw-toast{width:calc(100vw - 20px)}
+}
+
+@media (max-width: 380px) {
+  #btn-conn{padding-left:10px;padding-right:10px;font-size:13px}
+  .tab,.nav-con{font-size:10px}
+}
 </style>
 </head>
 <body>
 
-<!-- HEADER -->
-<div class="hdr">
-  <div class="hdr-title brand">
-    <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i></span>
-    E·INK <small>nRF52 controller</small>
+<!-- HEADER: brand · connection state · primary action. The device filter lives
+     in a secondary row (always visible on desktop, behind ⚙ on phones). -->
+<header class="hdr">
+  <div class="hdr-row">
+    <div class="brand">
+      <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i></span>
+      E·INK <small>nRF52 controller</small>
+    </div>
+    <div class="conn" title="Состояние подключения">
+      <span class="dot" id="dot"></span>
+      <span id="st-txt">Не подключено</span>
+      <span id="mtu-txt"></span>
+    </div>
+    <span id="net-chip" hidden>⚡ офлайн</span>
+    <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Подключить</button>
+    <button class="btn icon" id="hdr-more-btn" onclick="hdrMore()" title="Какой ценник искать" aria-label="Параметры подключения" aria-expanded="false" aria-controls="hdr-more">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+    </button>
   </div>
-  <div class="hdr-sep">│</div>
-  <select id="dev-name" style="width:210px" title="Фильтр выбора устройства. «Любой ценник» находит и переименованные — по сервису NUS.">
-    <option value="">🔍 Любой ценник (по UUID)</option>
-    <option value="nrf52-E-ink-clock-*">nrf52-E-ink-clock-*</option>
-    <option value="nrf52-E-ink-clock-DEV">nrf52-E-ink-clock-DEV</option>
-    <option value="LUT-Tester">LUT-Tester</option>
-  </select>
-  <button class="btn acc big" id="btn-conn" onclick="bleConnect()">Подключить</button>
-  <span class="dot" id="dot"></span>
-  <span id="st-txt" style="color:var(--fg2);font-size:11px">Не подключено</span>
-  <span id="mtu-txt" style="color:var(--fg2);font-size:10px;margin-left:4px"></span>
-  <span id="net-chip" hidden>⚡ офлайн</span>
-  <div style="flex:1"></div>
-  <button class="btn ok" id="btn-install" hidden title="Установить как приложение">⤓ Установить</button>
-  <button class="btn" onclick="send('HOST:1\n')" style="font-size:10px">HOST:1</button>
-  <button class="btn" onclick="send('STAT\n')" style="font-size:10px">STAT</button>
-</div>
+  <div class="hdr-more" id="hdr-more" hidden>
+    <label>
+      <span>Искать</span>
+      <select id="dev-name" title="Фильтр выбора устройства. «Любой ценник» находит и переименованные — по сервису NUS.">
+        <option value="">🔍 Любой ценник (по UUID)</option>
+        <option value="nrf52-E-ink-clock-*">nrf52-E-ink-clock-*</option>
+        <option value="nrf52-E-ink-clock-DEV">nrf52-E-ink-clock-DEV</option>
+        <option value="LUT-Tester">LUT-Tester</option>
+      </select>
+    </label>
+    <button class="btn ok" id="btn-install" hidden title="Установить как приложение">⤓ Установить приложение</button>
+  </div>
+</header>
 
-<!-- Предупреждение о среде запуска (file:// / http без TLS) -->
+<!-- Environment warning (file:// or plain http) -->
 <div id="pwa-warn" hidden>
   <span>⚠</span>
   <span id="pwa-warn-txt" style="flex:1"></span>
-  <button class="btn" onclick="this.parentElement.hidden=true" style="font-size:10px;padding:2px 8px">✕</button>
+  <button class="btn ghost sm" onclick="this.parentElement.hidden=true" aria-label="Скрыть">✕</button>
 </div>
 
-<!-- TABS -->
-<div class="tabs">
-  <div class="tab on" onclick="tab('tag')">🏷 Ценник</div>
-  <div class="tab"    onclick="tab('anim')">🎬 Анимация</div>
-  <div class="tab"    onclick="tab('lut')">⚙ LUT</div>
-  <div class="tab"    onclick="tab('sys')">📡 Система</div>
-</div>
+<!-- NAVIGATION: top segmented tabs on desktop, fixed bottom bar on phones.
+     tab() matches .tab elements by index — keep the order tag/anim/lut/sys. -->
+<nav class="tabs" aria-label="Разделы">
+  <div class="tab on" role="button" tabindex="0" onclick="tab('tag')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('tag')}">
+    <svg viewBox="0 0 24 24"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>
+    <span>Ценник</span>
+  </div>
+  <div class="tab" role="button" tabindex="0" onclick="tab('anim')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('anim')}">
+    <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
+    <span>Анимация</span>
+  </div>
+  <div class="tab" role="button" tabindex="0" onclick="tab('lut')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('lut')}">
+    <svg viewBox="0 0 24 24"><path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h8M18 18h2"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></svg>
+    <span>LUT</span>
+  </div>
+  <div class="tab" role="button" tabindex="0" onclick="tab('sys')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tab('sys')}">
+    <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
+    <span>Система</span>
+  </div>
+  <div class="nav-con" role="button" tabindex="0" onclick="toggleBotCon()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBotCon()}" title="Консоль BLE">
+    <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M6 8l4 4-4 4M12 16h6"/></svg>
+    <span>Консоль</span>
+  </div>
+</nav>
 
 <div class="content">
 
@@ -557,10 +650,11 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
 <div class="tp on" id="tp-tag">
   <div class="prow">
 
-    <!-- Left: display preview -->
-    <div class="pcol" style="width:310px;flex-shrink:0">
-      <div class="card">
-        <div class="ctitle">Дисплей · живое превью</div>
+    <!-- Column A: preview + image + text + patterns -->
+    <div class="pcol">
+
+      <section class="card m1">
+        <div class="ctitle">Превью дисплея <span class="sub">что увидишь на ценнике</span></div>
         <div class="bezel">
           <div class="scrn">
             <canvas id="disp-canvas" width="296" height="128" style="width:296px;height:128px"></canvas>
@@ -569,93 +663,111 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <span id="disp-label">SSD1675A · 296×128</span>
             <span class="inks"><i class="k"></i><i class="w"></i><i class="r"></i>&nbsp;BWR</span>
           </div>
-          <div id="send-box" style="display:none;margin-top:8px">
+          <div id="send-box" style="display:none">
             <div class="pbar"><div class="pfill" id="send-prog" style="width:0%"></div></div>
-            <div id="send-info" style="font-size:10px;color:var(--fg2);text-align:center;margin-top:3px;font-variant-numeric:tabular-nums"></div>
+            <div id="send-info" class="pinfo"></div>
           </div>
         </div>
-        <div class="brow" style="margin-top:9px;justify-content:center">
-          <button class="btn" onclick="clearCanvas()">Очистить</button>
+
+        <div class="frow" style="margin-top:12px">
+          <span class="lbl">Вывод</span>
           <select id="output-mode" title="Режим вывода" onchange="setOutputMode(this.value)">
-            <option value="dither" selected>Дизер / BWR</option>
+            <option value="dither" selected>Дизер · ч/б + красный</option>
             <option value="tone">Тона · сильный (TONE_DARK)</option>
-            <option value="tone-soft">Тона · мягкий (SOFT_DARK, линейный)</option>
+            <option value="tone-soft">Тона · мягкий (SOFT_DARK)</option>
           </select>
-          <button class="btn acc" id="send-bwr" onclick="sendCanvas()">↑ Отправить</button>
-          <span id="tone-send-controls" style="display:none;align-items:center;gap:5px;flex-wrap:wrap">
+        </div>
+
+        <!-- Tone (strong) controls — shown by setOutputMode() -->
+        <div id="tone-send-controls" class="tonebox" style="display:none">
+          <div class="frow">
+            <span class="lbl">Тонов</span>
             <select id="tone-pulses" title="Количество тоновых импульсов" onchange="renderImg()">
               <option value="4">4 тона</option>
               <option value="8" selected>8 тонов</option>
               <option value="12">12 тонов</option>
               <option value="16">16 тонов</option>
             </select>
-            <span style="display:flex;align-items:center;gap:4px;font-size:10px"
-                  title="Физическая сила одного импульса TONE_DARK на этой панели (% потемнения за проход). По ней считается число импульсов для каждого серого, превью при этом почти не меняется — выставляй по «Лесенке», а не по превью. 2.9″ ≈ 36, 4.2″ ≈ 18. Запоминается для панели.">
-              <span style="color:var(--fg2);white-space:nowrap">Сила имп.</span>
-              <input type="range" id="tone-pulse-str" min="1" max="60" value="36" step="1"
-                     style="width:70px" oninput="$('tone-pstr-val').textContent=this.value;saveToneStr();renderImg()">
-              <span id="tone-pstr-val" style="color:var(--yellow);font-variant-numeric:tabular-nums;min-width:18px">36</span>
-            </span>
-            <span style="display:flex;align-items:center;gap:4px;font-size:10px"
-                  title="Белые компенсирующие импульсы (TONE_LIGHT LUT) после тёмных проходов. Осветляют пиксели с малым числом тёмных импульсов, компенсируя общий дрейф в тёмную сторону.">
-              <span style="color:var(--vgl);white-space:nowrap">☀ Белый</span>
-              <input type="range" id="tone-light-passes" min="0" max="8" value="0" step="1"
-                     style="width:60px" oninput="$('tone-light-val').textContent=this.value;renderImg()">
-              <span id="tone-light-val" style="color:var(--vgl);font-variant-numeric:tabular-nums;min-width:12px">0</span>
-            </span>
-            <button class="btn pur" onclick="sendCanvasTone()">↑ Отправить</button>
-            <button class="btn" onclick="sendToneLadder()"
+          </div>
+          <div class="frow" title="Физическая сила одного импульса TONE_DARK на этой панели (% потемнения за проход). По ней считается число импульсов для каждого серого, превью при этом почти не меняется — выставляй по «Лесенке», а не по превью. 2.9″ ≈ 36, 4.2″ ≈ 18. Запоминается для панели.">
+            <span class="lbl">Сила имп.</span>
+            <input type="range" id="tone-pulse-str" min="1" max="60" value="36" step="1"
+                   oninput="$('tone-pstr-val').textContent=this.value;saveToneStr();renderImg()">
+            <span class="val" id="tone-pstr-val">36</span>
+          </div>
+          <div class="frow" title="Белые компенсирующие импульсы (TONE_LIGHT LUT) после тёмных проходов. Осветляют пиксели с малым числом тёмных импульсов, компенсируя общий дрейф в тёмную сторону.">
+            <span class="lbl" style="color:var(--vgl)">☀ Белый</span>
+            <input type="range" id="tone-light-passes" min="0" max="8" value="0" step="1"
+                   oninput="$('tone-light-val').textContent=this.value;renderImg()">
+            <span class="val" id="tone-light-val" style="color:var(--vgl)">0</span>
+          </div>
+          <div class="brow" style="margin-top:12px">
+            <button class="btn pur big grow send-btn" onclick="sendCanvasTone()">↑ Отправить на дисплей</button>
+            <button class="btn send-btn" onclick="sendToneLadder()"
                     title="Калибровка: полосы 0..N импульсов TONE_DARK напрямую, без модели. По полосе, похожей на 50 % серый, выставь «Сила имп.» (таблица N→сила в логе).">▤ Лесенка</button>
-          </span>
-          <span id="tone-soft-send-controls" style="display:none;align-items:center;gap:5px;flex-wrap:wrap">
+          </div>
+        </div>
+
+        <!-- Tone (soft) controls — shown by setOutputMode() -->
+        <div id="tone-soft-send-controls" class="tonebox" style="display:none">
+          <div class="frow">
+            <span class="lbl">Тонов</span>
             <select id="tone-soft-pulses" title="Тонов (мягкий режим: SOFT_DARK, линейное квантование)" onchange="renderImg()">
               <option value="8">8 тонов</option>
               <option value="16" selected>16 тонов</option>
               <option value="24">24 тона</option>
               <option value="32">32 тона</option>
             </select>
-            <span style="display:flex;align-items:center;gap:4px;font-size:10px"
-                  title="Сила мягкого импульса для симуляции превью. SOFT_DARK ≈ вдвое слабее TONE_DARK.">
-              <span style="color:var(--fg2);white-space:nowrap">Сила имп.</span>
-              <input type="range" id="tone-soft-str" min="1" max="40" value="18" step="1"
-                     style="width:70px" oninput="$('tone-soft-str-val').textContent=this.value;saveToneStr();renderImg()">
-              <span id="tone-soft-str-val" style="color:var(--yellow);font-variant-numeric:tabular-nums;min-width:18px">18</span>
-            </span>
-            <button class="btn acc" onclick="sendCanvasToneSoft()">↑ Отправить</button>
-          </span>
+          </div>
+          <div class="frow" title="Сила мягкого импульса для симуляции превью. SOFT_DARK ≈ вдвое слабее TONE_DARK.">
+            <span class="lbl">Сила имп.</span>
+            <input type="range" id="tone-soft-str" min="1" max="40" value="18" step="1"
+                   oninput="$('tone-soft-str-val').textContent=this.value;saveToneStr();renderImg()">
+            <span class="val" id="tone-soft-str-val">18</span>
+          </div>
+          <div class="brow" style="margin-top:12px">
+            <button class="btn acc big grow send-btn" onclick="sendCanvasToneSoft()">↑ Отправить на дисплей</button>
+          </div>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="ctitle">Изображение — редактор</div>
-        <div class="dropzone" id="img-drop" onclick="$('img-file').click()" style="padding:11px 10px">
-          <div>PNG / JPG / BMP / GIF / WebP</div>
-          <div style="font-size:10px;margin-top:3px">Клик или перетащи</div>
+        <div class="brow" style="margin-top:12px">
+          <button class="btn acc big grow send-btn" id="send-bwr" onclick="sendCanvas()">↑ Отправить на дисплей</button>
+          <button class="btn ghost" onclick="clearCanvas()" title="Очистить превью и закрыть редактор">Очистить</button>
         </div>
-        <input type="file" id="img-file" accept="image/*" style="display:none" onchange="loadImg(this.files[0])">
+      </section>
 
-        <div id="img-ed" style="display:none;margin-top:7px">
-          <div class="ierow iebar">
+      <section class="card m2">
+        <div class="ctitle">Изображение</div>
+        <div class="dropzone" id="img-drop" onclick="$('img-file').click()">
+          <div class="dz-t">Выбрать картинку</div>
+          <div class="dz-s">PNG · JPG · BMP · GIF · WebP — нажми или перетащи сюда</div>
+        </div>
+        <input type="file" id="img-file" accept="image/*" onchange="loadImg(this.files[0])">
+
+        <div id="img-ed" style="display:none;margin-top:12px">
+          <div class="iebar">
             <select id="ie-mode" onchange="ieSet()" title="Режим размещения">
               <option value="fit" selected>Fit — вписать</option>
               <option value="fill">Fill — заполнить</option>
               <option value="stretch">Stretch — растянуть</option>
               <option value="orig">100% — оригинал</option>
             </select>
-            <button class="btn" onclick="ieRot(-90)" title="Повернуть на −90°">⟲</button>
-            <button class="btn" onclick="ieRot(90)"  title="Повернуть на +90°">⟳</button>
-            <button class="btn" onclick="ieFlip('h')" title="Отразить по горизонтали">⇄</button>
-            <button class="btn" onclick="ieFlip('v')" title="Отразить по вертикали">⇅</button>
-            <button class="btn warn" onclick="ieReset()" title="Сбросить трансформации">⌂</button>
+            <div class="iebtns">
+              <button class="btn" onclick="ieRot(-90)" title="Повернуть на −90°">⟲</button>
+              <button class="btn" onclick="ieRot(90)"  title="Повернуть на +90°">⟳</button>
+              <button class="btn" onclick="ieFlip('h')" title="Отразить по горизонтали">⇄</button>
+              <button class="btn" onclick="ieFlip('v')" title="Отразить по вертикали">⇅</button>
+              <button class="btn warn" onclick="ieReset()" title="Сбросить трансформации">⌂</button>
+            </div>
           </div>
           <div class="ierow"><span class="ielbl">Угол</span><input type="range" id="ie-rot" min="-180" max="180" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-rot">0°</span></div>
           <div class="ierow"><span class="ielbl">Зум</span><input type="range" id="ie-zoom" min="5" max="400" value="100" step="1" oninput="ieSet()"><span class="ieval" id="iev-zoom">100%</span></div>
           <div class="ierow"><span class="ielbl">Яркость</span><input type="range" id="ie-bri" min="-100" max="100" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-bri">0</span></div>
           <div class="ierow"><span class="ielbl">Контраст</span><input type="range" id="ie-con" min="-100" max="100" value="0" step="1" oninput="ieSet()"><span class="ieval" id="iev-con">0</span></div>
           <div class="ierow"><span class="ielbl">Гамма</span><input type="range" id="ie-gam" min="20" max="300" value="100" step="5" oninput="ieSet()"><span class="ieval" id="iev-gam">1.00</span></div>
-          <div class="ierow">
-            <span class="ielbl">Вывод</span>
-            <select id="ie-preview" onchange="setOutputMode(this.value)" style="flex:1">
+          <!-- Mirror of #output-mode; kept (hidden) because the pipeline reads it. -->
+          <div class="hide">
+            <select id="ie-preview" onchange="setOutputMode(this.value)">
               <option value="dither" selected>Дизер / BWR</option>
               <option value="tone">Тона · сильный (TONE_DARK)</option>
               <option value="tone-soft">Тона · мягкий (SOFT_DARK, линейный)</option>
@@ -663,7 +775,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
           </div>
           <div class="ierow" id="ie-dither-row">
             <span class="ielbl">Дизер</span>
-            <select id="ie-dith" onchange="ieSet()" style="flex:1">
+            <select id="ie-dith" onchange="ieSet()">
               <option value="none">Нет — порог</option>
               <option value="fs" selected>Floyd–Steinberg</option>
               <option value="atkinson">Atkinson</option>
@@ -680,65 +792,56 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             </select>
           </div>
           <div class="ierow" id="ie-thr-row"><span class="ielbl">Порог</span><input type="range" id="ie-thr" min="1" max="254" value="127" step="1" oninput="ieSet()"><span class="ieval" id="iev-thr">127</span></div>
-          <div class="brow" style="margin-top:6px">
-            <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)">
-              <input type="checkbox" id="ie-inv" style="accent-color:var(--accent)" onchange="ieSet()"> Инверт
-            </label>
-            <label id="ie-red-opt" style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Извлекать красные пиксели в красный слой BWR">
-              <input type="checkbox" id="ie-red" style="accent-color:var(--accent)" onchange="ieSet()"> Красный
-            </label>
-            <label style="display:flex;align-items:center;gap:4px;font-size:10px;cursor:pointer;color:var(--fg2)" title="Сглаживание при масштабировании">
-              <input type="checkbox" id="ie-smooth" checked style="accent-color:var(--accent)" onchange="ieSet()"> Сглаж.
-            </label>
-            <select id="ie-bg" onchange="ieSet()" style="font-size:10px">
+          <div class="chks" style="margin-top:12px">
+            <label class="chk"><input type="checkbox" id="ie-inv" onchange="ieSet()"> Инверсия</label>
+            <label class="chk" id="ie-red-opt" title="Извлекать красные пиксели в красный слой BWR"><input type="checkbox" id="ie-red" onchange="ieSet()"> Красный слой</label>
+            <label class="chk" title="Сглаживание при масштабировании"><input type="checkbox" id="ie-smooth" checked onchange="ieSet()"> Сглаживание</label>
+            <select id="ie-bg" onchange="ieSet()">
               <option value="#ffffff" selected>Фон: белый</option>
               <option value="#000000">Фон: чёрный</option>
             </select>
           </div>
-          <div class="brow" style="margin-top:5px">
+          <div class="brow" style="margin-top:12px">
             <button class="btn" id="ie-orig" title="Удерживай, чтобы увидеть оригинал без обработки">👁 Оригинал</button>
-            <button class="btn" onclick="ieClose()" title="Закрыть редактор (превью останется)">✕ Закрыть</button>
-            <button class="btn acc" id="ie-send-bwr" onclick="sendCanvas()" style="margin-left:auto">↑ Отправить</button>
-            <button class="btn pur" id="ie-send-tone" onclick="sendCanvasTone()" style="margin-left:auto;display:none">↑ Отправить</button>
-            <button class="btn acc" id="ie-send-tone-soft" onclick="sendCanvasToneSoft()" style="margin-left:auto;display:none">↑ Отправить</button>
+            <button class="btn ghost" onclick="ieClose()" title="Закрыть редактор (превью останется)">✕ Закрыть</button>
+            <button class="btn acc grow send-btn" id="ie-send-bwr" onclick="sendCanvas()">↑ Отправить</button>
+            <button class="btn pur grow send-btn" id="ie-send-tone" onclick="sendCanvasTone()" style="display:none">↑ Отправить</button>
+            <button class="btn acc grow send-btn" id="ie-send-tone-soft" onclick="sendCanvasToneSoft()" style="display:none">↑ Отправить</button>
           </div>
-          <div class="iehint">Тяни превью — сдвиг/кроп · колесо или щипок — зум · двойной клик/тап — центрировать</div>
+          <div class="hint">Тяни превью — сдвиг/кроп · колесо или щипок — зум · двойной клик/тап — центрировать</div>
         </div>
-      </div>
+      </section>
 
-      <div class="card" style="flex-shrink:0">
-        <div class="ctitle">Тестовые паттерны</div>
+      <section class="card m3">
+        <div class="ctitle">Текст на дисплей</div>
         <div class="brow">
-          <button class="btn ok" onclick="testPat(1)">BWR Полосы</button>
-          <button class="btn ok" onclick="testPat(2)">Текст/Фигуры</button>
-          <button class="btn ok" onclick="testPat(3)">Разрешение</button>
+          <input type="text" id="txt-inp" class="grow" placeholder="Введи текст…" onkeydown="if(event.key==='Enter')sendText()">
+          <button class="btn acc" onclick="sendText()">Отправить</button>
         </div>
-      </div>
+      </section>
+
+      <section class="card m5">
+        <div class="ctitle">Тестовые паттерны <span class="sub">сразу на дисплей</span></div>
+        <div class="bgrid">
+          <button class="btn ok send-btn" onclick="testPat(1)">BWR полосы</button>
+          <button class="btn ok send-btn" onclick="testPat(2)">Текст / фигуры</button>
+          <button class="btn ok send-btn" onclick="testPat(3)">Разрешение</button>
+        </div>
+      </section>
     </div>
 
-    <!-- Right: controls -->
-    <div class="pcol pscroll" style="flex:1">
-      <div class="card">
-        <div class="ctitle">Дисплей</div>
-        <div class="brow">
-          <button class="btn acc big" onclick="send('UPDATE\n')">UPDATE</button>
-          <button class="btn big" onclick="send('FAST\n')">FAST</button>
-          <button class="btn ok big" onclick="send('FAPPLY\n')">FAPPLY</button>
-          <button class="btn" onclick="send('CLEAN\n')">CLEAN</button>
-          <button class="btn bad" onclick="nukeDialog()">NUKE</button>
-          <button class="btn pur" onclick="send('PALTEST\n')">PALTEST</button>
-          <button class="btn ylw" onclick="send('TONETEST\n')">TONETEST</button>
-          <button class="btn bad" onclick="rebootDevice()" title="Перезагрузить устройство">REBOOT</button>
-          <button class="btn" onclick="sendTime()">TIME</button>
-          <button class="btn" onclick="send('BATT\n')">BATT</button>
-          <button class="btn" onclick="send('SAVER\n')">SAVER</button>
-        </div>
-      </div>
+    <!-- Column B: device control. Frequent actions first, rare ones folded. -->
+    <div class="pcol">
 
-      <div class="card">
-        <div class="ctitle">Режим и ориентация</div>
-        <div class="brow">
-          <span class="blbl">Режим:</span>
+      <section class="card m4">
+        <div class="ctitle">Обновление экрана</div>
+        <div class="cmdgrid">
+          <button class="btn acc cmd" onclick="send('UPDATE\n')" title="Полный цикл обновления панели">Полное<small>UPDATE</small></button>
+          <button class="btn cmd" onclick="send('FAST\n')" title="Быстрое частичное обновление">Быстрое<small>FAST</small></button>
+          <button class="btn ok cmd" onclick="send('FAPPLY\n')" title="Вывести содержимое буферов на панель">Показать буфер<small>FAPPLY</small></button>
+        </div>
+        <div class="frow">
+          <span class="lbl">Режим</span>
           <select id="mode-sel" onchange="send('MODE: '+this.value+'\n')">
             <option value="0">0 — Turbo</option>
             <option value="1">1 — Balanced</option>
@@ -749,7 +852,9 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <option value="6">6 — Tone Bidir Fast</option>
             <option value="7">7 — Tone Bidir</option>
           </select>
-          <span class="blbl" style="margin-left:10px">Поворот:</span>
+        </div>
+        <div class="frow">
+          <span class="lbl">Поворот</span>
           <select id="rot-sel" onchange="send('ROT: '+this.value+'\n')">
             <option value="0">ROT 0</option>
             <option value="1">ROT 1</option>
@@ -757,91 +862,115 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
             <option value="3">ROT 3</option>
           </select>
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="ctitle">Текст на дисплей</div>
-        <div class="brow">
-          <input type="text" id="txt-inp" placeholder="Введи текст…" style="flex:1"
-            onkeydown="if(event.key==='Enter')sendText()">
-          <button class="btn acc" onclick="sendText()">Отправить</button>
+      <details class="card m6">
+        <summary>Пресеты LUT</summary>
+        <div class="dbody">
+          <div class="bgrid">
+            <button class="btn acc" onclick="send('LUTSET:TURBO\n')">TURBO</button>
+            <button class="btn ok"  onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
+            <button class="btn"     onclick="send('LUTSET:STABLE\n')">STABLE</button>
+            <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
+            <button class="btn pur" onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
+            <button class="btn ylw" onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
+            <button class="btn pur" onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
+            <button class="btn ylw" onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
+            <button class="btn pur" onclick="send('LUTSET:TONE_SOFT_DARK\n')">SOFT DARK</button>
+            <button class="btn ylw" onclick="send('LUTSET:TONE_SOFT_LIGHT\n')">SOFT LIGHT</button>
+          </div>
+          <div class="hint">Волновая таблица на ценнике. TURBO — быстрее, STABLE/CLEAN — чище, TONE_* — для серых тонов.</div>
         </div>
-      </div>
+      </details>
 
-      <div class="card">
-        <div class="ctitle">Preset LUT</div>
-        <div class="brow">
-          <button class="btn acc" onclick="send('LUTSET:TURBO\n')">TURBO</button>
-          <button class="btn ok"  onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
-          <button class="btn"     onclick="send('LUTSET:STABLE\n')">STABLE</button>
-          <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
-          <button class="btn pur" onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
-          <button class="btn ylw" onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
-          <button class="btn pur" onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
-          <button class="btn ylw" onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
-          <button class="btn pur" onclick="send('LUTSET:TONE_SOFT_DARK\n')">SOFT DARK</button>
-          <button class="btn ylw" onclick="send('LUTSET:TONE_SOFT_LIGHT\n')">SOFT LIGHT</button>
+      <details class="card m7">
+        <summary>Скринсейвер и анимация</summary>
+        <div class="dbody">
+          <div class="frow" style="margin-top:0">
+            <span class="lbl">Скринсейвер</span>
+            <div class="seg">
+              <button class="btn ok"  onclick="send('SS:1\n')">Вкл</button>
+              <button class="btn bad" onclick="send('SS:0\n')">Выкл</button>
+            </div>
+          </div>
+          <div class="frow">
+            <span class="lbl" title="Динамическая заставка (DSAVER)">Динамика</span>
+            <div class="seg">
+              <button class="btn ok" onclick="send('DSAVER 1\n')">Вкл</button>
+              <button class="btn"    onclick="send('DSAVER 0\n')">Выкл</button>
+            </div>
+          </div>
+          <div class="brow" style="margin-top:12px">
+            <button class="btn grow" onclick="send('SAVER\n')" title="Включить заставку прямо сейчас">Запустить заставку <small>SAVER</small></button>
+            <button class="btn pur grow" onclick="send('ANIM\n')" title="Демо-анимация с мячиком">Мячик <small>ANIM</small></button>
+          </div>
         </div>
-      </div>
+      </details>
 
-      <div class="card">
-        <div class="ctitle">Виртуальные LUT (VLUT) · сессионные</div>
-        <div class="brow">
-          <button class="btn" onclick="vlutList()">LIST</button>
-          <button class="btn bad" onclick="vlutClear()">CLEAR</button>
-          <button class="btn warn" onclick="vlutOff()">OFF</button>
+      <details class="card m8">
+        <summary>Тесты и обслуживание</summary>
+        <div class="dbody">
+          <div class="gtitle">Тесты на ценнике</div>
+          <div class="bgrid">
+            <button class="btn pur" onclick="send('PALTEST\n')" title="Палитра B/W/R и пространственный дизер">PALTEST</button>
+            <button class="btn ylw" onclick="send('TONETEST\n')" title="Накопление серых тонов">TONETEST</button>
+            <button class="btn ylw" onclick="send('LTEST\n')" title="Анимация теста LUT">LTEST</button>
+            <button class="btn"     onclick="send('LTEST 0\n')">LTEST стоп</button>
+            <button class="btn"     onclick="send('STAT\n')" title="Снимок телеметрии: frame/last/min/max ms">STAT</button>
+          </div>
+          <div class="gtitle">Свой LUT на ценнике</div>
+          <div class="seg" style="display:flex">
+            <button class="btn ok"  onclick="send('LUTUSE:1\n')">LUTUSE вкл</button>
+            <button class="btn bad" onclick="send('LUTUSE:0\n')">LUTUSE выкл</button>
+          </div>
+          <div class="gtitle">Обслуживание</div>
+          <div class="bgrid">
+            <button class="btn"     onclick="send('CLEAN\n')" title="Цикл очистки 7× B/W/R">Очистка <small>CLEAN</small></button>
+            <button class="btn bad" onclick="nukeDialog()" title="Глубокая очистка призраков, ~15 мин">Глубокая <small>NUKE</small></button>
+            <button class="btn"     onclick="sendTime()" title="Передать текущее время">Время <small>TIME</small></button>
+            <button class="btn"     onclick="send('BATT\n')" title="Запросить напряжение батареи">Батарея <small>BATT</small></button>
+            <button class="btn bad" onclick="rebootDevice()" title="Перезагрузить устройство">Перезагрузка <small>REBOOT</small></button>
+          </div>
         </div>
-        <div class="brow" style="margin-top:6px">
-          <span class="blbl">Слот:</span>
-          <input type="number" id="vlut-slot" value="0" min="0" max="7" style="width:40px">
-          <span class="blbl">База:</span>
-          <select id="vlut-base" style="width:120px">
-            <option value="0">0 TURBO</option>
-            <option value="1">1 BALANCED</option>
-            <option value="2">2 STABLE</option>
-            <option value="3">3 CLEAN</option>
-            <option value="4" selected>4 TONE_DARK</option>
-            <option value="5">5 TONE_LIGHT</option>
-            <option value="6">6 BIDIR_FAST</option>
-            <option value="7">7 BIDIR</option>
-            <option value="8">8 SOFT_DARK</option>
-            <option value="9">9 SOFT_LIGHT</option>
-          </select>
-        </div>
-        <div class="brow" style="margin-top:4px">
-          <span class="blbl">Патчи:</span>
-          <input type="text" id="vlut-patches" placeholder="35=01,36=01" style="flex:1"
-                 title="offset=hex_value через запятую. offset: 0-69, value: hex 00-FF">
-        </div>
-        <div class="brow" style="margin-top:5px">
-          <button class="btn ok" onclick="vlutDefine()">Определить</button>
-          <button class="btn acc" onclick="vlutActivate()">Активировать</button>
-        </div>
-      </div>
+      </details>
 
-      <div class="card">
-        <div class="ctitle">Скринсейвер / Анимация</div>
-        <div class="brow">
-          <button class="btn ok"  onclick="send('SS:1\n')">SS: ON</button>
-          <button class="btn bad" onclick="send('SS:0\n')">SS: OFF</button>
-          <button class="btn ok"  onclick="send('DSAVER 1\n')">DSAVER: ON</button>
-          <button class="btn"     onclick="send('DSAVER 0\n')">DSAVER: OFF</button>
-          <button class="btn pur" onclick="send('ANIM\n')">ANIM</button>
+      <details class="card m9">
+        <summary>Виртуальные LUT (VLUT)</summary>
+        <div class="dbody">
+          <div class="hint" style="margin:0 0 10px">Сессионные слоты: база + точечные патчи байтов. Сбрасываются при перезагрузке ценника.</div>
+          <div class="frow" style="margin-top:0">
+            <span class="lbl">Слот</span>
+            <input type="number" id="vlut-slot" value="0" min="0" max="7" style="flex:0 0 80px">
+            <span class="lbl" style="flex:0 0 auto">База</span>
+            <select id="vlut-base">
+              <option value="0">0 TURBO</option>
+              <option value="1">1 BALANCED</option>
+              <option value="2">2 STABLE</option>
+              <option value="3">3 CLEAN</option>
+              <option value="4" selected>4 TONE_DARK</option>
+              <option value="5">5 TONE_LIGHT</option>
+              <option value="6">6 BIDIR_FAST</option>
+              <option value="7">7 BIDIR</option>
+              <option value="8">8 SOFT_DARK</option>
+              <option value="9">9 SOFT_LIGHT</option>
+            </select>
+          </div>
+          <div class="frow">
+            <span class="lbl">Патчи</span>
+            <input type="text" id="vlut-patches" placeholder="35=01,36=01"
+                   title="offset=hex_value через запятую. offset: 0-69, value: hex 00-FF">
+          </div>
+          <div class="brow" style="margin-top:12px">
+            <button class="btn ok grow" onclick="vlutDefine()">Определить</button>
+            <button class="btn acc grow" onclick="vlutActivate()">Активировать</button>
+          </div>
+          <div class="brow" style="margin-top:8px">
+            <button class="btn sm" onclick="vlutList()">LIST</button>
+            <button class="btn sm warn" onclick="vlutOff()">OFF</button>
+            <button class="btn sm bad" onclick="vlutClear()">CLEAR</button>
+          </div>
         </div>
-      </div>
-
-      <div class="card">
-        <div class="ctitle">LUT тест</div>
-        <div class="brow">
-          <button class="btn ylw" onclick="send('LTEST\n')">LTEST</button>
-          <button class="btn pur" onclick="send('PALTEST\n')">PALTEST</button>
-          <button class="btn ylw" onclick="send('TONETEST\n')">TONETEST</button>
-          <button class="btn"     onclick="send('LTEST 0\n')">LTEST OFF</button>
-          <button class="btn ok"  onclick="send('LUTUSE:1\n')">LUTUSE: ON</button>
-          <button class="btn bad" onclick="send('LUTUSE:0\n')">LUTUSE: OFF</button>
-          <button class="btn"     onclick="send('STAT\n')">STAT</button>
-        </div>
-      </div>
+      </details>
     </div>
   </div>
 </div>
@@ -850,160 +979,151 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
 <div class="tp" id="tp-anim">
   <div class="prow">
 
-    <!-- Left: file + params + controls + log -->
-    <div class="pcol pscroll" style="flex:1;min-width:0">
-      <div class="card">
-        <div class="ctitle">Источник анимации</div>
+    <div class="pcol">
+      <section class="card m1">
+        <div class="ctitle">Источник</div>
         <div class="dropzone" id="anim-drop" onclick="$('anim-file').click()">
-          <div style="font-size:13px">GIF · MP4 · WebM · AVI · PNG · JPG</div>
-          <div style="font-size:10px;margin-top:4px">Клик или перетащи файл сюда</div>
+          <div class="dz-t">Выбрать файл</div>
+          <div class="dz-s">GIF · MP4 · WebM · AVI · PNG · JPG — нажми или перетащи сюда</div>
         </div>
-        <input type="file" id="anim-file" accept="image/gif,video/*,image/*" style="display:none"
-          onchange="loadAnimFile(this.files[0])">
-        <div class="brow" style="margin-top:8px">
+        <input type="file" id="anim-file" accept="image/gif,video/*,image/*" onchange="loadAnimFile(this.files[0])">
+        <div class="brow" style="margin-top:10px">
           <button class="btn pur big" id="btn-screen" onclick="toggleScreenShare()">📺 Screen Share</button>
-          <span id="screen-st" style="font-size:10px;color:var(--fg2)">Не активен</span>
+          <span id="screen-st" class="muted">Не активен</span>
         </div>
-        <div id="anim-info" style="margin-top:7px;font-size:11px;color:var(--fg2);min-height:18px"></div>
-      </div>
+        <div id="anim-info" class="muted" style="margin-top:8px;min-height:18px"></div>
+      </section>
 
-      <div class="card">
-        <div class="ctitle">Параметры стриминга</div>
-        <div class="brow" style="gap:10px;flex-wrap:wrap">
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Рендер:</span>
-            <select id="enc-render" onchange="setAnimRenderMode(this.value)">
-              <option value="mono" selected>1bpp / dither/threshold</option>
-              <option value="tone-servo">Тона servo 2-plane</option>
-              <option value="tone-temporal">Тона temporal old</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Кодирование:</span>
-            <select id="enc-type">
-              <option value="2" selected>DRLE (рекомендуется)</option>
-              <option value="1">RLE</option>
-              <option value="0">RAW</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">FPS (0=авто):</span>
-            <input type="number" id="enc-fps" value="0" min="0" max="60" step="1" style="width:52px">
-          </div>
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Поворот:</span>
-            <select id="enc-rot">
-              <option value="0">0°</option>
-              <option value="90">90° CW</option>
-              <option value="180">180°</option>
-              <option value="270">270° CW</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Масштаб:</span>
-            <select id="enc-scale">
-              <option value="fit">Fit (letterbox)</option>
-              <option value="fill">Fill (обрезка)</option>
-              <option value="stretch">Stretch (растяжение)</option>
-            </select>
-          </div>
-          <div id="enc-lut-box" style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">LUT:</span>
-            <select id="enc-lut">
-              <option value="TURBO" selected>TURBO (14 субкадров)</option>
-              <option value="fast">FAST (10, быстрее, больше теней)</option>
-              <option value="video">VIDEO (8, самый быстрый)</option>
-              <option value="BALANCED">BALANCED</option>
-              <option value="STABLE">STABLE</option>
-              <option value="CLEAN">CLEAN</option>
-              <option value="TONE_DARK">TONE_DARK</option>
-              <option value="TONE_LIGHT">TONE_LIGHT</option>
-              <option value="TONE_BIDIR_FAST">TONE_BIDIR_FAST</option>
-              <option value="TONE_BIDIR">TONE_BIDIR</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Синхронизация:</span>
-            <select id="enc-sync">
-              <option value="guaranteed">Гарантированный (все кадры)</option>
-              <option value="sync">По времени (с потерей кадров)</option>
-            </select>
-          </div>
+      <section class="card m3">
+        <div class="ctitle">Поток</div>
+        <div class="brow">
+          <button class="btn ok big grow" id="btn-stream" onclick="toggleStream()">▶ Stream</button>
+          <button class="btn bad big" onclick="stopStream()">■ Stop</button>
+          <button class="btn" onclick="previewFrame0()" title="Показать кадр 0 на превью">🔍 Превью</button>
+          <button class="btn" id="btn-audio" onclick="toggleStreamAudio()" title="Воспроизводить звук видео на устройстве (синхронно с потоком)">🔇 Звук</button>
         </div>
-        <div class="brow" id="enc-tone-row" style="gap:10px;flex-wrap:wrap;margin-top:6px;display:none">
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Tone LUT:</span>
+        <div id="stream-st"></div>
+        <div class="pbar"><div class="pfill" id="stream-prog" style="width:0%"></div></div>
+      </section>
+
+      <section class="card m4">
+        <div class="ctitle">Параметры</div>
+        <div class="frow" style="margin-top:0">
+          <span class="lbl">Рендер</span>
+          <select id="enc-render" onchange="setAnimRenderMode(this.value)">
+            <option value="mono" selected>1bpp / дизер / порог</option>
+            <option value="tone-servo">Тона servo 2-plane</option>
+            <option value="tone-temporal">Тона temporal old</option>
+          </select>
+        </div>
+        <div class="frow" id="enc-lut-box">
+          <span class="lbl">LUT</span>
+          <select id="enc-lut">
+            <option value="TURBO" selected>TURBO (14 субкадров)</option>
+            <option value="fast">FAST (10, быстрее, больше теней)</option>
+            <option value="video">VIDEO (8, самый быстрый)</option>
+            <option value="BALANCED">BALANCED</option>
+            <option value="STABLE">STABLE</option>
+            <option value="CLEAN">CLEAN</option>
+            <option value="TONE_DARK">TONE_DARK</option>
+            <option value="TONE_LIGHT">TONE_LIGHT</option>
+            <option value="TONE_BIDIR_FAST">TONE_BIDIR_FAST</option>
+            <option value="TONE_BIDIR">TONE_BIDIR</option>
+          </select>
+        </div>
+        <div id="enc-tone-row" class="tonebox" style="display:none">
+          <div class="frow">
+            <span class="lbl">Tone LUT</span>
             <select id="enc-tone-lut">
               <option value="TONE_BIDIR_FAST" selected>TONE_BIDIR_FAST</option>
               <option value="TONE_BIDIR">TONE_BIDIR</option>
             </select>
           </div>
-          <div style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Блок:</span>
+          <div class="frow">
+            <span class="lbl">Блок</span>
             <select id="enc-tone-cell">
               <option value="1">1×1 деталь</option>
               <option value="2" selected>2×2 баланс</option>
               <option value="4">4×4 быстрее BLE</option>
             </select>
           </div>
-          <div id="enc-tone-servo-box" style="display:flex;align-items:center;gap:5px">
-            <span class="blbl">Шаг:</span>
-            <input type="number" id="enc-tone-step" value="0.16" min="0.03" max="0.5" step="0.01" style="width:58px">
-            <span class="blbl">Smooth:</span>
-            <input type="number" id="enc-tone-smooth" value="0.35" min="0.05" max="1" step="0.05" style="width:58px">
+          <div class="frow" id="enc-tone-servo-box">
+            <span class="lbl">Шаг</span>
+            <input type="number" id="enc-tone-step" value="0.16" min="0.03" max="0.5" step="0.01">
+            <span class="lbl" style="flex:0 0 auto">Smooth</span>
+            <input type="number" id="enc-tone-smooth" value="0.35" min="0.05" max="1" step="0.05">
           </div>
         </div>
-        <div class="brow" style="gap:12px;margin-top:6px">
-          <label id="enc-dith-label" style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
-            <input type="checkbox" id="enc-dith" style="accent-color:var(--accent)"> Дизер
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
-            <input type="checkbox" id="enc-inv" style="accent-color:var(--accent)"> Инверт
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
-            <input type="checkbox" id="enc-land" style="accent-color:var(--accent)" checked> <span id="enc-land-label">Landscape (296×128)</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)" title="Кадры (W/2)×(H/2), устройство удваивает пиксели: ~4× меньше трафика BLE, картинка блоками 2×2. Прошивка 3.4.7+.">
-            <input type="checkbox" id="enc-half" style="accent-color:var(--accent)"> ½ разрешение
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)">
-            <input type="checkbox" id="enc-loop" style="accent-color:var(--accent)"> Loop
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--fg2)" title="Полностью закодировать все кадры перед отправкой (как EBF). Убирает дёрганость, но старт дольше.">
-            <input type="checkbox" id="enc-preenc" style="accent-color:var(--accent)"> Pre-encode
-          </label>
+        <div class="frow">
+          <span class="lbl">Масштаб</span>
+          <select id="enc-scale">
+            <option value="fit">Fit (letterbox)</option>
+            <option value="fill">Fill (обрезка)</option>
+            <option value="stretch">Stretch (растяжение)</option>
+          </select>
         </div>
-      </div>
-
-      <div class="card">
-        <div class="ctitle">Управление потоком</div>
-        <div class="brow">
-          <button class="btn ok big" id="btn-stream" onclick="toggleStream()">▶ Stream</button>
-          <button class="btn bad" onclick="stopStream()">■ Stop</button>
-          <button class="btn" onclick="previewFrame0()" title="Показать кадр 0 на превью">🔍 Превью</button>
-          <button class="btn" id="btn-audio" onclick="toggleStreamAudio()" title="Воспроизводить звук видео на устройстве (синхронно с потоком)">🔇 Звук</button>
-          <span id="stream-st"></span>
+        <div class="chks" style="margin-top:12px">
+          <label class="chk"><input type="checkbox" id="enc-land" checked> <span id="enc-land-label">Landscape (296×128)</span></label>
+          <label class="chk" title="Кадры (W/2)×(H/2), устройство удваивает пиксели: ~4× меньше трафика BLE, картинка блоками 2×2. Прошивка 3.4.7+."><input type="checkbox" id="enc-half"> ½ разрешения</label>
+          <label class="chk" id="enc-dith-label"><input type="checkbox" id="enc-dith"> Дизер</label>
+          <label class="chk"><input type="checkbox" id="enc-loop"> Loop</label>
         </div>
-        <div class="pbar"><div class="pfill" id="stream-prog" style="width:0%"></div></div>
-      </div>
+        <details class="sub" style="margin-top:12px">
+          <summary>Дополнительно</summary>
+          <div class="dbody">
+            <div class="frow" style="margin-top:0">
+              <span class="lbl">Кодирование</span>
+              <select id="enc-type">
+                <option value="2" selected>DRLE (рекомендуется)</option>
+                <option value="1">RLE</option>
+                <option value="0">RAW</option>
+              </select>
+            </div>
+            <div class="frow">
+              <span class="lbl">FPS</span>
+              <input type="number" id="enc-fps" value="0" min="0" max="60" step="1">
+              <span class="muted" style="white-space:nowrap">0 = авто</span>
+            </div>
+            <div class="frow">
+              <span class="lbl">Поворот</span>
+              <select id="enc-rot">
+                <option value="0">0°</option>
+                <option value="90">90° CW</option>
+                <option value="180">180°</option>
+                <option value="270">270° CW</option>
+              </select>
+            </div>
+            <div class="frow">
+              <span class="lbl">Синхр.</span>
+              <select id="enc-sync">
+                <option value="guaranteed">Гарантированный (все кадры)</option>
+                <option value="sync">По времени (с потерей кадров)</option>
+              </select>
+            </div>
+            <div class="chks" style="margin-top:12px">
+              <label class="chk"><input type="checkbox" id="enc-inv"> Инверсия</label>
+              <label class="chk" title="Полностью закодировать все кадры перед отправкой (как EBF). Убирает дёрганость, но старт дольше."><input type="checkbox" id="enc-preenc"> Pre-encode</label>
+            </div>
+          </div>
+        </details>
+      </section>
 
-      <div class="card" style="flex:0 0 auto;display:flex;flex-direction:column;height:180px;min-height:100px;max-height:40vh">
-        <div class="ctitle" style="flex-shrink:0">Лог стриминга</div>
-        <div class="con" id="anim-log" style="flex:1;overflow-y:auto;min-height:0"></div>
-      </div>
+      <section class="card logcard m5">
+        <div class="ctitle">Лог стриминга</div>
+        <div class="con" id="anim-log"></div>
+      </section>
     </div>
 
-    <!-- Right: display preview -->
-    <div class="pcol" style="width:330px;flex-shrink:0">
-      <div class="card">
+    <div class="pcol">
+      <section class="card m2">
         <div class="ctitle" id="anim-prev-title">Превью дисплея (296×128)</div>
-        <canvas id="anim-preview" width="296" height="128"
-          style="width:296px;height:128px;border:1px solid var(--border);border-radius:4px;
-                 image-rendering:pixelated;display:block;background:#fff;margin:0 auto"></canvas>
-        <div id="anim-prev-info" style="margin-top:5px;font-size:10px;color:var(--fg2);text-align:center">
-          Загрузи файл → нажми 🔍 Превью
+        <div class="bezel">
+          <div class="scrn">
+            <canvas id="anim-preview" width="296" height="128" style="width:296px;height:128px"></canvas>
+          </div>
         </div>
-      </div>
+        <div id="anim-prev-info" class="muted center" style="margin-top:8px">Загрузи файл → нажми 🔍 Превью</div>
+      </section>
     </div>
 
   </div>
@@ -1013,95 +1133,95 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
 <div class="tp" id="tp-lut">
   <div class="prow">
 
-    <!-- Left: LUT grid -->
-    <div class="pcol pscroll" style="width:470px;flex-shrink:0">
-      <div class="card">
-        <div class="ctitle">Действия</div>
+    <div class="pcol">
+      <section class="card m1">
+        <div class="ctitle">Редактор LUT <span class="sub">70 байт · SSD1675</span></div>
         <div class="brow">
-          <button class="btn acc big" onclick="applyLut()">APPLY</button>
-          <button class="btn big"     onclick="getLut()">↓ GET LUT</button>
-          <button class="btn"         onclick="loadFactory()">Factory</button>
-          <button class="btn pur"     onclick="loadAnim()">Anim LUT</button>
-          <button class="btn"         onclick="togglePasteDlg()">Paste hex…</button>
-          <button class="btn"         onclick="exportLut()">Export</button>
+          <button class="btn acc big" onclick="applyLut()">Применить <small>LUTW + APPLY</small></button>
+          <button class="btn big"     onclick="getLut()">↓ Прочитать с ценника</button>
         </div>
-        <div class="brow" style="margin-top:5px">
-          <span class="blbl">Quick adjust TP:</span>
-          <button class="btn" onclick="adjTP(-2)" style="color:var(--vgl)">−−</button>
-          <button class="btn" onclick="adjTP(-1)" style="color:var(--vgl)">−</button>
-          <button class="btn" onclick="adjTP(+1)" style="color:var(--vgh)">+</button>
-          <button class="btn" onclick="adjTP(+2)" style="color:var(--vgh)">++</button>
-          <span class="blbl" style="margin-left:8px">RP:</span>
-          <button class="btn" onclick="adjRP(-1)" style="color:var(--vgl)">−</button>
-          <button class="btn" onclick="adjRP(+1)" style="color:var(--vgh)">+</button>
+        <div class="brow" style="margin-top:8px">
+          <button class="btn"     onclick="loadFactory()">Factory</button>
+          <button class="btn pur" onclick="loadAnim()">Anim LUT</button>
+          <button class="btn"     onclick="togglePasteDlg()">Вставить hex…</button>
+          <button class="btn"     onclick="exportLut()">Экспорт</button>
         </div>
-        <div class="brow" style="margin-top:5px">
-          <span class="blbl">Preset:</span>
-          <button class="btn acc"  onclick="send('LUTSET:TURBO\n')">TURBO</button>
-          <button class="btn ok"   onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
-          <button class="btn"      onclick="send('LUTSET:STABLE\n')">STABLE</button>
-          <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
-          <button class="btn pur"  onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
-          <button class="btn ylw"  onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
-          <button class="btn pur"  onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
-          <button class="btn ylw"  onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
+        <div class="frow" style="margin-top:12px">
+          <span class="lbl">TP (длит.)</span>
+          <div class="seg">
+            <button class="btn" onclick="adjTP(-2)" style="color:var(--vgl)">−−</button>
+            <button class="btn" onclick="adjTP(-1)" style="color:var(--vgl)">−</button>
+            <button class="btn" onclick="adjTP(+1)" style="color:var(--vgh)">+</button>
+            <button class="btn" onclick="adjTP(+2)" style="color:var(--vgh)">++</button>
+          </div>
         </div>
-      </div>
+        <div class="frow">
+          <span class="lbl">RP (повт.)</span>
+          <div class="seg">
+            <button class="btn" onclick="adjRP(-1)" style="color:var(--vgl)">−</button>
+            <button class="btn" onclick="adjRP(+1)" style="color:var(--vgh)">+</button>
+          </div>
+        </div>
+      </section>
 
-      <!-- Paste dialog (inline, hidden by default) -->
-      <div class="card" id="paste-dlg" style="display:none">
+      <!-- Paste dialog (inline, hidden by default; toggled by togglePasteDlg) -->
+      <div class="card m1" id="paste-dlg" style="display:none">
         <div class="ctitle">Вставить LUT hex</div>
-        <textarea id="paste-txt" rows="4"
-          style="width:100%;resize:vertical;margin-bottom:6px"
-          placeholder="Вставь: plain hex, C-array (0x22, 0x11, …), или с пробелами"></textarea>
-        <div style="font-size:10px;color:var(--fg2);margin-bottom:5px">
-          Нужно 70 байт = 140 hex-символов
-        </div>
-        <div class="brow">
+        <textarea id="paste-txt" rows="4" style="width:100%;resize:vertical"
+          placeholder="Plain hex, C-array (0x22, 0x11, …) или с пробелами"></textarea>
+        <div class="hint" style="margin-top:6px">Нужно 70 байт = 140 hex-символов</div>
+        <div class="brow" style="margin-top:10px">
           <button class="btn ok" onclick="doPaste()">Загрузить</button>
-          <button class="btn" onclick="togglePasteDlg()">Отмена</button>
+          <button class="btn ghost" onclick="togglePasteDlg()">Отмена</button>
         </div>
       </div>
 
-      <div class="card">
-        <div class="ctitle">VS — напряжения (байты 0-34)  &nbsp;
-          <span style="font-size:9px;color:var(--fg2);font-weight:400">
-            00=VSS  01=VSH1(+15V)  10=VSL(-15V)  11=VSH2(+5V)
-          </span>
+      <details class="card m3">
+        <summary>Пресеты на ценнике</summary>
+        <div class="dbody">
+          <div class="bgrid">
+            <button class="btn acc"  onclick="send('LUTSET:TURBO\n')">TURBO</button>
+            <button class="btn ok"   onclick="send('LUTSET:BALANCED\n')">BALANCED</button>
+            <button class="btn"      onclick="send('LUTSET:STABLE\n')">STABLE</button>
+            <button class="btn warn" onclick="send('LUTSET:CLEAN\n')">CLEAN</button>
+            <button class="btn pur"  onclick="send('LUTSET:TONE_DARK\n')">TONE DARK</button>
+            <button class="btn ylw"  onclick="send('LUTSET:TONE_LIGHT\n')">TONE LIGHT</button>
+            <button class="btn pur"  onclick="send('LUTSET:TONE_BIDIR_FAST\n')">BIDIR FAST</button>
+            <button class="btn ylw"  onclick="send('LUTSET:TONE_BIDIR\n')">BIDIR</button>
+          </div>
         </div>
-        <div id="vs-grid"></div>
-      </div>
+      </details>
 
-      <div class="card">
-        <div class="ctitle">Timing — длительности (байты 35-69)  &nbsp;
-          <span style="font-size:9px;color:var(--fg2);font-weight:400">
-            TP_A/B/C/D ≈ 8ms/frame · RP=0→1 повтор
-          </span>
-        </div>
-        <div id="tim-grid"></div>
-      </div>
+      <section class="card m4">
+        <div class="ctitle">VS — напряжения <span class="sub">байты 0–34 · 00=VSS 01=VSH1(+15V) 10=VSL(−15V) 11=VSH2(+5V)</span></div>
+        <div id="vs-grid" class="lutgrid"></div>
+      </section>
+
+      <section class="card m5">
+        <div class="ctitle">Timing — длительности <span class="sub">байты 35–69 · TP_A/B/C/D ≈ 8 мс/кадр · RP = повторы</span></div>
+        <div id="tim-grid" class="lutgrid"></div>
+      </section>
     </div>
 
-    <!-- Right: waveform + DC + tele -->
-    <div class="pcol pscroll" style="flex:1">
-      <div class="card">
-        <div class="ctitle">Waveform — форма напряжений</div>
-        <canvas id="wf-canvas" height="260"></canvas>
-      </div>
-      <div class="card">
+    <div class="pcol">
+      <section class="card m2">
+        <div class="ctitle">Waveform — форма напряжений <span class="sub mob-only">листается вбок</span></div>
+        <div class="wfwrap"><canvas id="wf-canvas" height="260"></canvas></div>
+      </section>
+      <section class="card m6">
         <div class="ctitle">DC Balance</div>
         <div id="dc-bars"></div>
-      </div>
-      <div class="card">
-        <div class="ctitle">Telemetry</div>
-        <div class="brow" style="gap:18px">
-          <div class="ti"><span class="tl">Frames:</span><span class="tv" id="tt-fr">—</span></div>
-          <div class="ti"><span class="tl">Pred ms:</span><span class="tv" id="tt-pr">—</span></div>
-          <div class="ti"><span class="tl">FAST:</span><span class="tv" id="tt-fast">—</span></div>
-          <div class="ti"><span class="tl">FAPPLY:</span><span class="tv" id="tt-fap">—</span></div>
-          <div class="ti"><span class="tl">UPDATE:</span><span class="tv" id="tt-upd">—</span></div>
+      </section>
+      <section class="card m7">
+        <div class="ctitle">Телеметрия</div>
+        <div class="chips">
+          <div class="ti"><span class="tl">Frames</span><span class="tv" id="tt-fr">—</span></div>
+          <div class="ti"><span class="tl">Pred</span><span class="tv" id="tt-pr">—</span></div>
+          <div class="ti"><span class="tl">FAST</span><span class="tv" id="tt-fast">—</span></div>
+          <div class="ti"><span class="tl">FAPPLY</span><span class="tv" id="tt-fap">—</span></div>
+          <div class="ti"><span class="tl">UPDATE</span><span class="tv" id="tt-upd">—</span></div>
         </div>
-      </div>
+      </section>
     </div>
   </div>
 </div>
@@ -1110,261 +1230,200 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
 <div class="tp" id="tp-sys">
   <div class="prow">
 
-    <!-- Left: System Info -->
-    <div class="pcol pscroll" style="flex:1;min-width:0">
+    <div class="pcol">
 
-      <!-- Update banner (hidden until update available) -->
-      <div class="card" id="dfu-banner" style="display:none;border-color:#2a4a80;background:linear-gradient(180deg,#101830,#0c1220)">
-        <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-size:22px">🆕</span>
-          <div style="flex:1">
-            <div style="font-size:13px;font-weight:700;color:var(--accent)">Доступно обновление</div>
-            <div style="font-size:11px;color:var(--fg2);margin-top:2px">
-              <span id="dfu-banner-ver"></span> · <span id="dfu-banner-size"></span>
-            </div>
-            <div style="font-size:10px;color:var(--fg2);margin-top:2px" id="dfu-banner-notes"></div>
+      <!-- Update banner (hidden until the server has a newer version) -->
+      <div class="card m1" id="dfu-banner" style="display:none">
+        <div class="bn">
+          <span style="font-size:24px">🆕</span>
+          <div class="bn-txt">
+            <div class="bn-t">Доступно обновление</div>
+            <div class="muted" style="margin-top:2px"><span id="dfu-banner-ver"></span> · <span id="dfu-banner-size"></span></div>
+            <div class="muted" id="dfu-banner-notes" style="margin-top:2px"></div>
           </div>
           <button class="btn acc big" onclick="startOtaUpdate()">⬆ Обновить</button>
-          <button class="btn" onclick="$('dfu-banner').style.display='none'" style="padding:4px 8px">✕</button>
+          <button class="btn ghost sm" onclick="$('dfu-banner').style.display='none'" aria-label="Скрыть">✕</button>
         </div>
       </div>
 
-      <!-- Device info -->
-      <div class="card">
+      <section class="card m2">
         <div class="ctitle">Устройство</div>
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;align-items:center">
-          <span style="color:var(--fg2)">Прошивка:</span>
-          <span id="sys-fw-ver" style="color:var(--yellow);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Сборка:</span>
-          <span id="sys-build" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Панель:</span>
-          <span id="sys-panel" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Uptime:</span>
-          <span id="sys-uptime" style="color:var(--green);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Батарея:</span>
-          <span id="sys-batt" style="font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Потрачено:</span>
-          <span id="sys-mah" style="color:var(--orange);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Ток:</span>
-          <span id="sys-cur" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Остаток:</span>
-          <span id="sys-remain" style="color:var(--green);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Загрузок:</span>
-          <span id="st-boots" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Обновлений ПО:</span>
-          <span id="st-fwupd" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Обновл. экрана:</span>
-          <span id="st-refr" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">…с прошивки:</span>
-          <span id="st-refrfw" style="color:var(--fg);font-family:var(--mono)">—</span>
-          <span style="color:var(--fg2)">Flash-снимок:</span>
-          <span id="st-flash" style="color:var(--fg2);font-family:var(--mono)">—</span>
+        <div class="kv">
+          <span>Прошивка</span><span id="sys-fw-ver" style="color:var(--yellow)">—</span>
+          <span>Сборка</span><span id="sys-build">—</span>
+          <span>Панель</span><span id="sys-panel">—</span>
+          <span>Uptime</span><span id="sys-uptime" style="color:var(--green)">—</span>
+          <span>Батарея</span><span id="sys-batt">—</span>
+          <span>Потрачено</span><span id="sys-mah" style="color:var(--orange)">—</span>
+          <span>Ток</span><span id="sys-cur">—</span>
+          <span>Остаток</span><span id="sys-remain" style="color:var(--green)">—</span>
+          <span>Загрузок</span><span id="st-boots">—</span>
+          <span>Обновлений ПО</span><span id="st-fwupd">—</span>
+          <span>Обновл. экрана</span><span id="st-refr">—</span>
+          <span>…с прошивки</span><span id="st-refrfw">—</span>
+          <span>Flash-снимок</span><span id="st-flash" style="color:var(--fg2)">—</span>
         </div>
-        <div class="brow" style="margin-top:10px">
+        <div class="brow" style="margin-top:12px">
           <button class="btn" onclick="requestSysinfo()">🔄 Обновить</button>
-          <button class="btn bad" onclick="send('REBOOT\n')">⟳ Reboot</button>
-          <span style="font-size:10px;color:var(--fg2)" id="sys-last-update"></span>
+          <button class="btn bad" onclick="send('REBOOT\n')">⟳ Перезагрузить</button>
+          <span class="muted" id="sys-last-update"></span>
         </div>
-      </div>
+      </section>
 
-      <!-- Device name -->
-      <div class="card">
+      <section class="card m4">
+        <div class="ctitle">Батарея <span class="sub">оценка ресурса</span></div>
+        <div class="battbar">
+          <div id="sys-batt-bar"></div>
+          <div id="sys-batt-pct">—%</div>
+        </div>
+        <div class="stat3">
+          <div><div>Ёмкость</div><div style="color:var(--yellow)" id="sys-cap">350 mAh</div></div>
+          <div><div>Израсходовано</div><div style="color:var(--orange)" id="sys-used">— mAh</div></div>
+          <div><div>Осталось (ожид.)</div><div style="color:var(--green)" id="sys-eta">—</div></div>
+        </div>
+        <div class="hint">Li-Po 3.7V/350mAh. АЦП видит до 3.6V (насыщение) — заряд отслеживается только при разряде. Ток рассчитывается прошивкой. Ниже 3.3V экран блокируется, ниже 3.1V — глубокий сон.</div>
+      </section>
+
+      <section class="card m5">
         <div class="ctitle">Имя ценника</div>
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;align-items:center;margin-bottom:8px">
-          <span style="color:var(--fg2)">Сейчас:</span>
-          <span id="sys-name" style="color:var(--yellow);font-family:var(--mono);word-break:break-all">—</span>
+        <div class="kv" style="margin-bottom:10px">
+          <span>Сейчас</span><span id="sys-name" style="color:var(--yellow)">—</span>
         </div>
-        <div class="brow" style="gap:6px">
-          <input type="text" id="name-inp" maxlength="16" placeholder="напр. Молоко 3.2%" style="flex:1;font-size:11px"
-                 onkeydown="if(event.key==='Enter')applyName()">
+        <div class="brow">
+          <input type="text" id="name-inp" class="grow" maxlength="16" placeholder="напр. Молоко 3.2%" onkeydown="if(event.key==='Enter')applyName()">
           <button class="btn acc" onclick="applyName()">Применить</button>
-          <button class="btn" onclick="resetName()" title="Вернуть имя по умолчанию">Сбросить</button>
+          <button class="btn ghost" onclick="resetName()" title="Вернуть имя по умолчанию">Сбросить</button>
         </div>
-        <div style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
-          К имени всегда добавляется неизменяемый «(XXXXXX)» — уникальный код устройства; по нему ценник
-          находится в списке даже после переименования. Максимум 16 символов. Сохраняется в ценнике, переживает перезагрузку.
-        </div>
-      </div>
+        <div class="hint">К имени всегда добавляется неизменяемый «(XXXXXX)» — уникальный код устройства; по нему ценник находится в списке даже после переименования. До 16 символов, сохраняется в ценнике.</div>
+      </section>
 
-      <!-- Mesh receive / power saving -->
-      <div class="card">
-        <div class="ctitle">Mesh-приём · энергосбережение</div>
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;align-items:center;margin-bottom:8px">
-          <span style="color:var(--fg2)">Сейчас:</span>
-          <span id="sys-meshrx" style="font-family:var(--mono);color:var(--fg2)">—</span>
+      <section class="card m6">
+        <div class="ctitle">Mesh-приём <span class="sub">энергосбережение</span></div>
+        <div class="kv" style="margin-bottom:10px">
+          <span>Сейчас</span><span id="sys-meshrx" style="color:var(--fg2)">—</span>
         </div>
-        <div class="brow" style="gap:6px">
+        <div class="seg" style="display:flex">
           <button class="btn ok" onclick="setMeshRx(true)">Включить</button>
           <button class="btn bad" onclick="setMeshRx(false)">Выключить</button>
         </div>
-        <div style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
-          Приём широковещательных команд от соседних ценников (BCAST). <b>Выключение экономит
-          ~0.2–0.3 мА</b> — батарея живёт в разы дольше, но ценник перестаёт слышать и ретранслировать
-          команды по mesh: включить обратно можно только здесь, по прямому подключению.
-          Сохраняется в ценнике. Нужна прошивка v3.4.1+.
-        </div>
-      </div>
+        <div class="hint">Приём широковещательных команд от соседних ценников (BCAST). <b>Выключение экономит ~0.2–0.3 мА</b> — батарея живёт в разы дольше, но ценник перестаёт слышать и ретранслировать mesh-команды: включить обратно можно только здесь, по прямому подключению. Нужна прошивка v3.4.1+.</div>
+      </section>
 
-      <!-- NFC метка -->
-      <div class="card">
-        <div class="ctitle">NFC-метка · быстрое подключение</div>
-        <div style="font-size:9px;color:var(--fg2);margin-bottom:8px;line-height:1.4">
-          Зашивает в метку ссылку на это приложение с именем подключённого ценника
-          (имя + неизменяемый код = ровно один ценник в списке) и, по желанию, паролем.
-          Тап телефоном по метке → открывается приложение, остаётся нажать «Подключить».
-          <b>Запись метки — только Chrome на Android.</b> Открытие готовой метки работает и на iPhone.
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;margin-bottom:6px">
-          <input type="checkbox" id="nfc-include-pass" style="accent-color:var(--accent)" onchange="nfcRefresh()">
-          Зашить пароль в метку
-          <span style="color:var(--fg2);font-size:9px">(виден любому, кто приложит телефон)</span>
-        </label>
-        <input type="text" id="nfc-pass" placeholder="пароль для метки (пусто = взять из поля разблокировки)"
-               oninput="nfcRefresh()" style="width:100%;font-size:11px;margin-bottom:6px;display:none">
-        <input type="text" id="nfc-url" readonly placeholder="подключись к ценнику — здесь появится ссылка"
-               onclick="this.select()" style="width:100%;font-size:10px;font-family:var(--mono);color:var(--fg2);margin-bottom:6px">
-        <div class="brow" style="gap:6px;flex-wrap:wrap">
-          <button class="btn acc" onclick="nfcWrite()">📲 Записать метку</button>
-          <button class="btn" onclick="nfcRead()">Проверить</button>
-          <button class="btn" onclick="nfcCopy()">Копировать URL</button>
-        </div>
-        <div style="font-size:10px;margin-top:6px;word-break:break-all" id="nfc-status"><span style="color:var(--fg2)">—</span></div>
-      </div>
-
-      <!-- Battery estimation -->
-      <div class="card">
-        <div class="ctitle">Батарея · оценка ресурса</div>
-        <div style="position:relative;height:28px;background:var(--bg3);border-radius:6px;overflow:hidden;margin-bottom:8px">
-          <div id="sys-batt-bar" style="position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,var(--red),var(--orange) 30%,var(--green) 70%);border-radius:6px;transition:width .5s"></div>
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--fg);text-shadow:0 1px 2px #000" id="sys-batt-pct">—%</div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:10px;text-align:center">
-          <div>
-            <div style="color:var(--fg2)">Ёмкость</div>
-            <div style="color:var(--yellow);font-family:var(--mono);font-size:12px" id="sys-cap">350 mAh</div>
-          </div>
-          <div>
-            <div style="color:var(--fg2)">Израсходовано</div>
-            <div style="color:var(--orange);font-family:var(--mono);font-size:12px" id="sys-used">— mAh</div>
-          </div>
-          <div>
-            <div style="color:var(--fg2)">Осталось (ожид.)</div>
-            <div style="color:var(--green);font-family:var(--mono);font-size:12px" id="sys-eta">—</div>
-          </div>
-        </div>
-        <div style="font-size:9px;color:var(--fg2);margin-top:8px;line-height:1.4">
-          Оценка: Li-Po 3.7V/350mAh. АЦП видит до 3.6V (насыщение) — заряд отслеживается только при разряде. Ток рассчитывается прошивкой. При падении ниже 3.3V — экран блокируется, ниже 3.1V — глубокий сон.
-        </div>
-      </div>
-
-      <!-- Firmware manifest & server -->
-      <div class="card">
-        <div class="ctitle">Сервер обновлений</div>
-        <div class="brow" style="gap:6px">
-          <input type="text" id="dfu-server-url" placeholder="https://example.com/firmware/" style="flex:1;font-size:11px"
-                 value="https://pwa.price-tag.sorewa.ru/firmware">
+      <section class="card m7">
+        <div class="ctitle">Сервер обновлений и доступ</div>
+        <div class="brow">
+          <input type="text" id="dfu-server-url" class="grow" placeholder="https://example.com/firmware/" value="https://pwa.price-tag.sorewa.ru/firmware">
           <button class="btn acc" onclick="checkForUpdate()">Проверить</button>
         </div>
-        <div style="font-size:10px;color:var(--fg2);margin-top:6px" id="dfu-server-status">
-          Укажи URL, где лежит manifest.json и app_update.bin
-        </div>
-        <div class="brow" style="gap:6px;margin-top:10px">
-          <input type="password" id="dfu-pass" placeholder="пароль ценника (если задан)" style="flex:1;font-size:11px">
+        <div class="muted" style="margin-top:6px" id="dfu-server-status">Укажи URL, где лежат manifest.json и app_update.bin</div>
+        <div class="brow" style="margin-top:12px">
+          <input type="password" id="dfu-pass" class="grow" placeholder="пароль ценника (если задан)">
           <button class="btn" onclick="dfuUnlock()">🔓 Разблокировать</button>
         </div>
-        <div style="font-size:10px;margin-top:4px" id="dfu-auth-status"><span style="color:var(--fg2)">—</span></div>
-        <div style="font-size:9px;color:var(--fg2);margin-top:4px;line-height:1.4">
-          Пусто = общий ключ по умолчанию. Работает со старыми (без пароля) и новыми ценниками;
-          запароленные — введи пароль. · <a href="#" onclick="dfuSetPassword();return false" style="color:var(--acc)">сменить пароль</a>
+        <div class="muted" style="margin-top:6px" id="dfu-auth-status"><span style="color:var(--fg2)">—</span></div>
+        <div class="hint">Пусто = общий ключ по умолчанию: работает со старыми (без пароля) и новыми ценниками; запароленные — введи пароль. · <a href="#" onclick="dfuSetPassword();return false">сменить пароль</a></div>
+      </section>
+
+      <section class="card m8">
+        <div class="ctitle">NFC-метка <span class="sub">быстрое подключение</span></div>
+        <div class="hint" style="margin:0 0 10px">Зашивает в метку ссылку на это приложение с именем подключённого ценника (имя + код = ровно один ценник в списке) и, по желанию, паролем. Тап телефоном по метке → открывается приложение, остаётся нажать «Подключить». <b>Запись — только Chrome на Android</b>, открытие работает и на iPhone.</div>
+        <label class="chk" style="margin-bottom:8px">
+          <input type="checkbox" id="nfc-include-pass" onchange="nfcRefresh()"> Зашить пароль в метку
+          <span class="muted" style="font-size:11px">(виден любому, кто приложит телефон)</span>
+        </label>
+        <input type="text" id="nfc-pass" placeholder="пароль для метки (пусто = из поля разблокировки)" oninput="nfcRefresh()" style="width:100%;margin-bottom:8px;display:none">
+        <input type="text" id="nfc-url" readonly placeholder="подключись к ценнику — здесь появится ссылка" onclick="this.select()" style="margin-bottom:8px">
+        <div class="brow">
+          <button class="btn acc" onclick="nfcWrite()">📲 Записать метку</button>
+          <button class="btn" onclick="nfcRead()">Проверить</button>
+          <button class="btn ghost" onclick="nfcCopy()">Копировать URL</button>
         </div>
-      </div>
+        <div class="muted" style="margin-top:8px;word-break:break-all" id="nfc-status"><span style="color:var(--fg2)">—</span></div>
+      </section>
     </div>
 
-    <!-- Right: OTA DFU -->
-    <div class="pcol pscroll" style="width:360px;flex-shrink:0">
-
-      <div class="card">
-        <div class="ctitle">OTA обновление (DFU)</div>
-        <div class="dropzone" id="dfu-drop" onclick="$('dfu-file').click()" style="padding:14px">
-          <div style="font-size:13px">📦 app_update.bin</div>
-          <div style="font-size:10px;margin-top:3px">Клик или перетащи файл · или загрузится с сервера</div>
+    <div class="pcol">
+      <section class="card m3">
+        <div class="ctitle">Обновление прошивки <span class="sub">OTA · DFU</span></div>
+        <div class="dropzone" id="dfu-drop" onclick="$('dfu-file').click()">
+          <div class="dz-t">📦 app_update.bin</div>
+          <div class="dz-s">Нажми или перетащи файл · или загрузится с сервера</div>
         </div>
-        <input type="file" id="dfu-file" accept=".bin" style="display:none" onchange="dfuLoadFile(this.files[0])">
-        <div id="dfu-file-info" style="font-size:10px;color:var(--yellow);font-family:var(--mono);margin-top:6px"></div>
-
-        <!-- Progress -->
+        <input type="file" id="dfu-file" accept=".bin" onchange="dfuLoadFile(this.files[0])">
+        <div id="dfu-file-info"></div>
         <div style="margin-top:10px">
-          <div class="pbar" style="height:6px"><div class="pfill" id="dfu-prog" style="width:0%"></div></div>
-          <div style="font-size:10px;color:var(--fg2);font-family:var(--mono);margin-top:4px" id="dfu-prog-text"></div>
+          <div class="pbar" style="height:7px"><div class="pfill" id="dfu-prog" style="width:0%"></div></div>
+          <div id="dfu-prog-text"></div>
         </div>
-
-        <div class="brow" style="margin-top:10px">
-          <button class="btn ok big" id="dfu-btn-upload" onclick="dfuStartUpload()" disabled>⬆ Загрузить</button>
+        <div class="brow" style="margin-top:12px">
+          <button class="btn ok big grow" id="dfu-btn-upload" onclick="dfuStartUpload()" disabled>⬆ Загрузить в ценник</button>
           <button class="btn bad" id="dfu-btn-abort" onclick="dfuAbort()" disabled>✕ Стоп</button>
         </div>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="ctitle">Управление образами</div>
-        <div class="brow">
-          <button class="btn" onclick="dfuQueryState()">📋 Слоты</button>
-          <button class="btn acc" onclick="dfuTest()">✓ Test</button>
-          <button class="btn ok" onclick="dfuConfirm()">✓✓ Confirm</button>
-          <button class="btn bad" onclick="dfuReset()">⟳ Reset</button>
+      <details class="card m9">
+        <summary>Управление образами</summary>
+        <div class="dbody">
+          <div class="bgrid">
+            <button class="btn" onclick="dfuQueryState()">📋 Слоты</button>
+            <button class="btn acc" onclick="dfuTest()">✓ Test</button>
+            <button class="btn ok" onclick="dfuConfirm()">✓✓ Confirm</button>
+            <button class="btn bad" onclick="dfuReset()">⟳ Reset</button>
+            <button class="btn" onclick="dfuVerify()" title="Диагностика: image list + hash + raw CBOR">🔍 Verify</button>
+            <button class="btn bad" onclick="dfuErase()" title="Явно стереть slot 1 перед загрузкой">🗑 Erase</button>
+            <button class="btn" onclick="dfuToggleVerbose()" title="Показывать raw CBOR байты каждого SMP-ответа">🐛 Verbose</button>
+          </div>
+          <div id="dfu-slots"></div>
+          <div class="hint">
+            <b>Test</b> — пометить новый образ для пробной загрузки (откат, если не подтвердить).<br>
+            <b>Confirm</b> — подтвердить текущий образ.<br>
+            <b>Reset</b> — перезагрузка → загрузит помеченный образ.
+          </div>
         </div>
-        <div class="brow" style="margin-top:6px">
-          <button class="btn" onclick="dfuVerify()" title="Диагностика: image list + hash + raw CBOR">🔍 Verify</button>
-          <button class="btn bad" onclick="dfuErase()" title="Явно стереть slot 1 перед загрузкой">🗑 Erase</button>
-          <button class="btn" onclick="dfuToggleVerbose()" title="Показывать raw CBOR байты каждого SMP-ответа">🐛 Verbose</button>
-        </div>
-        <div id="dfu-slots" style="margin-top:8px;font-size:10px;font-family:var(--mono);color:var(--fg2)"></div>
-        <p style="font-size:9px;color:var(--fg2);margin-top:6px;line-height:1.4">
-          <b>Test</b> — помечает новый образ для пробной загрузки (откат если не подтвердить).<br>
-          <b>Confirm</b> — подтверждает текущий образ.<br>
-          <b>Reset</b> — перезагрузка → загрузит помеченный образ.
-        </p>
-      </div>
+      </details>
 
-      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:100px">
+      <section class="card logcard m10">
         <div class="ctitle">Лог DFU</div>
-        <div class="con" id="dfu-log" style="flex:1"></div>
-      </div>
-
+        <div class="con" id="dfu-log"></div>
+      </section>
     </div>
   </div>
 </div>
 
 </div><!-- /content -->
 
-<!-- BOTTOM CONSOLE -->
+<!-- BOTTOM CONSOLE: resizable panel on desktop, slide-up sheet on phones -->
 <div id="bot-con">
   <div id="bot-resize"></div>
   <div id="bot-hdr">
-    <span>💻 Консоль BLE</span>
-    <div style="flex:1"></div>
-    <button class="btn" onclick="$('main-con').innerHTML=''" style="font-size:9px;padding:1px 7px">Очистить</button>
-    <button class="btn" id="bot-tog" onclick="toggleBotCon()" style="font-size:10px;padding:1px 8px;min-width:24px">▼</button>
+    <span>Консоль BLE</span>
+    <span class="sp"></span>
+    <button class="btn ghost sm" onclick="$('main-con').innerHTML=''">Очистить</button>
+    <button class="btn ghost sm" id="bot-tog" onclick="toggleBotCon()" title="Свернуть / развернуть" style="min-width:34px">▼</button>
   </div>
   <div id="bot-body">
-    <div class="con" id="main-con" style="flex:1"></div>
-    <div class="brow" style="flex-shrink:0;gap:5px">
-      <input type="text" id="cmd-inp" placeholder="Команда (без \n)…" style="flex:1"
+    <div class="tbar">
+      <div class="ti"><span class="tl">FAPPLY</span><span class="tv" id="tb-fap">—</span></div>
+      <div class="ti"><span class="tl">FAST</span><span class="tv" id="tb-fast">—</span></div>
+      <div class="ti"><span class="tl">UPDATE</span><span class="tv" id="tb-upd">—</span></div>
+      <div class="ti"><span class="tl">LUT</span><span class="tv" id="tb-lut">—</span></div>
+      <span class="ti mono" id="tb-mtu"></span>
+    </div>
+    <div class="con" id="main-con"></div>
+    <div class="quick">
+      <button class="btn sm" onclick="send('STAT\n')">STAT</button>
+      <button class="btn sm" onclick="send('HOST:1\n')">HOST:1</button>
+      <button class="btn sm" onclick="send('BATT\n')">BATT</button>
+      <button class="btn sm" onclick="send('SYSINFO\n')">SYSINFO</button>
+      <button class="btn sm" onclick="send('LGET\n')">LGET</button>
+    </div>
+    <div class="cmdrow">
+      <input type="text" id="cmd-inp" placeholder="Команда ценнику…" autocomplete="off" autocapitalize="characters"
         onkeydown="if(event.key==='Enter')sendRaw()">
       <button class="btn acc" onclick="sendRaw()">Отправить</button>
     </div>
   </div>
 </div>
-
-<!-- TELE BAR -->
-<div class="tbar">
-  <div class="ti"><span class="tl">FAPPLY:</span><span class="tv" id="tb-fap">—</span></div>
-  <div class="ti"><span class="tl">FAST:</span><span class="tv" id="tb-fast">—</span></div>
-  <div class="ti"><span class="tl">UPDATE:</span><span class="tv" id="tb-upd">—</span></div>
-  <div class="ti"><span class="tl">LUT:</span><span class="tv" id="tb-lut">—</span></div>
-  <div style="flex:1"></div>
-  <span style="font-size:10px;color:var(--fg2)" id="tb-mtu"></span>
-</div>
-
 <script>
 // ═══════════════════════════════════════════════════════════════════
 //  Constants
@@ -1425,8 +1484,8 @@ function setPanel(key) {
   const cv = $('disp-canvas');
   if (cv && (cv.width !== p.lw || cv.height !== p.lh)) {
     cv.width = p.lw; cv.height = p.lh;                 // resets the bitmap
-    cv.style.width = '296px';
-    cv.style.height = Math.round(296 * p.lh / p.lw) + 'px';
+    cv.style.width = p.lw + 'px';                     // natural size; CSS caps at 100%
+    cv.style.height = p.lh + 'px';
     clearCanvas();
   }
   const lbl = $('disp-label'); if (lbl) lbl.textContent = `${p.ctl} · ${p.lw}×${p.lh}`;
@@ -1436,8 +1495,8 @@ function setPanel(key) {
   const ap = $('anim-preview');
   if (ap && (ap.width !== p.lw || ap.height !== p.lh)) {
     ap.width = p.lw; ap.height = p.lh;
-    ap.style.width = '296px';
-    ap.style.height = Math.round(296 * p.lh / p.lw) + 'px';
+    ap.style.width = p.lw + 'px';
+    ap.style.height = p.lh + 'px';
   }
   applyToneStr(p);
   if (changed && typeof IE !== 'undefined' && IE.img) { IE.oc = null; renderImg(); }
@@ -1457,27 +1516,61 @@ function vsIdx(lx, ly, land) {
   return [phy * (PANEL.pw >> 3) + (phx >> 3), 1 << (7 - (phx & 7))];
 }
 
-// Send-progress box under the display preview: host-side bytes sent, device
-// acknowledgements (FW:rx / RW:rx lines), then the refresh wait.
-const sendProg = { total: 0, sent: 0, rx: 0, tag: '', phase: '', t0: 0 };
-function sendProgShow(total) {
-  Object.assign(sendProg, { total, sent: 0, rx: 0, tag: '', phase: 'tx', t0: Date.now() });
+// Send progress. One state object drives two views: the box under the display
+// preview (#send-box) and the fixed status bar (#send-bar) that stays visible
+// on every tab while a photo is in flight. Phases:
+//   tx      — FW:/RW: chunks over NUS (bytes known up front)
+//   passes  — tone photo: N VSTREAM passes, one panel refresh each
+//   refresh — all bytes sent, waiting for the panel (TELE:fapply / FAPPLY done)
+//   done | warn | stop | error — terminal, the views hide themselves
+// While tx/passes run, body.sending greys out every .send-btn (no double sends).
+const sendProg = { total: 0, sent: 0, rx: 0, tag: '', phase: '', t0: 0,
+                   passes: 0, pass: 0, tick: null, hideT: null, wd: null };
+let sendLock = false;                      // held by sendCanvas() around the whole transfer
+const fmtKB = b => (b / 1024).toFixed(1) + ' KB';
+const fmtS  = ms => (ms / 1000).toFixed(1) + ' s';
+const SEND_ICON = { tx: '↑', passes: '↑', refresh: '⟳', done: '✓', warn: '⚠', stop: '■', error: '✗' };
+function sendBusy() { return sendLock || sendProg.phase === 'tx' || sendProg.phase === 'passes'; }
+
+function sendProgShow(total, opts = {}) {
+  clearTimeout(sendProg.hideT); clearTimeout(sendProg.wd); clearInterval(sendProg.tick);
+  Object.assign(sendProg, { total, sent: 0, rx: 0, tag: opts.tag || '', t0: Date.now(),
+                            phase: opts.passes ? 'passes' : 'tx', passes: opts.passes || 0, pass: 0,
+                            planeBase: 0, txTime: '', txBytes: 0, text: '', barText: '' });
   const box = $('send-box'); if (box) box.style.display = 'block';
+  const bar = $('send-bar'); if (bar) bar.hidden = false;
+  const stop = $('send-bar-stop'); if (stop) stop.hidden = !opts.passes;   // only tone passes can stop
+  document.body.classList.add('sending');
+  sendProg.tick = setInterval(sendProgRender, 250);   // elapsed time keeps ticking between chunks
   sendProgRender();
 }
 function sendProgRender() {
-  const p = sendProg, bar = $('send-prog'), info = $('send-info');
-  if (!bar || !info) return;
-  const dt = ((Date.now() - p.t0) / 1000).toFixed(1);
+  const p = sendProg, el = Date.now() - p.t0, dt = fmtS(el);
+  let pct = 100, txt = '', card = '';
   if (p.phase === 'tx') {
-    bar.style.width = (p.total ? Math.round(100 * p.sent / p.total) : 0) + '%';
-    info.textContent = `${p.tag} отправлено ${p.sent}/${p.total} B · принято ${p.rx} B · ${dt}s`;
+    pct  = p.total ? Math.round(100 * p.sent / p.total) : 0;
+    const spd = el > 300 ? ` · ${fmtKB(p.sent / (el / 1000))}/s` : '';
+    txt  = `${p.tag} ${pct}% · ${(p.sent / 1024).toFixed(1)}/${fmtKB(p.total)}${spd} · ${dt}`;
+    card = `${p.tag} отправлено ${p.sent}/${p.total} B · принято ${p.rx} B · ${dt}`;
+  } else if (p.phase === 'passes') {
+    pct  = p.passes ? Math.round(100 * p.pass / p.passes) : 0;
+    txt  = `${p.tag} ${p.pass}/${p.passes} · ${pct}% · ${fmtKB(p.sent)} · ${dt}`;
+    card = `${p.tag} · проход ${p.pass}/${p.passes} · ${pct}% · ${fmtKB(p.sent)} · ${dt}`;
   } else if (p.phase === 'refresh') {
-    bar.style.width = '100%';
-    info.textContent = `передано ${p.total} B за ${p.txTime}s · обновление экрана… ${dt}s`;
+    txt  = `Передано ${fmtKB(p.txBytes)} за ${p.txTime} · обновление экрана… ${dt}`;
+    card = `передано ${p.txBytes} B за ${p.txTime} · обновление экрана… ${dt}`;
   } else {
-    info.textContent = p.phase;
+    txt  = p.barText || p.text || p.phase;
+    card = p.text || p.phase;
   }
+  const pb = $('send-prog'), info = $('send-info');
+  if (pb)   pb.style.width = pct + '%';
+  if (info) info.textContent = card;
+  const bar = $('send-bar'), bt = $('send-bar-txt'), bf = $('send-bar-fill'), bi = $('send-bar-ico');
+  if (bar) bar.className = p.phase;
+  if (bt)  bt.textContent = txt;
+  if (bf)  bf.style.width = pct + '%';
+  if (bi)  bi.textContent = SEND_ICON[p.phase] || '↑';
 }
 function sendProgRx(line) {             // "FW:rx 4096/15000"
   const m = line.match(/^(FW|RW):rx (\d+)\/(\d+)/);
@@ -1485,20 +1578,55 @@ function sendProgRx(line) {             // "FW:rx 4096/15000"
   sendProg.rx = (sendProg.planeBase || 0) + +m[2];
   sendProgRender();
 }
-function sendProgRefresh() {
-  sendProg.txTime = ((Date.now() - sendProg.t0) / 1000).toFixed(1);
-  sendProg.phase = 'refresh'; sendProg.t0 = Date.now();
+function sendProgPass(n, bytes) {       // tone photo: one pass confirmed by the panel
+  sendProg.pass = n; sendProg.sent += bytes || 0;
   sendProgRender();
-  clearInterval(sendProg.timer);
-  sendProg.timer = setInterval(sendProgRender, 500);
 }
-function sendProgDone(text) {
-  clearInterval(sendProg.timer);
-  const bar = $('send-prog'), info = $('send-info');
-  if (bar) bar.style.width = '100%';
-  if (info) info.textContent = text;
-  sendProg.phase = 'done';
-  setTimeout(() => { if (sendProg.phase === 'done') { const b = $('send-box'); if (b) b.style.display = 'none'; } }, 8000);
+function sendProgRefresh() {
+  const el = Date.now() - sendProg.t0;
+  sendProg.txTime = fmtS(el); sendProg.txBytes = sendProg.sent;
+  sendProg.phase = 'refresh'; sendProg.t0 = Date.now();
+  document.body.classList.remove('sending');    // bytes are out; the panel is refreshing
+  sendProgRender();
+  // The panel normally answers within seconds; if the reply never comes (old
+  // firmware, dropped notification) close the bar instead of ticking forever.
+  clearTimeout(sendProg.wd);
+  sendProg.wd = setTimeout(() => {
+    if (sendProg.phase === 'refresh') sendProgDone('экран не ответил за 60 с — смотри консоль', 'warn');
+  }, 60000);
+}
+function sendProgEnd(phase, text, barText, hideMs) {
+  const p = sendProg;
+  clearInterval(p.tick); clearTimeout(p.wd); clearTimeout(p.hideT);
+  p.phase = phase; p.text = text; p.barText = barText;
+  document.body.classList.remove('sending');
+  const stop = $('send-bar-stop'); if (stop) stop.hidden = true;
+  sendProgRender();
+  p.hideT = setTimeout(() => {
+    if (p.phase !== phase) return;                 // a new send took over
+    const b = $('send-box'); if (b) b.style.display = 'none';
+    const bar = $('send-bar'); if (bar) bar.hidden = true;
+  }, hideMs);
+}
+function sendProgDone(text, kind = 'done') {     // kind: done | warn | stop
+  const p = sendProg, scr = p.phase === 'refresh' ? fmtS(Date.now() - p.t0) : '';
+  let bar;
+  if (kind === 'done') {
+    bar = p.passes
+      ? `Готово · ${p.pass}/${p.passes} проходов · ${fmtKB(p.sent)} за ${fmtS(Date.now() - p.t0)}`
+      : `Готово · ${fmtKB(p.txBytes || p.total)} за ${p.txTime}` + (scr ? ` · экран ${scr}` : '');
+  } else {
+    bar = text;                                  // the icon column already shows ■ / ⚠
+  }
+  sendProgEnd(kind, text, bar, kind === 'done' ? 6000 : 9000);
+}
+function sendProgFail(msg) {
+  sendProgEnd('error', 'ошибка: ' + msg, msg || 'ошибка отправки', 9000);
+}
+function sendBarStop() {                 // tone photo: stop after the current pass
+  if (!streamRunning) return;
+  streamStop = true; vsAbort();
+  logI('Останавливаю отправку после текущего прохода…');
 }
 
 // Binary VSTREAM stop escapes. The second byte is intentionally different:
@@ -2032,7 +2160,7 @@ function logR(m) {
 }
 function logT(m) { appendLog($('main-con'),'tx','→',m); }
 function logI(m) { appendLog($('main-con'),'inf','·',m); }
-function logE(m) { appendLog($('main-con'),'err','!',m); }
+function logE(m) { appendLog($('main-con'),'err','!',m); uiToast(m, 'err'); }
 function animLog(m){ appendLog($('anim-log'),'inf','·',m); }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2151,6 +2279,28 @@ function sendRaw() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Shell: layout probe, header "more" row, transient toast
+// ═══════════════════════════════════════════════════════════════════
+const isPhoneLayout = () => window.matchMedia('(max-width: 900px)').matches;
+
+function hdrMore() {
+  const row = $('hdr-more'), btn = $('hdr-more-btn');
+  if (!row) return;
+  row.hidden = !row.hidden;
+  if (btn) btn.setAttribute('aria-expanded', String(!row.hidden));
+}
+
+let _uiToastTimer = null;
+function uiToast(msg, kind = '', ms = 3500) {
+  const el = $('ui-toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = kind ? kind + ' show' : 'show';
+  clearTimeout(_uiToastTimer);
+  _uiToastTimer = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Tab switching
 // ═══════════════════════════════════════════════════════════════════
 function tab(name) {
@@ -2159,6 +2309,7 @@ function tab(name) {
     el.classList.toggle('on', names[i] === name));
   document.querySelectorAll('.tp').forEach(el =>
     el.classList.toggle('on', el.id === 'tp-'+name));
+  if (isPhoneLayout()) window.scrollTo({ top: 0 });
   if (name === 'lut') setTimeout(drawWf, 60);
   if (name === 'sys') requestSysinfo();
 }
@@ -2675,9 +2826,13 @@ function toneLevelsToFrameLight(levels, maxPulse, lightPass) {
 
 async function sendCanvas() {
   if (!connected) { alert('Не подключено'); return; }
+  if (sendBusy()) { uiToast('Подожди — идёт отправка'); return; }
   const ctx = $('disp-canvas').getContext('2d');
   const { bw, red } = canvasToPhys(ctx);
-  await sendBWR(bw, red, 'canvas');
+  sendLock = true;
+  try { await sendBWR(bw, red, 'canvas'); }
+  catch (e) { logE('Отправка: ' + e.message); sendProgFail(e.message); }
+  finally { sendLock = false; }
 }
 
 // ── L2: guaranteed photo pass ─────────────────────────────────────────────
@@ -2725,6 +2880,7 @@ async function sendPhotoPassGuaranteed(frame, prev, label, retries=4) {
 async function sendCanvasTone() {
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
+  if (sendBusy()) { uiToast('Подожди — идёт отправка'); return; }
   const maxPulse    = parseInt($('tone-pulses').value) || 8;
   const lightPasses = parseInt($('tone-light-passes')?.value ?? 0) || 0;
   await sendToneLevels(canvasToToneLevels(maxPulse), maxPulse, lightPasses, 'canvas');
@@ -2740,6 +2896,7 @@ async function sendCanvasTone() {
 async function sendToneLadder() {
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
+  if (sendBusy()) { uiToast('Подожди — идёт отправка'); return; }
   const maxPulse = parseInt($('tone-pulses').value) || 8;
   const w = PANEL.lw, h = PANEL.lh, bands = maxPulse + 1;
   const levels = new Uint8Array(w * h);
@@ -2764,11 +2921,12 @@ async function sendToneLadder() {
 
 async function sendToneLevels(levels, maxPulse, lightPasses, desc) {
   const usedMax = levels.reduce((m, v) => Math.max(m, v), 0);
-  let prev = null;
+  let prev = null, failed = null;
 
   streamRunning = true;
   streamStop = false;
   vsReset();
+  sendProgShow(0, { passes: maxPulse + lightPasses, tag: 'Тона' });
 
   logI(`Отправляю ${desc} тонами: ${maxPulse} тёмных + ${lightPasses} белых импульсов, max=${usedMax}, сила ${$('tone-pulse-str').value} %`);
 
@@ -2807,6 +2965,7 @@ async function sendToneLevels(levels, maxPulse, lightPasses, desc) {
       const res = await sendPhotoPassGuaranteed(frame, prev, `dark ${pass + 1}/${maxPulse}`);
       if (!res) break;
       prev = frame;
+      sendProgPass(pass + 1, res.bytes);
 
       const pct = Math.round((pass + 1) * 100 / (maxPulse + lightPasses));
       logI(`  dark pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${res.bytes}B` +
@@ -2841,6 +3000,7 @@ async function sendToneLevels(levels, maxPulse, lightPasses, desc) {
         const res = await sendPhotoPassGuaranteed(frame, prev, `light ${lp + 1}/${lightPasses}`);
         if (!res) break;
         prev = frame;
+        sendProgPass(maxPulse + lp + 1, res.bytes);
 
         const pct = Math.round((maxPulse + lp + 1) * 100 / (maxPulse + lightPasses));
         logI(`  light pass ${lp + 1}/${lightPasses} · ${pct}% · pkt=${res.bytes}B` +
@@ -2853,12 +3013,16 @@ async function sendToneLevels(levels, maxPulse, lightPasses, desc) {
       logI(`${desc} отправлен тонами`);
     }
   } catch (e) {
-    if (e.message !== 'stopped') logE('Tone send: ' + e.message);
+    if (e.message !== 'stopped') { logE('Tone send: ' + e.message); failed = e.message; }
   } finally {
+    const stopped = streamStop;
     try { await sendBytes(VS_STOP_PHOTO, true); } catch(e) {}
     await sleep(300);
     streamRunning = false;
     streamStop = false;
+    if (failed)       sendProgFail(failed);
+    else if (stopped) sendProgDone(`остановлено · ${sendProg.pass} из ${sendProg.passes} проходов`, 'stop');
+    else              sendProgDone('готово');
   }
 }
 
@@ -2911,15 +3075,17 @@ function canvasToToneSoftLevels(maxPulse) {
 async function sendCanvasToneSoft() {
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
+  if (sendBusy()) { uiToast('Подожди — идёт отправка'); return; }
 
   const maxPulse = parseInt($('tone-soft-pulses')?.value) || 16;
   const levels   = canvasToToneSoftLevels(maxPulse);
   const usedMax  = levels.reduce((m, v) => Math.max(m, v), 0);
-  let prev = null;
+  let prev = null, failed = null;
 
   streamRunning = true;
   streamStop    = false;
   vsReset();
+  sendProgShow(0, { passes: maxPulse, tag: 'Мягкий тон' });
 
   logI(`Отправляю canvas (мягкий тон): ${maxPulse} импульсов SOFT_DARK, max=${usedMax}`);
   if (!PANEL.redPlane) logI(`  ${PANEL.ctl}: отклик на импульс не калиброван — подбирай «Сила имп.» по результату`);
@@ -2953,6 +3119,7 @@ async function sendCanvasToneSoft() {
       const res = await sendPhotoPassGuaranteed(frame, prev, `soft ${pass + 1}/${maxPulse}`);
       if (!res) break;
       prev = frame;
+      sendProgPass(pass + 1, res.bytes);
 
       const pct = Math.round((pass + 1) * 100 / maxPulse);
       logI(`  soft pass ${pass + 1}/${maxPulse} · ${pct}% · pkt=${res.bytes}B` +
@@ -2962,12 +3129,16 @@ async function sendCanvasToneSoft() {
     await vsDrain(20000);
     logI('canvas отправлен (мягкий тон)');
   } catch (e) {
-    if (e.message !== 'stopped') logE('Soft tone send: ' + e.message);
+    if (e.message !== 'stopped') { logE('Soft tone send: ' + e.message); failed = e.message; }
   } finally {
+    const stopped = streamStop;
     try { await sendBytes(VS_STOP_PHOTO, true); } catch(e) {}
     await sleep(300);
     streamRunning = false;
     streamStop    = false;
+    if (failed)       sendProgFail(failed);
+    else if (stopped) sendProgDone(`остановлено · ${sendProg.pass} из ${sendProg.passes} проходов`, 'stop');
+    else              sendProgDone('готово');
   }
 }
 
@@ -4148,8 +4319,9 @@ function animPreviewCtx(tw, th) {
   if (!canvas) return null;
   if (canvas.width !== tw || canvas.height !== th) {
     canvas.width = tw; canvas.height = th;
-    canvas.style.width = '296px';
-    canvas.style.height = Math.round(296 * th / tw) + 'px';
+    const sc = tw < 296 ? Math.ceil(296 / tw) : 1;   // half-res frames: integer upscale
+    canvas.style.width = tw * sc + 'px';
+    canvas.style.height = th * sc + 'px';
   }
   return canvas.getContext('2d');
 }
@@ -4592,8 +4764,14 @@ const VS_C = ['#4a4a5a','#e07070','#60a0f0','#d09040'];
 function drawWf(){
   const canvas=$('wf-canvas');
   const W=canvas.clientWidth; if(!W){setTimeout(drawWf,50);return;}
-  canvas.width=W; const H=260;
+  const H=260;
+  // HiDPI: back the canvas at device resolution and draw in CSS px, otherwise
+  // phones (DPR 2–3) upscale a 1× bitmap and the plot turns into a blur.
+  const dpr=Math.min(window.devicePixelRatio||1,3);
+  canvas.width=Math.round(W*dpr); canvas.height=Math.round(H*dpr);
+  canvas.style.height=H+'px';
   const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,W,H);
 
   const ml=68,mr=8,mt=7,mb=34;
@@ -4749,6 +4927,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const ro=new ResizeObserver(()=>drawWf());
   ro.observe($('wf-canvas'));
   initBotResize();
+  if (isPhoneLayout()) toggleBotCon();   // phones: console is a closed sheet until asked for
+  // Folded sections remember their state per device (keyed by their title).
+  document.querySelectorAll('details.card, details.sub').forEach(d => {
+    const sum = d.querySelector('summary');
+    const key = 'fold:' + (sum ? sum.textContent.trim() : '');
+    try { if (localStorage.getItem(key) === '1') d.open = true; } catch {}
+    d.addEventListener('toggle', () => { try { localStorage.setItem(key, d.open ? '1' : '0'); } catch {} });
+  });
   applyDeepLink();   // принять #n=…&k=… из NFC-метки
   nfcRefresh();
 });
@@ -4794,7 +4980,7 @@ function toggleBotCon() {
   const bc=$('bot-con');
   if (bc.classList.contains('collapsed')) {
     bc.classList.remove('collapsed');
-    bc.style.height='150px';
+    bc.style.height='200px';
     $('bot-tog').textContent='▼';
   } else {
     bc.classList.add('collapsed');
@@ -6021,13 +6207,26 @@ try {
 } catch {}
 </script>
 
-<!-- Тост обновления PWA -->
+<!-- Transient status toast (errors from the console, etc.) -->
+<div id="ui-toast" role="status" aria-live="polite"></div>
+
+<!-- Send status bar: bytes / speed / time while a photo is in flight (see sendProg*) -->
+<div id="send-bar" hidden role="status" aria-live="polite">
+  <div class="sb-row">
+    <span class="sb-ico" id="send-bar-ico">↑</span>
+    <span class="sb-txt" id="send-bar-txt"></span>
+    <button class="btn sm bad" id="send-bar-stop" onclick="sendBarStop()" hidden title="Остановить после текущего прохода">Стоп</button>
+  </div>
+  <div class="sb-track"><div class="sb-fill" id="send-bar-fill"></div></div>
+</div>
+
+<!-- PWA update toast -->
 <div id="sw-toast" hidden>
   <span>Доступна новая версия приложения</span>
   <button class="btn acc" id="sw-reload">Обновить</button>
 </div>
 
-<!-- Тост обновления прошивки ценника (смахни, чтобы скрыть) -->
+<!-- Firmware update toast (swipe sideways to dismiss; see fwToast* in JS) -->
 <div id="fw-toast" hidden>
   <span style="font-size:16px">⬆</span>
   <div class="fwt-txt">
@@ -6035,7 +6234,7 @@ try {
     <span class="fwt-sub" id="fw-toast-sub"></span>
   </div>
   <button class="btn acc big" id="fw-toast-go">Обновить</button>
-  <button class="btn fwt-x" id="fw-toast-x" title="Скрыть">✕</button>
+  <button class="btn ghost fwt-x" id="fw-toast-x" title="Скрыть">✕</button>
 </div>
 
 <script>
