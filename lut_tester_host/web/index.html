@@ -590,10 +590,10 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <option value="16">16 тонов</option>
             </select>
             <span style="display:flex;align-items:center;gap:4px;font-size:10px"
-                  title="Сила одного импульса в симуляции превью: насколько темнеет пиксель за один проход. Подбери так, чтобы превью совпало с реальным экраном.">
+                  title="Физическая сила одного импульса TONE_DARK на этой панели (% потемнения за проход). По ней считается число импульсов для каждого серого, превью при этом почти не меняется — выставляй по «Лесенке», а не по превью. 2.9″ ≈ 36, 4.2″ ≈ 18. Запоминается для панели.">
               <span style="color:var(--fg2);white-space:nowrap">Сила имп.</span>
               <input type="range" id="tone-pulse-str" min="1" max="60" value="36" step="1"
-                     style="width:70px" oninput="$('tone-pstr-val').textContent=this.value;renderImg()">
+                     style="width:70px" oninput="$('tone-pstr-val').textContent=this.value;saveToneStr();renderImg()">
               <span id="tone-pstr-val" style="color:var(--yellow);font-variant-numeric:tabular-nums;min-width:18px">36</span>
             </span>
             <span style="display:flex;align-items:center;gap:4px;font-size:10px"
@@ -604,6 +604,8 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
               <span id="tone-light-val" style="color:var(--vgl);font-variant-numeric:tabular-nums;min-width:12px">0</span>
             </span>
             <button class="btn pur" onclick="sendCanvasTone()">↑ Отправить</button>
+            <button class="btn" onclick="sendToneLadder()"
+                    title="Калибровка: полосы 0..N импульсов TONE_DARK напрямую, без модели. По полосе, похожей на 50 % серый, выставь «Сила имп.» (таблица N→сила в логе).">▤ Лесенка</button>
           </span>
           <span id="tone-soft-send-controls" style="display:none;align-items:center;gap:5px;flex-wrap:wrap">
             <select id="tone-soft-pulses" title="Тонов (мягкий режим: SOFT_DARK, линейное квантование)" onchange="renderImg()">
@@ -616,7 +618,7 @@ select,input[type=text],input[type=number],textarea{border-radius:var(--r-s)}
                   title="Сила мягкого импульса для симуляции превью. SOFT_DARK ≈ вдвое слабее TONE_DARK.">
               <span style="color:var(--fg2);white-space:nowrap">Сила имп.</span>
               <input type="range" id="tone-soft-str" min="1" max="40" value="18" step="1"
-                     style="width:70px" oninput="$('tone-soft-str-val').textContent=this.value;renderImg()">
+                     style="width:70px" oninput="$('tone-soft-str-val').textContent=this.value;saveToneStr();renderImg()">
               <span id="tone-soft-str-val" style="color:var(--yellow);font-variant-numeric:tabular-nums;min-width:18px">18</span>
             </span>
             <button class="btn acc" onclick="sendCanvasToneSoft()">↑ Отправить</button>
@@ -1381,11 +1383,32 @@ const FB_SIZE = DISP_W * DISP_H / 8; // 4736
 // portrait and shown landscape (rot 1); 400x300 is landscape natively. A
 // single-plane panel has no red buffer in the firmware: red goes first and is
 // staged with FAPPLY RED (see sendBWR).
+// toneStr = per-pulse darkening (%) of the TONE_DARK / SOFT_DARK LUTs on that
+// panel — the photo-tone sliders' defaults. 128x296 values are the tuned
+// originals; 400x300 soft was measured by eye (9), dark is 2x that (4 vs 2
+// subframes) until the ladder (sendToneLadder) says otherwise.
 const PANELS = {
-  '128x296': { key:'128x296', ctl:'SSD1675A', pw:128, ph:296, lw:296, lh:128, rot:1, redPlane:true  },
-  '400x300': { key:'400x300', ctl:'SSD1619A', pw:400, ph:300, lw:400, lh:300, rot:0, redPlane:false },
+  '128x296': { key:'128x296', ctl:'SSD1675A', pw:128, ph:296, lw:296, lh:128, rot:1, redPlane:true,  toneStr:{ dark:36, soft:18 } },
+  '400x300': { key:'400x300', ctl:'SSD1619A', pw:400, ph:300, lw:400, lh:300, rot:0, redPlane:false, toneStr:{ dark:18, soft:9  } },
 };
 let PANEL = PANELS['128x296'];
+
+// The tone-strength sliders are remembered per panel key; PANELS is the fallback.
+function loadToneStr(p) {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('toneStr:' + p.key) || 'null'); } catch {}
+  return { ...p.toneStr, ...(s || {}) };
+}
+function applyToneStr(p) {
+  const s = loadToneStr(p);
+  const set = (id, lbl, v) => { const e = $(id); if (!e) return; e.value = v; const l = $(lbl); if (l) l.textContent = v; };
+  set('tone-pulse-str', 'tone-pstr-val', s.dark);
+  set('tone-soft-str',  'tone-soft-str-val', s.soft);
+}
+function saveToneStr() {
+  const s = { dark: +$('tone-pulse-str').value, soft: +$('tone-soft-str').value };
+  try { localStorage.setItem('toneStr:' + PANEL.key, JSON.stringify(s)); } catch {}
+}
 const fbSize = () => PANEL.pw * PANEL.ph / 8;
 
 // Logical canvas pixel → [byte index, bit mask] in one controller plane.
@@ -1416,6 +1439,7 @@ function setPanel(key) {
     ap.style.width = '296px';
     ap.style.height = Math.round(296 * p.lh / p.lw) + 'px';
   }
+  applyToneStr(p);
   if (changed && typeof IE !== 'undefined' && IE.img) { IE.oc = null; renderImg(); }
 }
 
@@ -2701,19 +2725,52 @@ async function sendPhotoPassGuaranteed(frame, prev, label, retries=4) {
 async function sendCanvasTone() {
   if (!connected) { alert('Не подключено'); return; }
   if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
-
-  const maxPulse   = parseInt($('tone-pulses').value) || 8;
+  const maxPulse    = parseInt($('tone-pulses').value) || 8;
   const lightPasses = parseInt($('tone-light-passes')?.value ?? 0) || 0;
-  const levels     = canvasToToneLevels(maxPulse);
-  const usedMax    = levels.reduce((m, v) => Math.max(m, v), 0);
+  await sendToneLevels(canvasToToneLevels(maxPulse), maxPulse, lightPasses, 'canvas');
+}
+
+// Calibration ladder for the TONE_DARK slider. In the strong mode the slider is
+// the panel's physical per-pulse strength: canvasToToneLevels inverts it to
+// pick pulse counts and the preview re-applies the same number, so the preview
+// barely moves with the slider — only the panel does, and "match the preview"
+// cannot find the value. The ladder bypasses the model: maxPulse+1 bands, band
+// k gets exactly k pulses, digits stamped at full black. The band that reads
+// as 50 % grey gives str = 1 - 0.5^(1/N).
+async function sendToneLadder() {
+  if (!connected) { alert('Не подключено'); return; }
+  if (streamRunning) { alert('Уже идёт VSTREAM'); return; }
+  const maxPulse = parseInt($('tone-pulses').value) || 8;
+  const w = PANEL.lw, h = PANEL.lh, bands = maxPulse + 1;
+  const levels = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+    levels[y * w + x] = Math.min(maxPulse, Math.floor(x * bands / w));
+  // Digits: black (all pulses) on the light half, white (no pulses) on the dark
+  // half; the size follows the band width so two-digit labels do not collide.
+  const lc = document.createElement('canvas'); lc.width = w; lc.height = h;
+  const lx = lc.getContext('2d');
+  const fs = Math.max(8, Math.min(Math.round(h / 10),
+                                  Math.floor((w / bands) / (String(maxPulse).length * 0.7))));
+  for (let k = 0; k < bands; k++)
+    crispText(lx, String(k), Math.round((k + 0.5) * w / bands), h - 4, fs, { align:'center' });
+  const d = lx.getImageData(0, 0, w, h).data;
+  for (let i = 0; i < w * h; i++) if (d[i * 4 + 3] >= 128)
+    levels[i] = levels[i] > maxPulse / 2 ? 0 : maxPulse;
+  const table = [2, 3, 4, 5, 6, 8, 10, 12, 16].filter(n => n <= maxPulse)
+    .map(n => `${n}→${Math.round(100 * (1 - Math.pow(0.5, 1 / n)))}`).join(' · ');
+  logI(`Лесенка: полосы 0..${maxPulse} импульсов TONE_DARK, без модели. Найди полосу, которая выглядит как 50 % серый (ровно между белым и чёрным) — её номер N даёт «Сила имп.»: ${table}. Если последняя полоса не чёрная — бери 16 тонов.`);
+  await sendToneLevels(levels, maxPulse, 0, 'лесенка');
+}
+
+async function sendToneLevels(levels, maxPulse, lightPasses, desc) {
+  const usedMax = levels.reduce((m, v) => Math.max(m, v), 0);
   let prev = null;
 
   streamRunning = true;
   streamStop = false;
   vsReset();
 
-  logI(`Отправляю canvas тонами: ${maxPulse} тёмных + ${lightPasses} белых импульсов, max=${usedMax}`);
-  if (!PANEL.redPlane) logI(`  ${PANEL.ctl}: отклик на импульс не калиброван — подбирай «Сила имп.» по результату`);
+  logI(`Отправляю ${desc} тонами: ${maxPulse} тёмных + ${lightPasses} белых импульсов, max=${usedMax}, сила ${$('tone-pulse-str').value} %`);
 
   try {
     await sendBytes(new TextEncoder().encode('HOST:1\n'));
@@ -2791,9 +2848,9 @@ async function sendCanvasTone() {
       }
 
       await vsDrain(20000);
-      logI('canvas отправлен тонами (тёмные + белая компенсация)');
+      logI(`${desc} отправлен тонами (тёмные + белая компенсация)`);
     } else {
-      logI('canvas отправлен тонами');
+      logI(`${desc} отправлен тонами`);
     }
   } catch (e) {
     if (e.message !== 'stopped') logE('Tone send: ' + e.message);
