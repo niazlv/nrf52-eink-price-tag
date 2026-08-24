@@ -5823,10 +5823,30 @@ async function startOtaUpdate() {
   $('dfu-prog-text').textContent = 'Скачивание…';
 
   try {
-    const resp = await fetch(url);
+    // no-store like the manifest above: /firmware/ carries no Cache-Control, so
+    // the browser is free to reuse a heuristically-fresh copy of the previous
+    // image. That stale copy uploads cleanly and hashes fine against itself,
+    // leaving the tag on the old firmware with no error anywhere.
+    const resp = await fetch(url, { cache: 'no-store' });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const blob = await resp.blob();
-    dfuFirmwareData = new Uint8Array(await blob.arrayBuffer());
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+
+    // Trust the manifest, not the download: size and SHA-256 must match the
+    // entry we decided to install, or we are about to flash something else.
+    if (v.size && bytes.length !== v.size) {
+      throw new Error(`размер ${bytes.length} B ≠ ${v.size} B из манифеста — образ устарел или обрезан`);
+    }
+    if (v.sha256) {
+      const dig = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      if (dig !== String(v.sha256).toLowerCase()) {
+        throw new Error(`SHA-256 ${dig.slice(0, 12)}… ≠ ${String(v.sha256).slice(0, 12)}… из манифеста — скачался не тот образ`);
+      }
+      dfuLog('✓ SHA-256 совпал с манифестом', 'ok');
+    }
+
+    dfuFirmwareData = bytes;
     dfuFileName = v.file;
     $('dfu-file-info').textContent = `${dfuFileName} — ${dfuFirmwareData.length} B (${(dfuFirmwareData.length/1024).toFixed(1)} KB) · с сервера`;
     dfuLog(`✓ Скачано: ${dfuFirmwareData.length} байт`, 'ok');
