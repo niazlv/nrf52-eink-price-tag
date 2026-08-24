@@ -609,7 +609,10 @@ static void cmd_update(char *args)
 {
     if (!host_mode) ble_printf("updating...\r\n");
     int64_t t0 = k_uptime_get();
-    display_manager_force_update();
+    /* A full cycle, not "a redraw of whatever kind the screensaver felt like":
+     * this is the command a host reaches for when the panel looks wrong, and a
+     * partial refresh cannot fix ghosting or a stale red plane. */
+    display_manager_request_full_update();
     int32_t elapsed = (int32_t)(k_uptime_get() - t0);
     if (host_mode) {
         ble_printf("TELE:full time=%dms lut=%s\r\n",

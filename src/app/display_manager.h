@@ -84,8 +84,23 @@ void display_manager_clear(void);
 
 /**
  * @brief Force a display update loop (async or blocking depending on impl)
+ *
+ * Redraws the current screen, but does NOT decide how: with the screensaver
+ * running it only wakes the screensaver thread, and that thread refreshes
+ * partially unless its own schedule is due a full cycle. Use it for redraws
+ * that follow a small change (a new minute, a rotation).
  */
 void display_manager_force_update(void);
+
+/**
+ * @brief Redraw now, as a FULL refresh, whatever the screensaver schedule says
+ *
+ * The partial waveforms drive only the B/W plane and leave every pixel whose
+ * red-RAM bit is set untouched, so a panel that has drifted (ghosting after a
+ * long-lived screen, a stale red plane) cannot be recovered by any number of
+ * partial redraws. This is the "clean it up now" path behind UPDATE/APPLY.
+ */
+void display_manager_request_full_update(void);
 
 /**
  * @brief Force a partial (fast) display update (full HV cycle, ~700ms overhead)

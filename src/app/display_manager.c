@@ -63,6 +63,21 @@ static int stream_partial_count = 0;
 static int static_saver_partials_since_full = 0;
 /* Uptime of the last full refresh; 0 = none yet, so the first frame is full. */
 static int64_t static_saver_last_full_ms = 0;
+/* Set by display_manager_request_full_update(), consumed by the next status
+ * frame the screensaver actually draws.
+ *
+ * Neither trigger above can serve a host asking for a clean panel NOW, and one
+ * has to: a partial refresh drives the B/W plane only, and every partial
+ * waveform leaves LUT2/LUT3 at zero, so any pixel whose red-RAM bit is set gets
+ * no drive at all and keeps whatever it physically was. Ghosting like that —
+ * a screen that sat for a long time, a red plane left over from another
+ * screen — is invisible to the partial path no matter how often it runs, and
+ * only a full cycle rewrites both planes. UPDATE/APPLY is how a host asks.
+ *
+ * Written by the BLE RX / mesh threads, read and cleared by the screensaver
+ * thread under display_lock, after the frame is committed to — a status frame
+ * that gives up on the lock must leave the request standing. */
+static bool full_refresh_requested = false;
 
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
@@ -399,8 +414,8 @@ static int maintenance_countdown_static(int64_t last_full_ms, int64_t now_ms,
                                         int interval_min, int partials_done,
                                         int max_partials)
 {
-    if (last_full_ms == 0) {
-        return 0;   /* nothing drawn yet: the next frame is the full one */
+    if (last_full_ms == 0 || full_refresh_requested) {
+        return 0;   /* nothing drawn yet, or a host asked: next frame is full */
     }
 
     int64_t elapsed_min = (now_ms - last_full_ms) / (60 * 1000);
@@ -942,19 +957,24 @@ void display_manager_update_status(void) {
 
     if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC) {
         display_screens_render_status_dynamic(&model);
+        full_refresh_requested = false;   /* the stream has its own maintenance */
         display_manager_update_partial();
         last_dur = (int32_t)(k_uptime_get() - start_render);
         dyn_frame_ctr++;
         send_tele = tele_enabled && (dyn_frame_ctr % 10 == 0);
     } else {
         render_scene(scene_status_static, &model);
-        /* Whichever comes first: the schedule, or the ghosting ceiling.
-         * See STATIC_SAVER_FULL_INTERVAL for why it takes both. */
+        /* Whichever comes first: an explicit request, the schedule, or the
+         * ghosting ceiling. See STATIC_SAVER_FULL_INTERVAL for why it takes
+         * both of the latter, and full_refresh_requested for why neither is
+         * enough on its own. */
         bool full_refresh =
+            full_refresh_requested ||
             (static_saver_last_full_ms == 0) ||
             ((start_render - static_saver_last_full_ms) >=
              (int64_t)STATIC_SAVER_FULL_INTERVAL * 60 * 1000) ||
             (static_saver_partials_since_full >= STATIC_SAVER_MAX_PARTIALS);
+        full_refresh_requested = false;
         if (full_refresh) {
             static_saver_last_full_ms = start_render;
             static_saver_partials_since_full = 0;
@@ -1238,6 +1258,16 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
 }
 
 K_THREAD_DEFINE(screensaver_tid, 1536, screensaver_thread, NULL, NULL, NULL, 7, 0, 0);
+
+/* UPDATE/APPLY: refresh fully, now. With the screensaver off this is already
+ * what force_update does; with it on, the screensaver thread owns the panel and
+ * decides the waveform, so the request has to travel with the wake-up. */
+void display_manager_request_full_update(void) {
+    if (screensaver_enabled) {
+        full_refresh_requested = true;
+    }
+    display_manager_force_update();
+}
 
 void display_manager_force_update(void) {
     if (screensaver_enabled) {

@@ -493,8 +493,13 @@ void ssd1675a_display_buffer_fast(const uint8_t *bw_buffer)
     if (!bus_ready()) {
         return;
     }
-    // Skipping the red plane halves the transfer time. Partial LUTs disable the
-    // red phase, so whatever is left in red RAM is ignored.
+    // Skipping the red plane halves the transfer time, but it is NOT free:
+    // display mode 1 picks the LUT row from {red_bit, bw_bit} of the new frame,
+    // and every partial table leaves LUT2/LUT3 at zero. A pixel whose red-RAM
+    // bit is still set from an earlier frame therefore gets no drive at all and
+    // holds whatever it physically was — stale red RAM freezes pixels, it is not
+    // ignored. Only a full refresh (ssd1675a_display_buffer) rewrites both
+    // planes and clears that.
     write_plane(0x24, bw_buffer);
 }
 
