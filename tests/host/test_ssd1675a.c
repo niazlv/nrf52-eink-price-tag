@@ -83,6 +83,18 @@ static long find_cmd(uint8_t cmd, size_t from)
     return -1;
 }
 
+/* Same, but the last occurrence — for checking what a sequence left behind. */
+static long find_last_cmd(uint8_t cmd)
+{
+    long at = -1;
+    for (size_t i = 0; i < frame_count && i < MAX_FRAMES; i++) {
+        if (!frames[i].is_data && frames[i].byte == cmd) {
+            at = (long)i;
+        }
+    }
+    return at;
+}
+
 /* Check that the `n` frames after index `at` are data bytes matching `expect`
  * (or all `fill` when expect is NULL). */
 static int data_after(long at, const uint8_t *expect, uint8_t fill, size_t n)
@@ -299,6 +311,51 @@ static void test_vcom_override(void)
     ssd1675a_set_vcom_register(SSD1675A_VCOM_DEFAULT);
 }
 
+/* The probe narrows the RAM window to its own 50x240 scratch area and scribbles
+ * over the BW plane. It must leave the panel's full window behind: a plain plane
+ * write only rewinds the RAM pointer and trusts the window, so a narrow one left
+ * in place would stream the next frame in at the wrong stride. */
+static void test_probe_restores_ram_window(void)
+{
+    ssd1675a_ram_probe_t pr;
+
+    capture_reset();
+    ssd1675a_probe_ram(240, &pr);
+
+    /* the window the probe writes through: 50 bytes wide, 240 gate lines */
+    static const uint8_t probe_x[] = { 0x00, 49 };
+    static const uint8_t probe_y[] = { 0x00, 0x00, 239, 0x00 };
+    long narrow_x = find_cmd(0x44, 0);
+    long narrow_y = find_cmd(0x45, 0);
+    T_ASSERT(data_after(narrow_x, probe_x, 0, sizeof(probe_x)));
+    T_ASSERT(data_after(narrow_y, probe_y, 0, sizeof(probe_y)));
+
+    /* ...and the last word on the window is the panel's own, full size */
+    static const uint8_t full_x[] = { 0x00, 0x0F };             /* 128/8 - 1 */
+    static const uint8_t full_y[] = { 0x00, 0x00, 0x27, 0x01 }; /* 0..295 */
+    long last_x = find_last_cmd(0x44);
+    long last_y = find_last_cmd(0x45);
+    T_ASSERT(last_x > narrow_x);
+    T_ASSERT(last_y > narrow_y);
+    T_ASSERT(data_after(last_x, full_x, 0, sizeof(full_x)));
+    T_ASSERT(data_after(last_y, full_y, 0, sizeof(full_y)));
+
+    /* both restores land after the plane write, so they cannot be the ones the
+     * probe itself streamed through */
+    long plane_at = find_cmd(0x24, 0);
+    T_ASSERT(plane_at > narrow_x);
+    T_ASSERT(last_x > plane_at);
+    T_ASSERT(last_y > plane_at);
+
+    /* this fake has no read path: every byte reads back 0xFF, which the probe
+     * has to report as all_ff rather than as data. A handful of the LFSR bytes
+     * are 0xFF too, so `match` is small but not zero — what matters is that it
+     * falls short of the full match detect_panel needs to call the chip large. */
+    T_ASSERT(pr.all_ff);
+    T_ASSERT_EQ(pr.bytes, 240 * 50);
+    T_ASSERT(pr.match < pr.bytes);
+}
+
 int main(void)
 {
     T_RUN(test_dead_port_makes_noops);
@@ -309,5 +366,6 @@ int main(void)
     T_RUN(test_busy_timeout);
     T_RUN(test_sleep_and_partial_reinit);
     T_RUN(test_vcom_override);
+    T_RUN(test_probe_restores_ram_window);
     return t_report("ssd1675a");
 }
