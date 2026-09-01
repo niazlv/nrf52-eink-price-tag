@@ -55,9 +55,22 @@ static int stream_partial_count = 0;
  * guard for the same reason (STREAM_REFRESH_INTERVAL).
  *
  * On an idle tag the minute tick hits the clock first and the ceiling never
- * binds; under host traffic the ceiling takes over. */
-#define STATIC_SAVER_FULL_INTERVAL 20        /* minutes between full refreshes */
-#define STATIC_SAVER_MAX_PARTIALS  60        /* ceiling on consecutive partials */
+ * binds; under host traffic the ceiling takes over.
+ *
+ * The interval is a day, not the twenty minutes it used to be. At three full
+ * cycles an hour the maintenance alone cost ~5.6 mAh/day (72 x 32 mA x 8.7 s)
+ * out of a measured 13.6 mAh/day — more than a third of the tag's whole budget
+ * — and it bought little: what made long partial runs look bad was the red
+ * plane coming up undefined after every power-down, and the driver now puts
+ * that back to zero on the wake-up itself.
+ *
+ * It stays on the clock rather than going away because the red particles do
+ * drift under the partial waveforms even though the partial path never writes
+ * the red plane, so the panel still needs a cycle that drives and re-fixes red
+ * now and then — that is what the red phases of the default table (71% of its
+ * time) are there for. Once a day costs 0.08 mAh. */
+#define STATIC_SAVER_FULL_INTERVAL 1440      /* minutes between full refreshes (24 h) */
+#define STATIC_SAVER_MAX_PARTIALS  1440      /* ceiling on consecutive partials */
 #define STATIC_SAVER_PARTIAL_MODE 0
 /* Partial refreshes drawn since the last full one; reset by every full one. */
 static int static_saver_partials_since_full = 0;
