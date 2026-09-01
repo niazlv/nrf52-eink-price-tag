@@ -95,21 +95,86 @@ static bool full_refresh_requested = false;
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
 /* Rough current model for the on-screen mAh estimator. This is not a coulomb
- * counter; tune these values after measuring the board with the actual panel,
- * regulator, LEDs and BLE settings.
+ * counter — there is no shunt on the board — so the figure is only ever as good
+ * as the numbers below, and the first set of them was badly out.
+ *
+ * Recalibrated 2026-09-01 against a fielded tag: it claimed 912 mAh over 67
+ * days from a 370 mAh / 1.37 Wh cell that still measured 3.7 V on a meter,
+ * i.e. it had drawn about half the pack. The old constants over-reported by
+ * roughly 5x. The values below come from the 2026-08-23 power audit rather
+ * than from a meter, so treat them as a much better estimate, not as truth;
+ * a PPK2 run is what would make them real.
  */
-#define POWER_BASE_SLEEP_UA             80
-#define POWER_BLE_ADV_IDLE_UA           40   /* 2-2.5 s interval */
-#define POWER_BLE_ADV_FAST_UA          900
+#define POWER_BASE_SLEEP_UA              5   /* System ON idle, RAM retention + RTC, DCDC on */
+#define POWER_BLE_ADV_IDLE_UA           10   /* 2-2.5 s interval */
+#define POWER_BLE_ADV_FAST_UA          180   /* 100-150 ms: same model, ~18x the duty */
 /* Mesh observer scan: duty × RX current. Keep in step with SCAN_WINDOW_MS /
- * SCAN_INTERVAL_MS in mesh.c (30/1000 = 3% of ~8 mA). */
-#define POWER_MESH_SCAN_UA             250
+ * SCAN_INTERVAL_MS in mesh.c (30/1000 = 3% of RX ~5.4 mA on DCDC). */
+#define POWER_MESH_SCAN_UA             160
+/* The four below still have no better source than the original guess. They only
+ * run while a phone is connected or an animation plays — minutes a day against
+ * the panel and idle terms — so their error barely moves the total. */
 #define POWER_BLE_CONN_IDLE_UA         900
 #define POWER_BLE_STREAM_UA           4500
 #define POWER_DISPLAY_STANDBY_UA       400
 #define POWER_DISPLAY_HV_HOLD_UA      8000
-#define POWER_DISPLAY_PARTIAL_UA     25000
-#define POWER_DISPLAY_FULL_UA        32000
+/* Panel draws ~3-8 mA while a refresh runs and the MCU k_sleeps through the
+ * BUSY wait, so the average over the window is a few mA — not the tens of mA
+ * the first model assumed. */
+#define POWER_DISPLAY_PARTIAL_UA      5000
+#define POWER_DISPLAY_FULL_UA         6000
+
+/* Representative durations, used only to rebuild a historical total (below).
+ * A partial is dominated by the ~600 ms cold HV charge; a full cycle is the
+ * default waveform's own ~8.7 s. */
+#define POWER_PARTIAL_MS               700
+#define POWER_FULL_MS                 8700
+
+/* Revision of the model above. Bump it whenever the constants change enough to
+ * make an already-accumulated total meaningless: the next boot then re-estimates
+ * that total from the two things the record does store honestly — cumulative
+ * uptime and the full-refresh count — instead of carrying a figure built with
+ * numbers we no longer believe. */
+#define POWER_MODEL_VERSION              2
+
+/* Rebuild what the model above would have accumulated over the life the record
+ * actually remembers. Only two of its numbers are trustworthy — cumulative
+ * uptime and the count of full refreshes — so the rest is reconstructed: the
+ * idle floor ran for the whole time, each counted refresh cost one full cycle,
+ * and every other minute of uptime cost one partial tick.
+ *
+ * Where that is wrong: the record does not say how long the tag sat in picture
+ * mode (no ticks at all) or with mesh RX on (a much higher floor), so a picture
+ * tag comes out over-estimated and a mesh one under-estimated. Both errors are
+ * far smaller than the ~5x this replaces.
+ *
+ * Units: the accumulator counts µAh×1000, i.e. µA × ms / 3600. */
+static uint64_t power_estimate_from_history(uint64_t uptime_sec, uint32_t fulls)
+{
+    const uint64_t idle_ua = POWER_BASE_SLEEP_UA + POWER_BLE_ADV_IDLE_UA;
+    uint64_t minutes = uptime_sec / 60U;
+    uint64_t partials = (minutes > fulls) ? (minutes - fulls) : 0U;
+
+    uint64_t total = (idle_ua * uptime_sec * 1000U) / 3600U;
+    total += ((uint64_t)POWER_DISPLAY_FULL_UA * POWER_FULL_MS / 3600U) * fulls;
+    total += ((uint64_t)POWER_DISPLAY_PARTIAL_UA * POWER_PARTIAL_MS / 3600U) * partials;
+    return total;
+}
+
+/* Call once at boot, AFTER persist_post_settings() — before it, the flash
+ * restore would overwrite whatever we adopt. */
+void display_manager_recalibrate_energy(void)
+{
+    uint64_t before = persist_get_energy_uah_x1000();
+    uint64_t rebuilt = power_estimate_from_history(persist_uptime_sec(),
+                                                   persist_refreshes_total());
+
+    if (persist_adopt_energy_model(POWER_MODEL_VERSION, rebuilt)) {
+        LOG_INF("energy total re-estimated: %u -> %u mAh (model v%d)",
+                (unsigned int)(before / 1000000U),
+                (unsigned int)(rebuilt / 1000000U), POWER_MODEL_VERSION);
+    }
+}
 
 /* The cumulative energy total lives in persist (retained RAM + flash) so it
  * survives a DFU reboot just like uptime; only the rate model and the

@@ -34,7 +34,8 @@ struct persist_data {
 	uint32_t flags;             /* PERSIST_F_* — meaningful only in the flash copy */
 	uint32_t _pad0;             /* (was reserved[0]) keeps energy 8-byte aligned */
 	uint64_t energy_uah_x1000;  /* cumulative power estimate (µAh×1000), all boots */
-	uint32_t reserved[4];
+	uint32_t energy_model_ver;  /* (was reserved[0]) power-model revision behind the total */
+	uint32_t reserved[3];
 };
 
 /* Layout is frozen for OTA compatibility: an old firmware writes this blob into
@@ -181,6 +182,25 @@ void persist_tick(void)
 		refresh_live_locked();
 		reseal_locked();
 	}
+}
+
+/* One-time adoption of a re-estimated energy total after the power model was
+ * recalibrated. An old blob has this field zeroed, so it migrates on the first
+ * boot of the new firmware and never again. The caller owns the estimate — only
+ * it knows the model — and we simply record which revision produced it. */
+bool persist_adopt_energy_model(uint32_t ver, uint64_t uah_x1000)
+{
+	bool adopted = false;
+
+	K_SPINLOCK(&lock) {
+		if (rd->energy_model_ver < ver) {
+			rd->energy_uah_x1000 = uah_x1000;
+			rd->energy_model_ver = ver;
+			reseal_locked();
+			adopted = true;
+		}
+	}
+	return adopted;
 }
 
 void persist_add_refresh(void)

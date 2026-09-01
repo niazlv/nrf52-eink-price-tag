@@ -42,6 +42,11 @@ uint64_t persist_uptime_sec(void);
 void persist_add_energy_uah_x1000(uint64_t delta);
 uint64_t persist_get_energy_uah_x1000(void);
 
+/* Replace the persisted energy total with a re-estimate, once, when the record
+ * was written by an older power model than @p ver. Returns true if it did.
+ * Call it after persist_post_settings(), or the flash restore undoes it. */
+bool persist_adopt_energy_model(uint32_t ver, uint64_t uah_x1000);
+
 /* Write the current stats to flash as a FRESH (unconsumed) snapshot. RARE —
  * called on low-battery/shutdown and right before a DFU reboot, when the live
  * RAM copy may be about to be lost. Keeps flash wear minimal. */

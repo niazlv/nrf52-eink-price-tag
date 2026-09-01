@@ -92,6 +92,9 @@ int main(void)
     // stats — restore from flash if RAM was lost, adopt saved clock, count boot.
     persist_post_settings();
 
+    /* After the restore above, so the adopted total is not overwritten by it. */
+    display_manager_recalibrate_energy();
+
     // 5. Draw the first screen; the display thread takes over from here.
     display_manager_update_status();
 

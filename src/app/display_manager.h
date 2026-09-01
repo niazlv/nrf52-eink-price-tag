@@ -103,6 +103,15 @@ void display_manager_force_update(void);
 void display_manager_request_full_update(void);
 
 /**
+ * @brief Re-estimate the persisted energy total after a power-model change
+ *
+ * A no-op unless the stored record predates the current model revision. Must be
+ * called after persist_post_settings(): the flash restore there would otherwise
+ * overwrite the adopted value.
+ */
+void display_manager_recalibrate_energy(void);
+
+/**
  * @brief Force a partial (fast) display update (full HV cycle, ~700ms overhead)
  */
 void display_manager_update_partial(void);
