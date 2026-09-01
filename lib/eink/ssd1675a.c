@@ -36,6 +36,15 @@ static bool vcom_from_otp;          /* skip the 0x2C write, keep the factory VCO
 static bool controller_sleeping = true;
 static bool port_ready;
 
+/* Set whenever the controller loses its RAM — a power cycle, or the hard reset
+ * that wakes it from sleep. It matters because a partial refresh writes only
+ * the B/W plane: display mode 1 picks the waveform row from {red_bit, bw_bit}
+ * of the new frame, and every partial table leaves LUT2/LUT3 at zero, so a
+ * pixel whose red bit came up set gets no drive at all and holds whatever it
+ * physically was. Undefined red RAM therefore freezes a random scatter of
+ * pixels on every partial until the next full refresh rewrites both planes. */
+static bool ram_undefined = true;
+
 /* Runtime geometry. The compile-time values are only the default; an
  * application that identifies the panel at boot (ssd1675a_probe_ram)
  * overrides them before the first init. */
@@ -179,6 +188,9 @@ static void set_ram_pointer(int x, int y)
     send_data((y >> 8) & 0xFF);
 }
 
+/* Defined with the RAM-plane helpers below; needed by ssd1675a_init_partial(). */
+static void write_plane(uint8_t ram_cmd, const uint8_t *buffer);
+
 static void configure_registers(void)
 {
     send_cmd(0x74); // Set analog block control
@@ -243,6 +255,7 @@ static void reset_controller(void)
     send_cmd(0x12); // SW reset
     ssd1675a_wait_busy();
     controller_sleeping = false;
+    ram_undefined = true;
 }
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -283,6 +296,16 @@ bool ssd1675a_init_partial(void)
 
     // Re-configure registers (may be lost after sleep or the reset above)
     configure_registers();
+
+    /* Whatever brought us here lost the RAM, and the caller is about to write
+     * the B/W plane alone. Put the red plane back to a known zero first, or
+     * the partial that follows freezes every pixel whose red bit powered up
+     * set. Costs one plane write (~7 ms) against the ~600 ms this wake-up
+     * already spends charging the HV rails. */
+    if (ram_undefined) {
+        write_plane(0x26, NULL);
+    }
+
     controller_sleeping = false;
     return true;
 }
@@ -308,6 +331,7 @@ void ssd1675a_power_off(void)
 {
     ssd1675a_port_power(false);
     controller_sleeping = true;
+    ram_undefined = true;
 }
 
 void ssd1675a_sleep(void)
@@ -476,6 +500,9 @@ static void write_plane(uint8_t ram_cmd, const uint8_t *buffer)
     send_cmd(ram_cmd);
     for (int i = 0; i < n; i++) {
         send_data(buffer ? buffer[i] : 0x00);
+    }
+    if (ram_cmd == 0x26) {
+        ram_undefined = false;
     }
 }
 

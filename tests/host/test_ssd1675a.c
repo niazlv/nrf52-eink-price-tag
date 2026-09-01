@@ -356,6 +356,40 @@ static void test_probe_restores_ram_window(void)
     T_ASSERT(pr.match < pr.bytes);
 }
 
+/* A wake-up after the rail was cut hard-resets the controller, and that leaves
+ * its RAM undefined. The partial path writes only the B/W plane, so the driver
+ * has to put the red plane back to a known zero itself — otherwise the partial
+ * waveform (LUT2/LUT3 all zeros) gives every pixel whose red bit powered up set
+ * no drive at all and freezes it. */
+static void test_partial_wake_clears_red_ram(void)
+{
+    static uint8_t bw[SSD1675A_RAM_BYTES];
+    memset(bw, 0xA5, sizeof(bw));
+
+    ssd1675a_sleep();
+    ssd1675a_power_off();
+
+    capture_reset();
+    T_ASSERT(ssd1675a_init_partial());
+    T_ASSERT(find_cmd(0x12, 0) >= 0);          /* it did hard-reset */
+    long red_at = find_cmd(0x26, 0);
+    T_ASSERT(red_at >= 0);
+    T_ASSERT(data_after(red_at, NULL, 0x00, SSD1675A_RAM_BYTES));
+
+    /* the B/W-only partial that follows leaves the red plane alone */
+    capture_reset();
+    ssd1675a_display_buffer_fast(bw);
+    T_ASSERT(find_cmd(0x26, 0) < 0);
+    T_ASSERT(data_after(find_cmd(0x24, 0), bw, 0, SSD1675A_RAM_BYTES));
+
+    /* and a wake-up on an already-awake panel has nothing to put back: no
+     * reset, so RAM is still what the driver last wrote */
+    capture_reset();
+    T_ASSERT(ssd1675a_init_partial());
+    T_ASSERT(find_cmd(0x12, 0) < 0);
+    T_ASSERT(find_cmd(0x26, 0) < 0);
+}
+
 int main(void)
 {
     T_RUN(test_dead_port_makes_noops);
@@ -367,5 +401,6 @@ int main(void)
     T_RUN(test_sleep_and_partial_reinit);
     T_RUN(test_vcom_override);
     T_RUN(test_probe_restores_ram_window);
+    T_RUN(test_partial_wake_clears_red_ram);
     return t_report("ssd1675a");
 }
