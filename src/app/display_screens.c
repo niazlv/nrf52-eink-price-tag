@@ -145,20 +145,16 @@ static void render_stats(const display_status_model_t *model, int x, int y, int 
     draw_text(x, y + 10 * scale, power_str, scale);
 }
 
-/* Caption under the icon. With a declared pack it is the charge the pack can
- * still give by the tag's own accounting (declared minus drawn since install);
- * without one, the voltage — the only reading there is, and a saturated one
- * above 3.6 V. The icon fill is battery_percent(): the same accounting,
- * capped by the chemistry curve where the ADC can see it. */
+/* Caption under the icon: the voltage, always. It is a measurement — the one
+ * number here that does not depend on the current model, the declared capacity
+ * or someone having pressed "battery replaced" — so it is worth the space even
+ * saturated above 3.6 V. The mAh accounting has its own field on the stats
+ * line (mAh:drawn/declared) and does not need repeating here. The icon fill
+ * stays battery_percent(): the accounting, capped by the chemistry curve
+ * wherever the ADC can actually see it. */
 static void battery_caption(const display_status_model_t *model, char *out, size_t n)
 {
-    if (model->batt_cap_mah > 0) {
-        uint32_t left = (model->batt_used_mah >= model->batt_cap_mah)
-                        ? 0 : model->batt_cap_mah - model->batt_used_mah;
-        snprintf(out, n, "%umAh", (unsigned int)left);
-    } else {
-        snprintf(out, n, "%dmV", model->battery_mv);
-    }
+    snprintf(out, n, "%dmV", model->battery_mv);
 }
 
 static void render_battery(const display_status_model_t *model, int x, int y, int scale)
