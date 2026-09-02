@@ -91,6 +91,7 @@
 
 /* ── Radio / power (0x80–0x8F) ──────────────────────────────────────────── */
 #define OP_MESHRX    0x80u   /* get/set mesh receive (observer scan) on/off */
+#define OP_PWR       0x81u   /* get/set the sleep profile: redraw schedule, adv interval */
 
 /* 0x80–0xFF reserved for mesh-control opcodes (DISCOVER/PRESENCE/ACK, Phase 2). */
 

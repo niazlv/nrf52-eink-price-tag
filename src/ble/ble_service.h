@@ -58,6 +58,14 @@ void ble_service_set_streaming_mode(bool enable);
 bool ble_service_get_streaming_mode(void);
 
 /**
+ * @brief Set the idle (not streaming, not connected) advertising interval
+ *
+ * 1..10 s, applied immediately if idle advertising is running, otherwise on
+ * the next start. The window keeps the 25% spread of the 2.0-2.5 s default.
+ */
+void ble_service_set_idle_adv_interval_s(uint8_t seconds);
+
+/**
  * @brief Current runtime advertising/GAP name.
  */
 const char *ble_service_get_device_name(void);

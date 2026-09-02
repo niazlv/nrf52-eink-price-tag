@@ -44,6 +44,7 @@ target_sources(app PRIVATE
   src/app/factory.c
   src/app/secauth.c
   src/app/mesh.c
+  src/app/power_profile.c
   src/ble/ble_service.c
 )
 

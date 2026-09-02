@@ -50,7 +50,8 @@ static char custom_name[CONFIG_BT_DEVICE_NAME_MAX + 1];
 
 static const struct bt_le_adv_param adv_param_fast =
 	BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONN, ADV_FAST_INT_MIN, ADV_FAST_INT_MAX, NULL);
-static const struct bt_le_adv_param adv_param_idle =
+/* Not const: the sleep profile (PWR) sets the idle window at run time. */
+static struct bt_le_adv_param adv_param_idle =
 	BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONN, ADV_IDLE_INT_MIN, ADV_IDLE_INT_MAX, NULL);
 /* Non-connectable, non-scannable beacon for mesh PDUs. opts=0 → no CONN bit, so
  * it never forms a connection and is legal to run even while connected to the
@@ -219,6 +220,35 @@ static void adv_work_handler(struct k_work *work)
 
 	adv_running = true;
 	LOG_INF("Advertising %s as %s", ble_streaming_mode ? "fast" : "idle", device_name);
+}
+
+void ble_service_set_idle_adv_interval_s(uint8_t seconds)
+{
+	if (seconds < 1) {
+		seconds = 1;
+	}
+	if (seconds > 10) {
+		seconds = 10;
+	}
+	/* 0.625 ms units; 1 s = 1600. Keep the 25% window the 2.0-2.5 s default
+	 * has had, and stay under the spec ceiling of 10.24 s (0x4000). */
+	uint32_t min = (uint32_t)seconds * 1600U;
+	uint32_t max = min + min / 4U;
+
+	if (max > 0x4000U) {
+		max = 0x4000U;
+	}
+	if (adv_param_idle.interval_min == min) {
+		return;
+	}
+	adv_param_idle.interval_min = min;
+	adv_param_idle.interval_max = max;
+
+	/* Idle advertising is what is running right now: restart it so the new
+	 * window takes effect instead of waiting for the next connection cycle. */
+	if (adv_running && !ble_streaming_mode) {
+		advertising_start();
+	}
 }
 
 static void request_phy_2m(struct bt_conn *conn)

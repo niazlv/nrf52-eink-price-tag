@@ -1340,15 +1340,42 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
       </section>
 
       <section class="card m6">
-        <div class="ctitle">Mesh-приём <span class="sub">энергосбережение</span></div>
+        <div class="ctitle">Энергосбережение</div>
         <div class="kv" style="margin-bottom:10px">
-          <span>Сейчас</span><span id="sys-meshrx" style="color:var(--fg2)">—</span>
+          <span>Mesh-приём</span><span id="sys-meshrx" style="color:var(--fg2)">—</span>
         </div>
         <div class="seg" style="display:flex">
           <button class="btn ok" onclick="setMeshRx(true)">Включить</button>
           <button class="btn bad" onclick="setMeshRx(false)">Выключить</button>
         </div>
-        <div class="hint">Приём широковещательных команд от соседних ценников (BCAST). <b>Выключение экономит ~0.2–0.3 мА</b> — батарея живёт в разы дольше, но ценник перестаёт слышать и ретранслировать mesh-команды: включить обратно можно только здесь, по прямому подключению. Нужна прошивка v3.4.1+.</div>
+        <div class="hint">Приём широковещательных команд от соседних ценников (BCAST). <b>Выключение экономит ~0.16 мА</b> — в режиме часов это втрое больше всего остального потребления. Ценник перестаёт слышать и ретранслировать mesh-команды; включить обратно можно только здесь, по прямому подключению. Нужна прошивка v3.4.1+.</div>
+
+        <div class="kv" style="margin-top:14px;margin-bottom:6px">
+          <span>Шаблон сна</span><span id="sys-pwr" style="color:var(--fg2)">—</span>
+        </div>
+        <div class="brow">
+          <span class="muted">часы днём</span>
+          <select id="pwr-day" class="grow" title="Как часто перерисовывать часы днём"></select>
+          <span class="muted">ночью</span>
+          <select id="pwr-night" class="grow" title="Как часто перерисовывать часы ночью"></select>
+        </div>
+        <div class="brow" style="margin-top:6px">
+          <span class="muted">ночь с</span>
+          <select id="pwr-from" class="grow" title="Начало ночи по часам ценника"></select>
+          <span class="muted">до</span>
+          <select id="pwr-to" class="grow" title="Конец ночи по часам ценника"></select>
+        </div>
+        <div class="brow" style="margin-top:6px">
+          <span class="muted">реклама: часы</span>
+          <select id="pwr-advc" class="grow" title="Интервал рекламы в режиме часов"></select>
+          <span class="muted">картинка</span>
+          <select id="pwr-advp" class="grow" title="Интервал рекламы в режиме картинки"></select>
+        </div>
+        <div class="brow" style="margin-top:8px">
+          <button class="btn acc" onclick="applyPwr()">Применить</button>
+          <button class="btn ghost" onclick="resetPwr()" title="Вернуть значения по умолчанию">По умолчанию</button>
+        </div>
+        <div class="hint">Часы перерисовываются на границе интервала (при «раз в 5 мин» — в :00, :05, :10…), всё остальное время контроллер спит с выключенной панелью. Ночь считается по часам самого ценника. «Выкл» — перерисовка только по команде. Реклама — как часто ценник «светится» в эфире: реже = дольше ищется телефоном, но дешевле; картинке частая реклама ни к чему. Нужна прошивка v3.4.13+.</div>
       </section>
 
       <section class="card m7">
@@ -1974,6 +2001,8 @@ function onBleDisc() {
   // а старая прошивка на MESHRX вообще не ответит.
   const mrx = $('sys-meshrx');
   if (mrx) { mrx.textContent = '—'; mrx.style.color = 'var(--fg2)'; }
+  const pw = $('sys-pwr');
+  if (pw) { pw.textContent = '—'; pw.style.color = 'var(--fg2)'; }
   logI('Disconnected');
 }
 
@@ -1995,6 +2024,7 @@ function onNotify(ev) {
     }
     if (line.startsWith('NAME:')) parseName(line);
     if (line.startsWith('meshrx=')) parseMeshrx(line);
+    if (line.startsWith('PWR:')) parsePwr(line);
     if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -5212,6 +5242,7 @@ function requestSysinfo() {
     const el = $('sys-meshrx');
     if (connected && el && el.textContent === '—') send('MESHRX\n');
   }, 2500);
+  setTimeout(() => { if (connected) send('PWR\n'); }, 1400);
 }
 
 // ── Mesh-приём (MESHRX) ───────────────────────────────────────────
@@ -5231,6 +5262,53 @@ async function setMeshRx(on) {
   if (reply) logI('Mesh-приём: ' + reply.slice('meshrx='.length));
   else logE('MESHRX: нет ответа (прошивка старше v3.4.1? включена SEC-защита?)');
 }
+
+// ── Шаблон сна (PWR) ──────────────────────────────────────────────
+// Прошивка отвечает «PWR:day=1 night=5 from=23 to=7 advc=2 advp=5 night_now=0 next=123»
+// (next — секунд до ближайшей перерисовки по расписанию, -1 = не обновляется).
+const PWR_TICK_OPTS = [[1, 'каждую минуту'], [2, 'раз в 2 мин'], [5, 'раз в 5 мин'], [15, 'раз в 15 мин'], [0, 'выкл']];
+const PWR_ADV_OPTS  = [[2, '2 с'], [5, '5 с'], [10, '10 с']];
+const PWR_HOUR_OPTS = [...Array(24).keys()].map(h => [h, String(h).padStart(2, '0') + ':00']);
+const PWR_DEFAULTS  = { day: 1, night: 5, from: 23, to: 7, advc: 2, advp: 5 };
+
+// Заполняет список один раз, потом только выставляет значение; незнакомое
+// значение из прошивки (например day=30, заданное командой) добавляется как есть.
+function pwrFill(id, opts, val) {
+  const el = $(id); if (!el) return;
+  if (!el.options.length) for (const [v, t] of opts) el.append(new Option(t, v));
+  if (val === undefined || val === null || Number.isNaN(val)) return;
+  if (![...el.options].some(o => +o.value === +val)) el.append(new Option(String(val), val));
+  el.value = String(val);
+}
+function pwrSetAll(v) {
+  pwrFill('pwr-day', PWR_TICK_OPTS, v.day);   pwrFill('pwr-night', PWR_TICK_OPTS, v.night);
+  pwrFill('pwr-from', PWR_HOUR_OPTS, v.from); pwrFill('pwr-to', PWR_HOUR_OPTS, v.to);
+  pwrFill('pwr-advc', PWR_ADV_OPTS, v.advc);  pwrFill('pwr-advp', PWR_ADV_OPTS, v.advp);
+}
+function pwrTickText(m) { return m === 0 ? 'выкл' : m === 1 ? 'каждую минуту' : `раз в ${m} мин`; }
+function parsePwr(line) {
+  const kv = {};
+  for (const m of line.slice('PWR:'.length).matchAll(/(\w+)=(-?\d+)/g)) kv[m[1]] = +m[2];
+  pwrSetAll(kv);
+  const el = $('sys-pwr'); if (!el) return;
+  const next = kv.next >= 0
+    ? `след. через ${Math.floor(kv.next / 60)}:${String(kv.next % 60).padStart(2, '0')}`
+    : 'по расписанию не обновляется';
+  el.textContent = `${kv.night_now ? 'ночь' : 'день'} · ${pwrTickText(kv.night_now ? kv.night : kv.day)} · ${next}`;
+  el.style.color = 'var(--green)';
+}
+async function applyPwr() {
+  if (!connected) { alert('Не подключено'); return; }
+  const v = id => +$(id).value;
+  send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')}\n`);
+  const reply = await waitForLine(/^PWR:/, 4000);
+  if (reply) logI('Шаблон сна: ' + reply.slice('PWR:'.length));
+  else logE('PWR: нет ответа (прошивка старше v3.4.13?)');
+}
+function resetPwr() { pwrSetAll(PWR_DEFAULTS); applyPwr(); }
+// Списки живут в DOM выше этого скрипта, но заполняем их так же осторожно, как тост.
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => pwrSetAll(PWR_DEFAULTS));
+else pwrSetAll(PWR_DEFAULTS);
 
 // ── Имя ценника (NAME) ────────────────────────────────────────────
 // Прошивка отвечает «NAME:<полное имя в эфире>». Кастомное имя всегда

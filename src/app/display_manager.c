@@ -3,6 +3,7 @@
 #include "display_screens.h"
 #include "system_time.h"
 #include "persist.h"
+#include "power_profile.h"
 #include "mesh.h"
 #include "ble/ble_service.h"
 #include <zephyr/kernel.h>
@@ -316,8 +317,14 @@ static int power_estimate_idle_current_ua(void)
 
     if (ble_service_is_connected()) {
         ua += ble_streaming ? POWER_BLE_STREAM_UA : POWER_BLE_CONN_IDLE_UA;
+    } else if (ble_streaming) {
+        ua += POWER_BLE_ADV_FAST_UA;
     } else {
-        ua += ble_streaming ? POWER_BLE_ADV_FAST_UA : POWER_BLE_ADV_IDLE_UA;
+        /* POWER_BLE_ADV_IDLE_UA is the 2 s figure; the cost is per event, so
+         * it scales with whatever interval the sleep profile has in force. */
+        const struct power_profile *p = power_profile_get();
+        int adv_s = screensaver_enabled ? p->adv_clock_s : p->adv_picture_s;
+        ua += POWER_BLE_ADV_IDLE_UA * 2 / (adv_s < 1 ? 1 : adv_s);
     }
 
     if (streaming_active) {
@@ -1194,6 +1201,7 @@ void display_manager_clear(void) {
 void display_manager_enable_screensaver(bool enable) {
     bool prev = screensaver_enabled;
     screensaver_enabled = enable;
+    power_profile_apply();          /* picture mode advertises slower */
     power_estimate_resync_idle();
     if (enable && !prev) {
         static_saver_partials_since_full = 0;
@@ -1223,6 +1231,8 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
     int mv = -1;
     battery_state_t bstate = battery_get_state();
     int64_t last_maintenance_ms = 0;
+    /* Whether this pass should draw: set by how the previous wait ended. */
+    bool tick_due = true;
 
     while (1) {
         /* ── Battery protection + stats roll-up ──
@@ -1307,7 +1317,7 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
         }
 
         /* ── Normal operation ── */
-        if (screensaver_enabled) {
+        if (screensaver_enabled && tick_due) {
             if (screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
                 display_manager_update_lut_test();
             } else {
@@ -1322,15 +1332,25 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
              * picture. A finite timeout keeps that cycle alive; with the
              * screensaver off the iteration touches no display state. */
             k_sem_take(&sem_screensaver_wake, K_SECONDS(60));
+            tick_due = true;
         } else if (screensaver_mode == SCREENSAVER_MODE_DYNAMIC ||
                    screensaver_mode == SCREENSAVER_MODE_LUT_TEST) {
             k_sem_take(&sem_screensaver_wake, K_MSEC(10));
+            tick_due = true;
         } else {
+            /* Sleep to the next boundary of the interval the profile has in
+             * force (a 5-minute profile redraws at :00, :05, ...), capped so
+             * the battery check at the top of the loop keeps running. A
+             * capped sleep that did not reach the boundary draws nothing and
+             * just re-plans; a host wake-up always draws. Between wake-ups
+             * the MCU idles and the panel rail is off — that is the sleep. */
             struct tm t;
             get_system_time(&t);
-            int seconds_to_wait = 60 - t.tm_sec;
-            if (seconds_to_wait < 1) seconds_to_wait = 1;
-            k_sem_take(&sem_screensaver_wake, K_SECONDS(seconds_to_wait));
+            int to_tick = power_profile_seconds_to_tick(&t);   /* -1: never */
+            int wait_s = (to_tick < 0 || to_tick > POWER_PROFILE_MAX_SLEEP_S)
+                         ? POWER_PROFILE_MAX_SLEEP_S : to_tick;
+            int rc = k_sem_take(&sem_screensaver_wake, K_SECONDS(wait_s));
+            tick_due = (rc == 0) || (wait_s == to_tick);
         }
     }
 }

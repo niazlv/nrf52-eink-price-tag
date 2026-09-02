@@ -16,6 +16,7 @@
 #include "app/commands.h"
 #include "app/system_time.h"
 #include "app/persist.h"
+#include "app/power_profile.h"
 #include "app/secauth.h"
 #include "app/mesh.h"
 #include "ble/ble_service.h"
@@ -94,6 +95,10 @@ int main(void)
 
     /* After the restore above, so the adopted total is not overwritten by it. */
     display_manager_recalibrate_energy();
+
+    /* The persisted sleep profile is loaded now too: push its advertising
+     * interval into the radio (the display thread reads the rest itself). */
+    power_profile_apply();
 
     // 5. Draw the first screen; the display thread takes over from here.
     display_manager_update_status();
