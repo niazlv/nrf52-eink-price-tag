@@ -64,7 +64,23 @@ extern const struct shell_cmd commands[];
  * even when LUTW (148+ chars) spans multiple MTU packets.
  */
 #define RX_BUF_SIZE 256
-static char rx_buf[RX_BUF_SIZE];
+/* Text lines travel RX thread -> command thread (see cmd_thread below) in two
+ * fixed slots cycled through a pair of fifos. The RX thread assembles the
+ * line straight into a free slot, so a byte is written exactly once and the
+ * slot is executed in place: no separate assembly buffer, no k_msgq copy —
+ * RAM here is counted in bytes (the tag sits at ~98%). */
+#define CMD_QUEUE_DEPTH 2
+struct cmd_slot {
+    void *fifo_reserved;            /* k_fifo bookkeeping */
+    char line[RX_BUF_SIZE];
+};
+static struct cmd_slot cmd_slots[CMD_QUEUE_DEPTH];
+static K_FIFO_DEFINE(cmd_free);     /* slots waiting to be filled */
+static K_FIFO_DEFINE(cmd_ready);    /* slots waiting to be run */
+static struct cmd_slot *rx_slot;    /* the slot the RX thread is filling, or NULL */
+static bool rx_discard;             /* no slot was free: eat bytes to the next newline */
+/* rx_len counts into rx_slot->line; rx_buf below aliases it for the old code paths. */
+#define rx_buf (rx_slot->line)
 static int  rx_len;
 
 /* ── Binary opcode frame parser (NUS) ───────────────────────────────────────
@@ -2091,10 +2107,20 @@ void commands_on_disconnect(void) {
 
     /* Discard any half-received text line or opcode frame from the old link. */
     rx_len = 0;
+    rx_discard = false;
+    if (rx_slot) {
+        k_fifo_put(&cmd_free, rx_slot);
+        rx_slot = NULL;
+    }
     opc_state = OPC_NONE;
 
     /* The transfer, if any, went with the link. */
     dfu_set_busy(false);
+
+    /* Commands the old link queued must not run against the new one. */
+    for (struct cmd_slot *slot; (slot = k_fifo_get(&cmd_ready, K_NO_WAIT)) != NULL;) {
+        k_fifo_put(&cmd_free, slot);
+    }
 }
 
 /* Feed one byte into the binary opcode-frame state machine. On the final byte
@@ -2135,6 +2161,56 @@ static void opc_feed_byte(uint8_t b)
     }
 }
 
+/* ── Command execution thread ───────────────────────────────────────────
+ *
+ * Text commands used to run right where the bytes arrived: inside the BLE
+ * host's RX thread (bt_receive_cb -> commands_process). Every second a
+ * handler spent on the panel was a second the host could not service the
+ * link — CLEAN (~60 s) and NUKE (minutes) outlasted the phone's 30 s ATT
+ * timeout, the phone dropped the connection, and the tag stayed invisible
+ * until the handler returned and the disconnect callback finally ran. An
+ * infinite TEST took the radio down with it for good.
+ *
+ * So the RX thread now only assembles lines and hands them over; this thread
+ * runs them. A slow handler stalls the queue, not the radio: the link stays
+ * up, SMP keeps flowing, and the next command is either queued (two deep) or
+ * answered BUSY:cmd at once. REBOOT and SYSINFO are executed inline on the RX
+ * thread so they work even while this thread is stuck in a dev loop — the
+ * escape hatch that used to require pulling the battery. Binary paths
+ * (vstream bytes, opcode frames) still run on the RX thread: they are fast by
+ * construction. The mesh dispatch thread keeps its own path. */
+static void cmd_thread(void *p1, void *p2, void *p3)
+{
+    ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
+
+    for (int i = 0; i < CMD_QUEUE_DEPTH; i++) {
+        k_fifo_put(&cmd_free, &cmd_slots[i]);
+    }
+    while (1) {
+        struct cmd_slot *slot = k_fifo_get(&cmd_ready, K_FOREVER);
+
+        dispatch_line(slot->line);
+        k_fifo_put(&cmd_free, slot);
+    }
+}
+K_THREAD_DEFINE(cmd_tid, 1280, cmd_thread, NULL, NULL, NULL, 7, 0, 0);
+
+/* Whatever must keep working while the command thread is busy for minutes. */
+static bool inline_on_rx_thread(const char *line)
+{
+    return strcmp(line, "REBOOT") == 0 || strncmp(line, "SYSINFO", 7) == 0;
+}
+
+static void enqueue_line(struct cmd_slot *slot)
+{
+    if (inline_on_rx_thread(slot->line)) {
+        dispatch_line(slot->line);
+        k_fifo_put(&cmd_free, slot);
+        return;
+    }
+    k_fifo_put(&cmd_ready, slot);
+}
+
 void commands_process(const void *data, uint16_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
@@ -2155,12 +2231,33 @@ void commands_process(const void *data, uint16_t len)
         }
         char c = (char)p[i];
         if (c == '\r') continue;
-        if (c == '\n') {
-            rx_buf[rx_len] = '\0';
+        if (rx_discard) {
+            /* Both slots are busy behind a slow command: this line is lost;
+             * the BUSY:cmd already went out when it started. */
+            if (c == '\n') rx_discard = false;
+            continue;
+        }
+        if (!rx_slot) {
+            if (c == '\n') continue;          /* empty line, nothing to queue */
+            rx_slot = k_fifo_get(&cmd_free, K_NO_WAIT);
+            if (!rx_slot) {
+                rx_discard = true;
+                ble_printf("BUSY:cmd\r\n");
+                continue;
+            }
             rx_len = 0;
-            if (rx_buf[0] != '\0') dispatch_line(rx_buf);
+        }
+        if (c == '\n') {
+            rx_slot->line[rx_len] = '\0';
+            rx_len = 0;
+            if (rx_slot->line[0] != '\0') {
+                enqueue_line(rx_slot);
+            } else {
+                k_fifo_put(&cmd_free, rx_slot);
+            }
+            rx_slot = NULL;
         } else if (rx_len < RX_BUF_SIZE - 1) {
-            rx_buf[rx_len++] = c;
+            rx_slot->line[rx_len++] = c;
         }
     }
 }

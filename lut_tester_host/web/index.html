@@ -980,7 +980,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           </div>
           <div class="gtitle">Обслуживание</div>
           <div class="bgrid">
-            <button class="btn"     onclick="send('CLEAN\n')" title="Цикл очистки 7× B/W/R">Очистка <small>CLEAN</small></button>
+            <button class="btn"     onclick="markDeviceBusy(90000); send('CLEAN\n')" title="Цикл очистки 7× B/W/R (~1 мин)">Очистка <small>CLEAN</small></button>
             <button class="btn bad" onclick="nukeDialog()" title="Глубокая очистка призраков, ~15 мин">Глубокая <small>NUKE</small></button>
             <button class="btn"     onclick="syncTime()" title="Передать текущее время и дату">Время и дата <small>TIME</small></button>
             <button class="btn"     onclick="send('BATT\n')" title="Запросить напряжение батареи">Батарея <small>BATT</small></button>
@@ -2077,6 +2077,7 @@ function onNotify(ev) {
     if (line.startsWith('PWR:')) parsePwr(line);
     if (line.startsWith('PWRB:')) parsePwr(line);
     if (line.startsWith('BUSY:dfu')) logI('Ценник занят обновлением — команда отложена');
+    if (line.startsWith('BUSY:cmd')) logI('Ценник ещё выполняет предыдущие команды — эта не принята, повтори позже');
     if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -2472,7 +2473,7 @@ function nukeDialog() {
   const n = prompt('NUKE — глубокая очистка\nЦиклов B/W/R (5-50):', '20');
   if (!n) return;
   const v = parseInt(n);
-  if (v>=5&&v<=50) send(`NUKE:${v}\n`); else alert('Введи число 5–50');
+  if (v>=5&&v<=50) { markDeviceBusy(v * 45000); send(`NUKE:${v}\n`); } else alert('Введи число 5–50');
 }
 function sendRaw() {
   const v = $('cmd-inp').value.trim();
@@ -2506,8 +2507,12 @@ function uiToast(msg, kind = '', ms = 3500) {
 // ═══════════════════════════════════════════════════════════════════
 //  Tab switching
 // ═══════════════════════════════════════════════════════════════════
+let curTab = 'tag';
 function tab(name, opts = {}) {
   const names = ['tag','anim','lut','sys'];
+  const leavingSys = curTab === 'sys' && name !== 'sys';
+  curTab = name;
+  if (leavingSys) pwrStopTimers();   // the profile card is on «Система»; nothing to keep fresh elsewhere
   document.querySelectorAll('.tab').forEach((el,i) =>
     el.classList.toggle('on', names[i] === name));
   document.querySelectorAll('.tp').forEach(el =>
@@ -5384,6 +5389,18 @@ const PWR_CELLS = [[1, '1'], [2, '2'], [3, '3'], [4, '4']];
 function pwrChem(id) { return PWR_CHEMS.find(c => c[0] === id) || PWR_CHEMS[PWR_CHEMS.length - 1]; }
 let pwrPreviewT = null;
 const PWR_POLL_MS   = 30000;
+// Ценник занят надолго командой, после которой он не отвечает (CLEAN ~1 мин,
+// NUKE:N ~45 с на цикл): до этого момента в эфир не лезем.
+let deviceBusyUntil = 0;
+function markDeviceBusy(ms) { deviceBusyUntil = Math.max(deviceBusyUntil, Date.now() + ms); }
+// Опрос профиля живёт только на вкладке «Система» и только когда эфир свободен:
+// не идёт OTA, не льётся картинка (sendLock), не крутится поток/анимация
+// (liveTimer), ценник не занят чисткой. Любая NUS-запись поверх чужой — это
+// «GATT operation already in progress» на телефоне.
+function pwrMayPoll() {
+  return connected && curTab === 'sys' && !otaBusy() && !sendLock &&
+         liveTimer === null && Date.now() >= deviceBusyUntil;
+}
 const PWR_MIN_FW    = '3.4.13';
 let pwrSupported = null;       // null = ещё не знаем, false = прошивка старее PWR_MIN_FW
 let pwrKnown = false;          // true = селекты отражают ответ ценника
@@ -5554,16 +5571,17 @@ function parsePwr(line) {
   // Локальный отсчёт: раз в секунду вниз, на нуле — перечитать (ценник как
   // раз перерисовался, и у него уже новое next).
   clearInterval(pwrTickT);
+  if (curTab !== 'sys') return;      // late reply: card is off-screen, no timers
   pwrTickT = setInterval(() => {
     if (!connected) { pwrStopTimers(); return; }
     if (pwrNext > 0) { pwrNext--; pwrRender(); }
     // -2: ждём ответа, не спамим. Во время OTA не шлём вовсе: любая NUS-запись
     // параллельно SMP-передаче — это «GATT operation failed» на телефоне.
-    if (pwrNext === 0) { pwrNext = -2; if (!otaBusy()) send('PWR\n'); }
+    if (pwrNext === 0) { pwrNext = -2; if (pwrMayPoll()) send('PWR\n'); }
   }, 1000);
   if (!pwrPollT) pwrPollT = setInterval(() => {
     if (!connected) { pwrStopTimers(); return; }
-    if (!otaBusy()) send('PWR\n');
+    if (pwrMayPoll()) send('PWR\n');
   }, PWR_POLL_MS);
 }
 // Предпросмотр: любой сдвиг селекта → через 400 мс спросить прошивку «а если так?»
@@ -5571,7 +5589,7 @@ function parsePwr(line) {
 function pwrPreview() {
   clearTimeout(pwrPreviewT);
   pwrPreviewT = setTimeout(() => {
-    if (!connected || pwrSupported === false || otaBusy()) return;
+    if (!pwrMayPoll() || pwrSupported === false) return;
     const v = id => +$(id).value;
     pwrPackSummary();
     send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')},${pwrPackKeys()},dry=1\n`);
@@ -5580,7 +5598,7 @@ function pwrPreview() {
 // Запрос с одним повтором: TX-пул прошивки в 3 буфера может уронить ответ,
 // а старая прошивка (< 3.4.13) не ответит вовсе — тогда честно так и пишем.
 function pwrQuery() {
-  if (!connected || otaBusy()) return;
+  if (!pwrMayPoll()) return;
   // SYSINFO уходит первым и к этому моменту уже разобран: версия известна,
   // и на старой прошивке мы не ждём таймаута, а сразу говорим, в чём дело.
   if (sysState.fwVersion && versionCompare(sysState.fwVersion, PWR_MIN_FW) < 0) {
@@ -5592,8 +5610,8 @@ function pwrQuery() {
   pwrSupported = null;
   pwrSetEnabled(true);
   send('PWR\n');
-  setTimeout(() => { if (connected && !pwrKnown) send('PWR\n'); }, 2200);
-  setTimeout(() => { if (connected && !pwrKnown) pwrStatus('нет ответа — прошивка старше 3.4.13?', 'var(--orange)'); }, 5500);
+  setTimeout(() => { if (pwrMayPoll() && !pwrKnown) send('PWR\n'); }, 2200);
+  setTimeout(() => { if (connected && curTab === 'sys' && !pwrKnown) pwrStatus('нет ответа — прошивка старше 3.4.13?', 'var(--orange)'); }, 5500);
 }
 // Отключение: чужие цифры не наследуем, таймеры гасим.
 function pwrReset() {
