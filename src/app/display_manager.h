@@ -185,6 +185,15 @@ void display_manager_set_rotation(int rot);
  * @param enable true to enable, false to disable
  */
 void display_manager_enable_screensaver(bool enable);
+
+/**
+ * @brief Come up in picture mode without drawing anything (silent update)
+ *
+ * Call instead of the first display_manager_update_status() at boot when the
+ * previous firmware left PERSIST_BF_RESUME_PICTURE: the panel keeps the image
+ * it already shows.
+ */
+void display_manager_boot_into_picture(void);
     
 /**
  * @brief Keep display powered strictly ON (for animations)

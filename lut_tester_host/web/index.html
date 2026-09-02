@@ -1460,7 +1460,11 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <div class="pbar" style="height:7px"><div class="pfill" id="dfu-prog" style="width:0%"></div></div>
           <div id="dfu-prog-text"></div>
         </div>
-        <div class="brow" style="margin-top:12px">
+        <label class="kv" style="margin-top:10px;cursor:pointer" title="Не рисовать экраны обновления. Если ценник показывал картинку, после перезагрузки он её и оставит — не уйдёт в часы. Нужна прошивка 3.4.20+, старая просто нарисует экраны как обычно.">
+          <span>Тихое обновление <span class="sub">не трогать экран</span></span>
+          <input type="checkbox" id="dfu-silent" onchange="dfuSilentSave()">
+        </label>
+        <div class="brow" style="margin-top:8px">
           <button class="btn ok big grow" id="dfu-btn-upload" onclick="dfuStartUpload()" disabled>⬆ Загрузить в ценник</button>
           <button class="btn bad" id="dfu-btn-abort" onclick="dfuAbort()" disabled>✕ Стоп</button>
         </div>
@@ -6635,6 +6639,11 @@ function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
   });
 }
 
+// «Тихое обновление»: DFU:START/DONE с атрибутом SILENT — прошивка не рисует
+// экраны обновления и, если была в режиме картинки, после ребута остаётся в нём.
+function dfuSilent() { const el = $('dfu-silent'); return !!(el && el.checked); }
+function dfuSilentSave() { try { localStorage.setItem('dfu-silent', dfuSilent() ? '1' : '0'); } catch {} }
+
 async function dfuStartUpload() {
   if (!dfuFirmwareData || dfuUploading) return;
   // A hand-picked file («Загрузить в ценник») gets the same progress toast as a
@@ -6691,7 +6700,7 @@ async function dfuStartUpload() {
 
     // Notify firmware to show DFU screen
     if (connected && rxChar) {
-      try { await sendBytes(new TextEncoder().encode('DFU:START\n')); } catch {}
+      try { await sendBytes(new TextEncoder().encode(`DFU:START${dfuSilent() ? ' SILENT' : ''}\n`)); } catch {}
     }
     while (offset < total) {
       if (dfuAbortFlag) throw new Error('Отменено');
@@ -6719,7 +6728,7 @@ async function dfuStartUpload() {
 
     // Notify firmware: DFU complete
     if (connected && rxChar) {
-      try { await sendBytes(new TextEncoder().encode('DFU:DONE\n')); } catch {}
+      try { await sendBytes(new TextEncoder().encode(`DFU:DONE${dfuSilent() ? ' SILENT' : ''}\n`)); } catch {}
     }
 
     // Auto-test new image. Пауза: после DFU:DONE устройство несколько секунд
@@ -6986,6 +6995,7 @@ function onSysConnect() {
 
 // Load saved server URL
 try {
+  try { const el = $('dfu-silent'); if (el) el.checked = localStorage.getItem('dfu-silent') === '1'; } catch {}
   const savedUrl = localStorage.getItem('dfu-server-url');
   if (savedUrl) {
     $('dfu-server-url').value = savedUrl;

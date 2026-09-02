@@ -100,8 +100,14 @@ int main(void)
      * interval into the radio (the display thread reads the rest itself). */
     power_profile_apply();
 
-    // 5. Draw the first screen; the display thread takes over from here.
-    display_manager_update_status();
+    // 5. Draw the first screen; the display thread takes over from here —
+    //    unless the previous firmware asked for a silent hand-over from
+    //    picture mode, in which case the panel keeps what it shows.
+    if (persist_take_boot_flags() & PERSIST_BF_RESUME_PICTURE) {
+        display_manager_boot_into_picture();
+    } else {
+        display_manager_update_status();
+    }
 
     LOG_INF("System initialized");
 

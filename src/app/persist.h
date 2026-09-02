@@ -47,6 +47,15 @@ uint64_t persist_get_energy_uah_x1000(void);
  * Call it after persist_post_settings(), or the flash restore undoes it. */
 bool persist_adopt_energy_model(uint32_t ver, uint64_t uah_x1000);
 
+/* One-shot hints for the next boot. They ride along with the stats — retained
+ * RAM across a warm reboot, the flash snapshot cmd_reboot writes before a DFU
+ * — and are cleared by the boot that reads them.
+ *   RESUME_PICTURE: a silent update was done from picture mode; come up
+ *   without the screensaver and without drawing, the panel keeps its image. */
+#define PERSIST_BF_RESUME_PICTURE (1u << 0)
+void persist_set_boot_flag(uint32_t flag);
+uint32_t persist_take_boot_flags(void);   /* returns and clears */
+
 /* Write the current stats to flash as a FRESH (unconsumed) snapshot. RARE —
  * called on low-battery/shutdown and right before a DFU reboot, when the live
  * RAM copy may be about to be lost. Keeps flash wear minimal. */

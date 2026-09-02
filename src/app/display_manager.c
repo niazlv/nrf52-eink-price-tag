@@ -1245,6 +1245,16 @@ void display_manager_clear(void) {
     graphics_clear(GFX_WHITE);
 }
 
+/* Boot straight into picture mode: no screensaver, no first frame. The panel
+ * is bistable and still shows what was on it before the reboot; the boot-time
+ * panel probe writes RAM but never triggers a refresh, so nothing has touched
+ * the image yet — and nothing will until a host asks. */
+void display_manager_boot_into_picture(void) {
+    screensaver_enabled = false;
+    power_profile_apply();          /* picture-mode advertising interval */
+    power_estimate_resync_idle();
+}
+
 void display_manager_enable_screensaver(bool enable) {
     bool prev = screensaver_enabled;
     screensaver_enabled = enable;

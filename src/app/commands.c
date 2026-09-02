@@ -751,7 +751,9 @@ static void cmd_time(char *args)
     int h, m, s, D, M, Y;
     if (sscanf(args, "%d:%d:%d %d.%d.%d", &h, &m, &s, &D, &M, &Y) == 6) {
         set_system_time(h, m, s, D, M, Y);
-        display_manager_force_update();
+        if (display_manager_is_screensaver_active()) {
+            display_manager_force_update();   /* the clock is on screen: show the new time */
+        }
         ble_printf("Time Set\r\n");
     } else {
         ble_printf("parse error\r\n");
@@ -767,7 +769,9 @@ static void cmd_time_eq(char *args)
     struct tm t = {0};
     get_system_time(&t);
     set_system_time(h, m, s, t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
-    display_manager_force_update();
+    if (display_manager_is_screensaver_active()) {
+        display_manager_force_update();   /* picture mode: never paint over the image */
+    }
     ble_printf("TIME set %d:%s%d:%s%d\r\n",
                h, m < 10 ? "0" : "", m, s < 10 ? "0" : "", s);
 }
@@ -1503,6 +1507,29 @@ static void cmd_stats(char *args)
 static void cmd_dfu(char *args)
 {
     int w = graphics_get_width();
+    /* "DFU:START SILENT" / "DFU:DONE SILENT": leave the panel alone. No update
+     * screens, the display mode stays whatever it was, and if that was picture
+     * mode the next boot is told to keep it — the image survives the whole
+     * update untouched. A firmware without this attribute ignores the word
+     * (the prefix still matches) and draws as before. */
+    bool silent = strstr(args, "SILENT") != NULL || strstr(args, "silent") != NULL;
+    bool was_picture = !display_manager_is_screensaver_active();
+
+    if (silent) {
+        if (was_picture) {
+            persist_set_boot_flag(PERSIST_BF_RESUME_PICTURE);
+        }
+        if (strncmp(args, "START", 5) == 0) {
+            dfu_set_busy(true);
+            ble_printf("DFU:ACK silent\r\n");
+        } else if (strncmp(args, "DONE", 4) == 0) {
+            dfu_set_busy(false);
+            ble_printf("DFU:DONE_ACK silent\r\n");
+        } else {
+            ble_printf("DFU:usage START|DONE [SILENT]\r\n");
+        }
+        return;
+    }
 
     display_manager_enable_screensaver(false);
     graphics_clear(GFX_WHITE);
@@ -1532,7 +1559,7 @@ static void cmd_dfu(char *args)
         display_manager_request_frame_update();
         ble_printf("DFU:DONE_ACK\r\n");
     } else {
-        ble_printf("DFU:usage START|DONE\r\n");
+        ble_printf("DFU:usage START|DONE [SILENT]\r\n");
     }
 }
 
@@ -1859,7 +1886,7 @@ const struct shell_cmd commands[] = {
     {OP_REBOOT,    "REBOOT",      cmd_reboot,     "Cold reboot the device", CMD_MESH},
     {OP_SYSINFO,   "SYSINFO",     cmd_sysinfo,    "System info: version, uptime, battery, energy", CMD_NOAUTH},
     {OP_STATS,     "STATS",       cmd_stats,      "Persisted stats: live + flash record (present/valid/consumed)"},
-    {OP_DFU,       "DFU:",        cmd_dfu,        "DFU display: DFU:START / DFU:DONE"},
+    {OP_DFU,       "DFU:",        cmd_dfu,        "DFU display: DFU:START / DFU:DONE [SILENT = leave the panel alone, keep picture mode across the reboot]"},
     /* Mesh broadcast */
     {OP_BCAST,     "BCAST",       cmd_bcast,      "Flood a command: BCAST <all|g<N>|<6hex>> <CMD...>"},
     {OP_GROUP,     "GROUP",       cmd_group,      "Mesh group id: GROUP / GROUP <0-255>", CMD_MESH},

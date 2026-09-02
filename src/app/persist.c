@@ -35,7 +35,8 @@ struct persist_data {
 	uint32_t _pad0;             /* (was reserved[0]) keeps energy 8-byte aligned */
 	uint64_t energy_uah_x1000;  /* cumulative power estimate (µAh×1000), all boots */
 	uint32_t energy_model_ver;  /* (was reserved[0]) power-model revision behind the total */
-	uint32_t reserved[3];
+	uint32_t boot_flags;        /* (was reserved[1]) PERSIST_BF_*: one-shot hints for the next boot */
+	uint32_t reserved[2];
 };
 
 /* Layout is frozen for OTA compatibility: an old firmware writes this blob into
@@ -201,6 +202,28 @@ bool persist_adopt_energy_model(uint32_t ver, uint64_t uah_x1000)
 		}
 	}
 	return adopted;
+}
+
+void persist_set_boot_flag(uint32_t flag)
+{
+	K_SPINLOCK(&lock) {
+		rd->boot_flags |= flag;
+		reseal_locked();
+	}
+}
+
+uint32_t persist_take_boot_flags(void)
+{
+	uint32_t flags = 0;
+
+	K_SPINLOCK(&lock) {
+		flags = rd->boot_flags;
+		if (flags) {
+			rd->boot_flags = 0;
+			reseal_locked();
+		}
+	}
+	return flags;
 }
 
 void persist_add_refresh(void)
