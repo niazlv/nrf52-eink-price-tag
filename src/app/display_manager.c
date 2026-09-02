@@ -118,11 +118,18 @@ static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 /* Mesh observer scan: duty × RX current. Keep in step with SCAN_WINDOW_MS /
  * SCAN_INTERVAL_MS in mesh.c (30/1000 = 3% of RX ~5.4 mA on DCDC). */
 #define POWER_MESH_SCAN_UA             160
-/* The four below still have no better source than the original guess. They only
- * run while a phone is connected or an animation plays — minutes a day against
- * the panel and idle terms — so their error barely moves the total. */
-#define POWER_BLE_CONN_IDLE_UA         900
-#define POWER_BLE_STREAM_UA           4500
+/* Connected, no stream: conn_param_idle is 100-200 ms with slave latency 4,
+ * so with nothing to say the radio wakes about once a second for a ~1 ms
+ * event at ~7 mA — some 10 µA — and a phone that keeps polling roughly
+ * quadruples that. The first figure here, 900, was a guess with no derivation
+ * and it did real harm: it is what SYSINFO reports as cur_ua while the phone
+ * is connected, and the web divided the pack by it — "15 days left". */
+#define POWER_BLE_CONN_IDLE_UA          60
+/* VSTREAM: 15-30 ms interval, data in every event, plus the CPU decoding and
+ * the SPI push — a couple of mA is the right order; still unmeasured. */
+#define POWER_BLE_STREAM_UA           1500
+/* The two below run only while an animation keeps the panel awake — minutes a
+ * day — and still have no better source than the original guess. */
 #define POWER_DISPLAY_STANDBY_UA       400
 #define POWER_DISPLAY_HV_HOLD_UA      8000
 /* Panel draws ~3-8 mA while a refresh runs and the MCU k_sleeps through the

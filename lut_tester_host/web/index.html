@@ -1338,7 +1338,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <div><div>Израсходовано</div><div style="color:var(--orange)" id="sys-used">— mAh</div></div>
           <div><div>Осталось (ожид.)</div><div style="color:var(--green)" id="sys-eta">—</div></div>
         </div>
-        <div class="hint">Li-Po 3.7V/350mAh. АЦП видит до 3.6V (насыщение) — заряд отслеживается только при разряде. Ток рассчитывается прошивкой. Ниже 3.3V экран блокируется, ниже 3.1V — глубокий сон.</div>
+        <div class="hint">Ёмкость и химия задаются в «Энергосбережении»; без них считается от 350 мАч. «Ток» — мгновенная оценка прошивки, при подключённом телефоне она включает ток соединения; «Осталось» считается от среднего тока профиля, а не от него. АЦП видит до 3.6V (насыщение). Ниже 3.3V экран блокируется, ниже 3.1V — глубокий сон.</div>
       </section>
 
       <section class="card m5">
@@ -5273,7 +5273,37 @@ const sysState = {
 // (TIME=… дёргает полную перерисовку e-ink — не хочется зря жечь refresh).
 let autoTimeDoneThisConn = false;
 
-const BATT_CAPACITY_MAH = 350;
+const BATT_CAPACITY_MAH = 350;   // fallback only: what the first batch shipped with
+
+// «Осталось»: считается от ЗАЯВЛЕННОЙ ёмкости (карточка «Энергосбережение») и
+// от СРЕДНЕГО тока профиля (est из PWR) — не от мгновенного cur_ua, который
+// при подключённом телефоне включает ток соединения и вдесятеро выше того,
+// что ценник тратит в одиночестве. Без ответа PWR срок не выдумываем.
+function renderRemaining() {
+  const s = sysState;
+  const pk = pwrLast;
+  const declared = pk && pk.cell > 0 ? pk.cell * (pk.par || 1) : 0;
+  const cap = declared || BATT_CAPACITY_MAH;
+  const used = (pk && declared) ? pk.used : s.mahUsed / 1000;     // since the pack went in · or all-time
+  const remain = Math.max(0, cap - used);
+  const capEl = $('sys-cap');
+  if (capEl) capEl.textContent = declared ? `${cap} mAh` : `${cap} mAh (не задана — взято по умолчанию)`;
+  if (pk && pk.chem === PWR_CHEM_MAINS) {
+    $('sys-remain').textContent = 'постоянное питание';
+    $('sys-eta').textContent = '∞';
+    return;
+  }
+  const est = pk && pk.est > 0 ? pk.est : 0;
+  if (est > 0) {
+    const days = remain / (est * 24 / 1000);
+    const etaStr = days >= 1 ? `~${days.toFixed(0)} дней` : `~${(days * 24).toFixed(1)} часов`;
+    $('sys-remain').textContent = `${remain.toFixed(1)} mAh · ${etaStr} при ${est} мкА среднего`;
+    $('sys-eta').textContent = etaStr;
+  } else {
+    $('sys-remain').textContent = `${remain.toFixed(1)} mAh`;
+    $('sys-eta').textContent = declared ? '—' : '— (нужна прошивка 3.4.13+)';
+  }
+}
 // ADC ceiling is 3600 mV (gain 1/6, ref 0.6V). Above that = "full/charging".
 // We can only track discharge below 3600. Map 3000–3600 → 0–100%.
 const BATT_V_FULL = 3600;
@@ -5519,6 +5549,7 @@ function parsePwr(line) {
   pwrRender();
   pwrRenderEstimate(kv);
   pwrRenderBatteryCard(kv);
+  renderRemaining();
   const pv = $('pwr-preview'); if (pv) { pv.hidden = true; pv.innerHTML = ''; }
   // Локальный отсчёт: раз в секунду вниз, на нуле — перечитать (ценник как
   // раз перерисовался, и у него уже новое next).
@@ -5748,25 +5779,10 @@ function updateSysUI() {
   $('sys-used').textContent = mahUsedReal.toFixed(2) + ' mAh';
   $('sys-cur').textContent = s.curUa > 0 ? (s.curUa / 1000).toFixed(2) + ' mA' : '—';
 
-  // Remaining estimate
-  const mahRemain = Math.max(0, BATT_CAPACITY_MAH - mahUsedReal);
-  $('sys-cap').textContent = BATT_CAPACITY_MAH + ' mAh';
-  if (s.curUa > 0) {
-    const hoursRemain = mahRemain / (s.curUa / 1000);
-    const daysRemain = hoursRemain / 24;
-    const etaStr = daysRemain >= 1
-      ? `~${daysRemain.toFixed(1)} дней`
-      : `~${hoursRemain.toFixed(1)} часов`;
-    $('sys-remain').textContent = `${mahRemain.toFixed(1)} mAh · ${etaStr}`;
-    $('sys-eta').textContent = etaStr;
-
-    // mWh calculation (V_avg ≈ 3.7V)
-    const mwhUsed = mahUsedReal * 3.7;
-    $('sys-mah').textContent = `${mahUsedReal.toFixed(3)} mAh (${mwhUsed.toFixed(1)} mWh)`;
-  } else {
-    $('sys-remain').textContent = `${mahRemain.toFixed(1)} mAh`;
-    $('sys-eta').textContent = '—';
-  }
+  // mWh (V_avg ≈ 3.7V — a Li-ion figure; the pack's nominal is used when declared)
+  const vnom = (pwrLast && pwrLast.chem) ? (pwrChem(pwrLast.chem)[5] * (pwrLast.ser || 1)) / 1000 : 3.7;
+  $('sys-mah').textContent = `${mahUsedReal.toFixed(3)} mAh (${(mahUsedReal * vnom).toFixed(1)} mWh)`;
+  renderRemaining();
 
   if (s.lastUpdate) {
     $('sys-last-update').textContent = 'Обновлено ' + s.lastUpdate.toLocaleTimeString();
