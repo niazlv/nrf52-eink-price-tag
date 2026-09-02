@@ -111,6 +111,16 @@ void display_manager_request_full_update(void);
  */
 void display_manager_recalibrate_energy(void);
 
+struct power_profile;
+/**
+ * @brief Average current the power model predicts for a sleep profile, in µA
+ *
+ * Uses the same constants as the running mAh estimator. picture = screensaver
+ * off (no redraws, picture advertising interval).
+ */
+int display_manager_estimate_avg_ua(const struct power_profile *p, bool mesh_rx,
+                                    bool picture);
+
 /**
  * @brief Force a partial (fast) display update (full HV cycle, ~700ms overhead)
  */

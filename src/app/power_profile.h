@@ -32,7 +32,39 @@ struct power_profile {
  * battery protection and the stats roll-up ride on its wake-ups. */
 #define POWER_PROFILE_MAX_SLEEP_S  (15 * 60)
 
+/* What the tag runs on. Type is informational (the web picks presets by it);
+ * capacity feeds the days-left estimate; epoch is the cumulative energy
+ * counter at the moment this battery went in, so "used" can restart at zero
+ * without touching the all-time total. 0 mAh = unknown, no estimate. */
+enum power_battery_type {
+	POWER_BATT_UNKNOWN  = 0,
+	POWER_BATT_LIION    = 1,   /* Li-ion / Li-Po cell */
+	POWER_BATT_ALKALINE = 2,   /* 2xAA / 2xAAA alkaline */
+	POWER_BATT_LIFEPO4  = 3,
+	POWER_BATT_NIMH     = 4,
+};
+
+struct power_battery {
+	uint8_t  type;             /* enum power_battery_type */
+	uint8_t  _pad;
+	uint16_t mah;              /* nominal capacity, 0 = unknown */
+	uint64_t epoch_uah_x1000;  /* persist energy total when it was installed */
+};
+
 const struct power_profile *power_profile_get(void);
+const struct power_battery *power_battery_get(void);
+
+/* Record the battery. new_battery also moves the epoch to now, i.e. "used
+ * since install" restarts at zero. Persists under "pwr/b". */
+int power_battery_set(uint8_t type, uint16_t mah, bool new_battery);
+
+/* mAh drawn since the battery epoch, by the estimator. */
+uint32_t power_battery_used_mah(void);
+
+/* The profile "everything on, nothing saved": mesh RX on, a redraw every
+ * minute day and night, 2 s advertising. What the tag did before any of
+ * this existed; the yardstick every estimate is compared against. */
+const struct power_profile *power_profile_baseline(void);
 
 /* Validate, persist and apply. 0, or -EINVAL for an out-of-range field. */
 int power_profile_set(const struct power_profile *p);

@@ -1368,6 +1368,8 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
         <div class="kv" style="margin-top:14px;margin-bottom:6px">
           <span>Шаблон сна</span><span id="sys-pwr" style="color:var(--fg2)">—</span>
         </div>
+        <div id="pwr-est" class="muted" style="margin-bottom:8px;line-height:1.5">—</div>
+        <div id="pwr-preview" class="muted" style="margin-bottom:8px;color:var(--yellow)" hidden></div>
         <div class="brow">
           <span class="muted">часы днём</span>
           <select id="pwr-day" class="grow" title="Как часто перерисовывать часы днём"></select>
@@ -1390,7 +1392,16 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <button class="btn acc" onclick="applyPwr()">Применить</button>
           <button class="btn ghost" onclick="resetPwr()" title="Вернуть значения по умолчанию">По умолчанию</button>
         </div>
-        <div class="hint">Часы перерисовываются на границе интервала (при «раз в 5 мин» — в :00, :05, :10…), всё остальное время контроллер спит с выключенной панелью. Ночь считается по часам самого ценника. «Выкл» — перерисовка только по команде. Реклама — как часто ценник «светится» в эфире: реже = дольше ищется телефоном, но дешевле; картинке частая реклама ни к чему. Нужна прошивка v3.4.13+: ценник постарше эту карточку не понимает и живёт по прежним правилам — каждую минуту, реклама 2 с; здесь это будет показано, а настройки заблокированы до обновления.</div>
+        <div class="kv" style="margin-top:14px;margin-bottom:6px">
+          <span>Батарея</span><span id="sys-bat" style="color:var(--fg2)">—</span>
+        </div>
+        <div class="brow">
+          <select id="pwr-btype" class="grow" title="Тип батареи — подставляет типичную ёмкость, дальше можно поправить" onchange="pwrBatPreset()"></select>
+          <input type="number" id="pwr-bat" class="grow" min="0" max="65535" step="10" placeholder="мАч" title="Номинальная ёмкость, мАч (0 = неизвестно)">
+          <button class="btn acc" onclick="saveBattery(false)" title="Запомнить тип и ёмкость">Сохранить</button>
+          <button class="btn ghost" onclick="saveBattery(true)" title="Поставили свежую батарею: счётчик «использовано» начинается заново">Заменена</button>
+        </div>
+        <div class="hint">Часы перерисовываются на границе интервала (при «раз в 5 мин» — в :00, :05, :10…), всё остальное время контроллер спит с выключенной панелью. Ночь считается по часам самого ценника. «Выкл» — перерисовка только по команде. Реклама — как часто ценник «светится» в эфире: реже = дольше ищется телефоном, но дешевле; картинке частая реклама ни к чему. Нужна прошивка v3.4.13+: ценник постарше эту карточку не понимает и живёт по прежним правилам — каждую минуту, реклама 2 с; здесь это будет показано, а настройки заблокированы до обновления. Оценки «мкА» и «хватит ещё» считает прошивка по своей модели тока (той же, что ведёт счётчик мАч) — это расчёт, а не измерение; ёмкость батареи и момент её замены ценник запоминает.</div>
       </section>
 
       <section class="card m7">
@@ -5304,6 +5315,9 @@ const PWR_ADV_OPTS  = [[2, '2 с'], [5, '5 с'], [10, '10 с']];
 const PWR_HOUR_OPTS = [...Array(24).keys()].map(h => [h, String(h).padStart(2, '0') + ':00']);
 const PWR_DEFAULTS  = { day: 1, night: 5, from: 23, to: 7, advc: 2, advp: 5 };
 const PWR_IDS       = ['pwr-day', 'pwr-night', 'pwr-from', 'pwr-to', 'pwr-advc', 'pwr-advp'];
+// Тип батареи → типичная ёмкость. Номер = enum power_battery_type в прошивке.
+const PWR_BATT_TYPES = [[1, 'Li-ion / Li-Po', 370], [2, '2×AA / 2×AAA щелочные', 2000], [3, 'LiFePO4', 400], [4, 'NiMH', 800], [0, 'неизвестно / своё', 0]];
+let pwrPreviewT = null;
 const PWR_POLL_MS   = 30000;
 const PWR_MIN_FW    = '3.4.13';
 let pwrSupported = null;       // null = ещё не знаем, false = прошивка старее PWR_MIN_FW
@@ -5351,15 +5365,59 @@ function pwrStopTimers() {
   clearInterval(pwrPollT); pwrPollT = null;
   clearInterval(pwrTickT); pwrTickT = null;
 }
+function pwrDaysText(d) {
+  if (d < 0) return null;
+  if (d >= 365) return `~${(d / 365).toFixed(1)} г.`;
+  if (d >= 60)  return `~${Math.round(d / 30)} мес.`;
+  return `~${d} дн.`;
+}
+// Строка оценки: что предсказывает модель прошивки для этого профиля.
+// Это модель, не измерение — та же, что считает mAh на экране ценника.
+function pwrEstText(kv, prefix) {
+  if (!(kv.est > 0)) return '';
+  const mahDay = (kv.est * 24 / 1000).toFixed(2);
+  let t = `${prefix} ≈ <b>${kv.est} мкА</b> · ${mahDay} мАч/сут`;
+  const d = pwrDaysText(kv.days);
+  if (d) t += ` · хватит ещё <b>${d}</b>`;
+  return t;
+}
+function pwrRenderEstimate(kv) {
+  const el = $('pwr-est'); if (!el) return;
+  if (!(kv.est > 0)) { el.textContent = '—'; return; }
+  let html = pwrEstText(kv, 'Сейчас');
+  if (kv.bat > 0) html += ` (использовано ${kv.used} из ${kv.bat} мАч)`;
+  if (kv.base > 0) {
+    const k = (kv.base / kv.est).toFixed(1);
+    html += `<br>Без экономии (mesh вкл, каждую минуту круглосуточно, реклама 2 с) ≈ ${kv.base} мкА — <b>в ${k}× больше</b>`;
+  }
+  el.innerHTML = html;
+  const sb = $('sys-bat');
+  if (sb) {
+    const tn = (PWR_BATT_TYPES.find(t => t[0] === kv.btype) || [0, 'неизвестно'])[1];
+    sb.textContent = kv.bat > 0 ? `${tn}, ${kv.bat} мАч` : 'ёмкость не задана — срок не считается';
+    sb.style.color = kv.bat > 0 ? 'var(--green)' : 'var(--orange)';
+  }
+}
 function parsePwr(line) {
   const kv = {};
   for (const m of line.slice('PWR:'.length).matchAll(/(\w+)=(-?\d+)/g)) kv[m[1]] = +m[2];
+  if (kv.dry) {
+    // Предпросмотр несохранённого выбора: только строка оценки, селекты не трогаем.
+    const pv = $('pwr-preview'); if (!pv) return;
+    pv.innerHTML = pwrEstText(kv, 'С этими настройками') || '';
+    pv.hidden = !pv.innerHTML;
+    return;
+  }
   pwrLast = kv; pwrNext = kv.next;
   pwrSupported = true;
   pwrSetEnabled(true);
   pwrSetAll(kv);
+  pwrFill('pwr-btype', PWR_BATT_TYPES.map(t => [t[0], t[1]]), kv.btype);
+  const bi = $('pwr-bat'); if (bi && document.activeElement !== bi) bi.value = kv.bat > 0 ? kv.bat : '';
   pwrMarkKnown(true);
   pwrRender();
+  pwrRenderEstimate(kv);
+  const pv = $('pwr-preview'); if (pv) { pv.hidden = true; pv.innerHTML = ''; }
   // Локальный отсчёт: раз в секунду вниз, на нуле — перечитать (ценник как
   // раз перерисовался, и у него уже новое next).
   clearInterval(pwrTickT);
@@ -5369,6 +5427,32 @@ function parsePwr(line) {
     if (pwrNext === 0) { pwrNext = -2; send('PWR\n'); }   // -2: ждём ответа, не спамим
   }, 1000);
   if (!pwrPollT) pwrPollT = setInterval(() => { if (connected) send('PWR\n'); else pwrStopTimers(); }, PWR_POLL_MS);
+}
+// Предпросмотр: любой сдвиг селекта → через 400 мс спросить прошивку «а если так?»
+// (dry=1 — считает, но не сохраняет и не применяет).
+function pwrPreview() {
+  clearTimeout(pwrPreviewT);
+  pwrPreviewT = setTimeout(() => {
+    if (!connected || pwrSupported === false) return;
+    const v = id => +$(id).value;
+    const bat = +($('pwr-bat').value || 0), bt = v('pwr-btype');
+    send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')},bat=${bat},btype=${bt},dry=1\n`);
+  }, 400);
+}
+function pwrBatPreset() {
+  const t = PWR_BATT_TYPES.find(x => x[0] === +$('pwr-btype').value);
+  const bi = $('pwr-bat');
+  if (t && t[2] > 0 && bi) bi.value = t[2];
+  pwrPreview();
+}
+async function saveBattery(newbat) {
+  if (!connected) { alert('Не подключено'); return; }
+  if (pwrSupported === false) { alert(`Эта прошивка (${sysState.fwVersion}) батарею не хранит — обновите до ${PWR_MIN_FW}+`); return; }
+  const bat = +($('pwr-bat').value || 0), bt = +$('pwr-btype').value;
+  send(`PWR:bat=${bat},btype=${bt}${newbat ? ',newbat=1' : ''}\n`);
+  const reply = await waitForLine(/^PWR:(?!.*dry=1)/, 4000);
+  if (reply) logI((newbat ? 'Батарея заменена: ' : 'Батарея: ') + reply.slice('PWR:'.length));
+  else logE('PWR: нет ответа');
 }
 // Запрос с одним повтором: TX-пул прошивки в 3 буфера может уронить ответ,
 // а старая прошивка (< 3.4.13) не ответит вовсе — тогда честно так и пишем.
@@ -5391,12 +5475,23 @@ function pwrQuery() {
 // Отключение: чужие цифры не наследуем, таймеры гасим.
 function pwrReset() {
   pwrStopTimers();
+  clearTimeout(pwrPreviewT);
   pwrLast = null; pwrNext = -1;
   pwrSupported = null;
   pwrSetEnabled(true);
   pwrSetAll(PWR_DEFAULTS);
+  pwrFill('pwr-btype', PWR_BATT_TYPES.map(t => [t[0], t[1]]), 0);
+  const bi = $('pwr-bat'); if (bi) bi.value = '';
   pwrMarkKnown(false);
   pwrStatus('—');
+  const est = $('pwr-est'); if (est) est.textContent = '—';
+  const pv = $('pwr-preview'); if (pv) { pv.hidden = true; pv.innerHTML = ''; }
+  const sb = $('sys-bat'); if (sb) { sb.textContent = '—'; sb.style.color = 'var(--fg2)'; }
+  if (!pwrReset.wired) {
+    pwrReset.wired = true;
+    for (const id of PWR_IDS) { const el = $(id); if (el) el.addEventListener('change', pwrPreview); }
+    if (bi) bi.addEventListener('input', pwrPreview);
+  }
 }
 async function applyPwr() {
   if (!connected) { alert('Не подключено'); return; }
@@ -5406,7 +5501,7 @@ async function applyPwr() {
   }
   const v = id => +$(id).value;
   send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')}\n`);
-  const reply = await waitForLine(/^PWR:/, 4000);
+  const reply = await waitForLine(/^PWR:(?!.*dry=1)/, 4000);
   if (reply) logI('Шаблон сна: ' + reply.slice('PWR:'.length));
   else logE('PWR: нет ответа (прошивка старше v3.4.13?)');
 }

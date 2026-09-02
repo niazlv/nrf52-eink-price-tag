@@ -162,6 +162,40 @@ static uint64_t power_estimate_from_history(uint64_t uptime_sec, uint32_t fulls)
     return total;
 }
 
+/* Average current the model predicts for a profile, in µA: the idle floor
+ * (sleep + advertising at the profile's interval + mesh scan if on) plus the
+ * day's redraws spread over 24 h. Picture mode has no redraws at all and
+ * advertises at the picture interval. The daily full refresh is firmware
+ * policy and goes in either way. Same constants as the running estimator,
+ * so "days left" and the mAh counter cannot disagree with each other. */
+int display_manager_estimate_avg_ua(const struct power_profile *p, bool mesh_rx,
+                                    bool picture)
+{
+    int adv_s = picture ? p->adv_picture_s : p->adv_clock_s;
+    int ua = POWER_BASE_SLEEP_UA + POWER_BLE_ADV_IDLE_UA * 2 / (adv_s < 1 ? 1 : adv_s);
+
+    if (mesh_rx) {
+        ua += POWER_MESH_SCAN_UA;
+    }
+
+    /* µAh per day from the panel */
+    uint32_t uah_day = (uint32_t)POWER_DISPLAY_FULL_UA * POWER_FULL_MS / 3600000U;
+    if (!picture) {
+        int night_h = (p->night_from_h == p->night_to_h) ? 0
+                    : (p->night_to_h - p->night_from_h + 24) % 24;
+        int day_h = 24 - night_h;
+        uint32_t ticks = 0;
+        if (p->tick_day_min) {
+            ticks += (uint32_t)day_h * 60 / p->tick_day_min;
+        }
+        if (p->tick_night_min) {
+            ticks += (uint32_t)night_h * 60 / p->tick_night_min;
+        }
+        uah_day += ticks * ((uint32_t)POWER_DISPLAY_PARTIAL_UA * POWER_PARTIAL_MS / 3600000U);
+    }
+    return ua + (int)(uah_day / 24U);
+}
+
 /* Call once at boot, AFTER persist_post_settings() — before it, the flash
  * restore would overwrite whatever we adopt. */
 void display_manager_recalibrate_energy(void)

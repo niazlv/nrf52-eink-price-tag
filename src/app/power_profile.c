@@ -1,6 +1,7 @@
 #include "power_profile.h"
 #include "display_manager.h"
 #include "../ble/ble_service.h"
+#include "persist.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
@@ -19,9 +20,55 @@ static struct power_profile profile = {
 	.adv_picture_s  = 5,
 };
 
+static struct power_battery battery;   /* zero = unknown, no estimate */
+
+static const struct power_profile baseline = {
+	.tick_day_min   = 1,
+	.tick_night_min = 1,
+	.night_from_h   = 0,
+	.night_to_h     = 0,
+	.adv_clock_s    = 2,
+	.adv_picture_s  = 2,
+};
+
 const struct power_profile *power_profile_get(void)
 {
 	return &profile;
+}
+
+const struct power_profile *power_profile_baseline(void)
+{
+	return &baseline;
+}
+
+const struct power_battery *power_battery_get(void)
+{
+	return &battery;
+}
+
+int power_battery_set(uint8_t type, uint16_t mah, bool new_battery)
+{
+	if (type > POWER_BATT_NIMH) {
+		return -EINVAL;
+	}
+	battery.type = type;
+	battery.mah = mah;
+	if (new_battery) {
+		battery.epoch_uah_x1000 = persist_get_energy_uah_x1000();
+	}
+	return settings_save_one("pwr/b", &battery, sizeof(battery));
+}
+
+uint32_t power_battery_used_mah(void)
+{
+	uint64_t now = persist_get_energy_uah_x1000();
+
+	/* A model recalibration can shrink the total below an older epoch;
+	 * read that as "nothing measurable since", not as a negative number. */
+	if (now <= battery.epoch_uah_x1000) {
+		return 0;
+	}
+	return (uint32_t)((now - battery.epoch_uah_x1000) / 1000000U);
 }
 
 static bool valid(const struct power_profile *p)
@@ -91,6 +138,15 @@ int power_profile_set(const struct power_profile *p)
 static int pwr_settings_set(const char *name, size_t len,
 			    settings_read_cb read_cb, void *cb_arg)
 {
+	if (settings_name_steq(name, "b", NULL) && len == sizeof(battery)) {
+		struct power_battery tmp;
+
+		if (read_cb(cb_arg, &tmp, sizeof(tmp)) >= 0 && tmp.type <= POWER_BATT_NIMH) {
+			battery = tmp;
+			return 0;
+		}
+		return -ENOENT;
+	}
 	if (settings_name_steq(name, "p", NULL)) {
 		/* A shorter blob from an older layout keeps today's defaults for
 		 * whatever it does not carry; a longer one is truncated. */
