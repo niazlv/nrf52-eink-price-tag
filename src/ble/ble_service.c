@@ -53,6 +53,10 @@ static ble_rx_callback_t app_rx_cb;
 static bool ble_connected = false;
 static bool ble_streaming_mode = false;
 static bool adv_running = false;
+/* Which parameter set the running advertiser was started with. NULL when not
+ * advertising. Compared by pointer: the three sets are distinct objects, and
+ * a change to the idle set's interval clears this so the change takes hold. */
+static const struct bt_le_adv_param *adv_param_active;
 static bool advertising_allowed = false;
 static char device_name[CONFIG_BT_DEVICE_NAME_MAX + 1];
 /* User-settable name part; "" = use the default. The immutable per-device id
@@ -214,15 +218,36 @@ static void adv_work_handler(struct k_work *work)
 		return;
 	}
 
+	/* Already advertising with the parameters we want: do NOTHING.
+	 *
+	 * This used to stop and restart unconditionally, and that is how a tag
+	 * went silent while every call reported success. Starting advertising
+	 * resets the controller's interval timer, so a restart that arrives more
+	 * often than the interval means the first advertising event is never
+	 * reached — at the 5 s picture-mode interval the tag emitted nothing at
+	 * all. And restarts do arrive that often: recycled_cb fires on every
+	 * freed connection slot (a phone retrying a connection produces a stream
+	 * of them), the 30 s self-heal, the 1 s retry, the settle work. Measured
+	 * on a dark tag over SWD: adv_running read 0 in seven samples of eight,
+	 * bt_le_adv_start returned 0 every single time.
+	 *
+	 * So the only reason to touch a running advertiser is a parameter change,
+	 * and that is exactly what the restart below is now reserved for. */
+	if (adv_running && param == adv_param_active) {
+		return;
+	}
+
 	if (adv_running) {
 		bt_le_adv_stop();
 		adv_running = false;
+		adv_param_active = NULL;
 	}
 
 	err = bt_le_adv_start(param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 	if (err == -EALREADY) {
-		bt_le_adv_stop();
-		err = bt_le_adv_start(param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+		/* The controller is already advertising. That is the state we want,
+		 * not a reason to tear it down and rebuild it. */
+		err = 0;
 	}
 
 	if (err) {
@@ -235,6 +260,7 @@ static void adv_work_handler(struct k_work *work)
 	}
 
 	adv_running = true;
+	adv_param_active = param;
 	LOG_INF("Advertising %s as %s", (ble_streaming_mode || boot_burst) ? "fast" : "idle", device_name);
 }
 
@@ -282,6 +308,11 @@ void ble_service_set_idle_adv_interval_s(uint8_t seconds)
 	}
 	adv_param_idle.interval_min = min;
 	adv_param_idle.interval_max = max;
+	/* The running advertiser now differs from the set it was started with, so
+	 * let the handler restart it — this is the one case a restart is right. */
+	if (adv_param_active == &adv_param_idle) {
+		adv_param_active = NULL;
+	}
 
 	/* Idle advertising is what is running right now: restart it so the new
 	 * window takes effect instead of waiting for the next connection cycle. */
@@ -314,7 +345,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		current_conn = bt_conn_ref(conn);
 		dk_set_led_on(CON_STATUS_LED);
 		ble_connected = true;
+		/* Connecting stops the connectable advertiser in the controller. */
 		adv_running = false;
+		adv_param_active = NULL;
 		advertising_allowed = false;
 		apply_connection_params();
 		request_phy_2m(conn);
@@ -527,6 +560,7 @@ int ble_service_beacon_set(const uint8_t *mfg, uint8_t len)
     if (adv_running || beacon_active) {
         bt_le_adv_stop();
         adv_running = false;
+        adv_param_active = NULL;
     }
     beacon_active = true;
     err = bt_le_adv_start(&adv_param_beacon, ad, ARRAY_SIZE(ad), NULL, 0);
@@ -544,6 +578,11 @@ void ble_service_beacon_end(void)
     }
     bt_le_adv_stop();
     beacon_active = false;
+    /* The beacon replaced whatever was on air: nothing of ours is running, so
+     * the handler must actually start it rather than see a stale flag and
+     * decide there is nothing to do. */
+    adv_running = false;
+    adv_param_active = NULL;
     /* Restore the normal connectable adv if we're idle and allowed to. */
     if (advertising_allowed && !current_conn) {
         advertising_start();
