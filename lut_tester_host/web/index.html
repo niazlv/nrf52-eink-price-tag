@@ -5310,25 +5310,28 @@ function renderRemaining() {
   const capEl = $('sys-cap');
   if (capEl) capEl.textContent = declared ? `${cap} mAh` : `${cap} mAh (не задана — взято по умолчанию)`;
   if (pk && pk.chem === PWR_CHEM_MAINS) {
-    $('sys-remain').textContent = 'постоянное питание';
+    $('sys-remain').textContent = 'постоянное питание — не разряжается';
     $('sys-eta').textContent = '∞';
     return;
   }
   const est = pk && pk.est > 0 ? pk.est : 0;
-  $('sys-remain').textContent = `${remain.toFixed(0)} mAh` + (declared ? ` из ${cap}` : ' (от 350 по умолчанию)');
-  if (est > 0) {
-    const days = remain / (est * 24 / 1000);
-    // Дни / месяцы / годы — та же шкала, что в карточке «Энергосбережение»,
-    // чтобы два места на экране не расходились в формулировке.
-    const etaStr = days >= 1 ? pwrDaysText(Math.round(days)) : `~${(days * 24).toFixed(1)} ч`;
-    $('sys-eta').textContent = `${etaStr} (оценка при ${est} мкА)`;
-  } else if (!connected) {
-    $('sys-eta').textContent = '—';
-  } else if (pwrSupported === false) {
-    $('sys-eta').textContent = '— (нужна прошивка 3.4.13+)';
-  } else {
-    $('sys-eta').textContent = '— (жду ответ ценника)';
-  }
+  // Дни / месяцы / годы — та же шкала, что в карточке «Энергосбережение»,
+  // чтобы два места на экране не расходились в формулировке.
+  const days = est > 0 ? remain / (est * 24 / 1000) : -1;
+  const etaStr = days < 0 ? null
+               : days >= 1 ? pwrDaysText(Math.round(days))
+               : `~${(days * 24).toFixed(1)} ч`;
+  const why = !connected ? '—'
+            : pwrSupported === false ? '— (нужна прошивка 3.4.13+)'
+            : '— (жду ответ ценника)';
+
+  // Оценка идёт СЮДА, в строку «Остаток» карточки «Устройство»: карточка
+  // «Батарея» с полем «Осталось (ожид.)» лежит ниже по странице, и до неё
+  // надо доскроллить — цифру искали и не находили именно из-за этого.
+  $('sys-remain').textContent =
+    `${remain.toFixed(0)} mAh` + (declared ? ` из ${cap}` : ' (от 350 по умолчанию)') +
+    (etaStr ? ` · хватит ${etaStr}` : '');
+  $('sys-eta').textContent = etaStr ? `${etaStr} (оценка при ${est} мкА)` : why;
 }
 // ADC ceiling is 3600 mV (gain 1/6, ref 0.6V). Above that = "full/charging".
 // We can only track discharge below 3600. Map 3000–3600 → 0–100%.
