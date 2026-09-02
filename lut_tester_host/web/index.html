@@ -5303,13 +5303,12 @@ function renderRemaining() {
     return;
   }
   const est = pk && pk.est > 0 ? pk.est : 0;
+  $('sys-remain').textContent = `${remain.toFixed(0)} mAh` + (declared ? ` из ${cap}` : ' (от 350 по умолчанию)');
   if (est > 0) {
     const days = remain / (est * 24 / 1000);
-    const etaStr = days >= 1 ? `~${days.toFixed(0)} дней` : `~${(days * 24).toFixed(1)} часов`;
-    $('sys-remain').textContent = `${remain.toFixed(1)} mAh · ${etaStr} при ${est} мкА среднего`;
-    $('sys-eta').textContent = etaStr;
+    const etaStr = days >= 1 ? `~${days.toFixed(0)} дн.` : `~${(days * 24).toFixed(1)} ч`;
+    $('sys-eta').textContent = `${etaStr} (оценка при ${est} мкА)`;
   } else {
-    $('sys-remain').textContent = `${remain.toFixed(1)} mAh`;
     $('sys-eta').textContent = declared ? '—' : '— (нужна прошивка 3.4.13+)';
   }
 }
@@ -5508,18 +5507,35 @@ function pwrRenderEstimate(kv) {
 // Батарейная карточка сверху: пока прошивка не знала химию, процент был
 // линейкой 3.0–3.6 В. С кривой — честный процент там, где АЦП видит, и
 // «≥ N%» там, где он упёрся в потолок.
-// Показываем то же, что рисует сам ценник (soc из PWRB = battery_percent):
-// по счётчику, если ёмкость задана, и по кривой — если она видна и ниже.
+// Батарея как бухгалтерия, а не как проценты от напряжения: первым числом —
+// сколько ушло с момента установки и сколько заявлено, полоса — остаток.
+// Напряжение остаётся как страховка снизу (кривая, где АЦП её видит), а
+// «дней» — как оценка по среднему току профиля, с пометкой. Тот же soc, что
+// рисует сам ценник (battery_percent), чтобы страница и панель не расходились.
 function pwrRenderBatteryCard(kv) {
-  if (!(kv.mv > 0) || kv.chem === PWR_CHEM_MAINS || !(kv.soc >= 0)) return;
+  if (!(kv.mv > 0) || !(kv.soc >= 0)) return;
+  const b = $('sys-batt'), bar = $('sys-batt-bar'), pl = $('sys-batt-pct');
+  if (kv.chem === PWR_CHEM_MAINS) {
+    if (b) b.innerHTML = `<span style="color:var(--green)">постоянное питание · ${kv.mv} mV</span>`;
+    if (bar) bar.style.width = '100%';
+    if (pl) pl.textContent = '∞';
+    battChip(100, kv.mv, false);
+    return;
+  }
   const cap = (kv.cell || 0) * (kv.par || 1);
   const pct = kv.soc;
-  const byCounter = cap > 0;
-  const ceilingOnly = !byCounter && kv.vsat;           // только кривая, и та в потолке
   const color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--orange)' : 'var(--red)';
-  const how = byCounter ? 'по расчёту' : 'по кривой';
-  const b = $('sys-batt'), bar = $('sys-batt-bar'), pl = $('sys-batt-pct');
-  if (b) b.innerHTML = `<span style="color:${color}">${kv.vsat ? '≥' : ''}${kv.mv} mV (${ceilingOnly ? '≥' : ''}${ceilingOnly ? kv.vsoc : pct}% ${how})</span>`;
+  let head;
+  if (cap > 0) {
+    const left = Math.max(0, cap - kv.used);
+    head = `использовано <b>${kv.used}</b> из ${cap} мАч · осталось <b>${left} мАч</b>`;
+    if (kv.vsoc >= 0 && !kv.vsat && kv.vsoc < pct) head += ` · по напряжению меньше: ${kv.vsoc}%`;
+    else if (kv.vsoc >= 0) head += kv.vsat ? ` · напряжение ≥ ${kv.mv} mV` : ` · ${kv.mv} mV`;
+  } else {
+    head = kv.vsat ? `≥${kv.mv} mV (по кривой ≥ ${kv.vsoc}%) · ёмкость не задана` : `${kv.mv} mV (по кривой ${pct}%) · ёмкость не задана`;
+  }
+  const ceilingOnly = cap === 0 && kv.vsat;
+  if (b) b.innerHTML = `<span style="color:${color}">${head}</span>`;
   if (bar) bar.style.width = (ceilingOnly ? 100 : pct) + '%';
   if (pl) pl.textContent = ceilingOnly ? `≥${kv.vsoc}%` : `${pct}%`;
   battChip(ceilingOnly ? 100 : pct, kv.mv, false);

@@ -11,7 +11,9 @@ typedef struct {
     int battery_percent;
     int32_t last_render_ms;
     int64_t uptime_sec;
-    uint32_t energy_mah_x1000;
+    uint32_t energy_mah_x1000;   /* all-time, by the power model */
+    uint32_t batt_used_mah;      /* since the pack went in (PWR newbat=1) */
+    uint32_t batt_cap_mah;       /* declared pack capacity, 0 = unknown */
     int estimated_current_ua;
     int saver_mode;
     int partial_mode;

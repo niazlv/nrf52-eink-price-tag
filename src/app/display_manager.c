@@ -1082,6 +1082,8 @@ void display_manager_update_status(void) {
                                            STATIC_SAVER_MAX_PARTIALS)
             : maintenance_countdown(stream_partial_count, STREAM_REFRESH_INTERVAL);
     model.energy_mah_x1000 = power_estimate_get_mah_x1000();
+    model.batt_used_mah = power_battery_used_mah();
+    model.batt_cap_mah = power_battery_capacity_mah(power_battery_get());
     model.estimated_current_ua = power_estimate_current_ua;
 
     bool send_tele = false;

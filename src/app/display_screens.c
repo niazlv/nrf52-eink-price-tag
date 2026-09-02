@@ -131,18 +131,41 @@ static void render_stats(const display_status_model_t *model, int x, int y, int 
              power_tag(model));
     draw_text(x, y, stat_str, scale);
 
-    char mf_s[4]; fmt_u3(mf_s, (unsigned int)mah_frac);
-    snprintf(power_str, sizeof(power_str), "mAh:%u.%s I:%d.%dmA",
-             (unsigned int)mah, mf_s,
-             current_ma_x10 / 10, current_ma_x10 % 10);
+    if (model->batt_cap_mah > 0) {
+        /* Drawn since the pack went in, against what it was declared to hold. */
+        snprintf(power_str, sizeof(power_str), "mAh:%u/%u I:%d.%dmA",
+                 (unsigned int)model->batt_used_mah, (unsigned int)model->batt_cap_mah,
+                 current_ma_x10 / 10, current_ma_x10 % 10);
+    } else {
+        char mf_s[4]; fmt_u3(mf_s, (unsigned int)mah_frac);
+        snprintf(power_str, sizeof(power_str), "mAh:%u.%s I:%d.%dmA",
+                 (unsigned int)mah, mf_s,
+                 current_ma_x10 / 10, current_ma_x10 % 10);
+    }
     draw_text(x, y + 10 * scale, power_str, scale);
+}
+
+/* Caption under the icon. With a declared pack it is the charge the pack can
+ * still give by the tag's own accounting (declared minus drawn since install);
+ * without one, the voltage — the only reading there is, and a saturated one
+ * above 3.6 V. The icon fill is battery_percent(): the same accounting,
+ * capped by the chemistry curve where the ADC can see it. */
+static void battery_caption(const display_status_model_t *model, char *out, size_t n)
+{
+    if (model->batt_cap_mah > 0) {
+        uint32_t left = (model->batt_used_mah >= model->batt_cap_mah)
+                        ? 0 : model->batt_cap_mah - model->batt_used_mah;
+        snprintf(out, n, "%umAh", (unsigned int)left);
+    } else {
+        snprintf(out, n, "%dmV", model->battery_mv);
+    }
 }
 
 static void render_battery(const display_status_model_t *model, int x, int y, int scale)
 {
     char bat_str[16];
     graphics_draw_battery(x, y, model->battery_percent);
-    snprintf(bat_str, sizeof(bat_str), "%dmV", model->battery_mv);
+    battery_caption(model, bat_str, sizeof(bat_str));
     draw_text(x, y + 13, bat_str, scale);
 }
 
@@ -211,12 +234,11 @@ void display_screens_render_status_static(const display_status_model_t *model)
         /* Bottom-right corner: the reading ("3279mV", 6 glyphs) right-aligned
          * to the margin, the 23-px icon right-aligned above it. */
         int right = w - l.margin;
-        int text_w = text_width("0000mV", l.text_scale);
         int y = h - l.margin - 8 * l.text_scale - 13;
         char bat_str[16];
         graphics_draw_battery(right - 23, y, model->battery_percent);
-        snprintf(bat_str, sizeof(bat_str), "%dmV", model->battery_mv);
-        draw_text(right - text_w, y + 13, bat_str, l.text_scale);
+        battery_caption(model, bat_str, sizeof(bat_str));
+        draw_text(right - text_width(bat_str, l.text_scale), y + 13, bat_str, l.text_scale);
     } else {
         render_battery(model, w - 36, 5, 1);
     }
