@@ -1,4 +1,5 @@
 #include "battery.h"
+#include "power_profile.h"
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/pm/pm.h>
@@ -101,6 +102,50 @@ battery_state_t battery_get_state(void)
 
 int battery_percent(int mv)
 {
+    /* A declared pack (PWR:chem=..., cell=...) gives two independent readings
+     * and the gauge takes the more pessimistic one that is actually visible:
+     *
+     *  - the coulomb estimate, capacity minus what the power model says was
+     *    drawn since the pack went in. Independent of voltage — so it works
+     *    through the ADC ceiling and on the flat chemistries (coin cells,
+     *    LiFeS2) where voltage says nothing until the cliff — but only as
+     *    honest as the stated capacity and the last "fresh pack" mark;
+     *  - the chemistry's rest-voltage curve, which cannot be fooled by a
+     *    wrong capacity but is blind above 3600 mV and flat on the flat
+     *    chemistries.
+     *
+     * Where both are visible, the lower one wins: if the curve reads below
+     * the counter the pack is emptier than we thought (self-discharge, an
+     * optimistic capacity), and a gauge that stays high into the shutdown
+     * screen is the one failure mode worth avoiding. At the ADC ceiling the
+     * curve is only a lower bound, so it cannot cap the counter there. */
+    const struct power_battery *pack = power_battery_get();
+    uint32_t cap = power_battery_capacity_mah(pack);
+    int coulomb = -1;
+
+    if (pack->chem == POWER_CHEM_MAINS) {
+        return 100;
+    }
+    if (cap > 0) {
+        uint32_t used = power_battery_used_mah();
+        coulomb = (used >= cap) ? 0 : (int)((cap - used) * 100U / cap);
+    }
+    if (mv >= 0) {
+        bool lower_bound;
+        int vsoc = power_battery_soc_from_mv(pack, mv, &lower_bound);
+
+        if (coulomb >= 0) {
+            return (vsoc >= 0 && !lower_bound && vsoc < coulomb) ? vsoc : coulomb;
+        }
+        if (vsoc >= 0) {
+            /* No capacity: the curve alone. The gauge cannot draw ">=25%",
+             * so at the ceiling it keeps the old reading — full. */
+            return lower_bound ? 100 : vsoc;
+        }
+    } else if (coulomb >= 0) {
+        return coulomb;
+    }
+
     /* Moved here from display_manager so the gauge sits next to the protection
      * thresholds — but the 2.0–3.0 V mapping is UNCHANGED from where it lived
      * before, deliberately.

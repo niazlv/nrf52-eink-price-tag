@@ -1396,12 +1396,22 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <span>Батарея</span><span id="sys-bat" style="color:var(--fg2)">—</span>
         </div>
         <div class="brow">
-          <select id="pwr-btype" class="grow" title="Тип батареи — подставляет типичную ёмкость, дальше можно поправить" onchange="pwrBatPreset()"></select>
-          <input type="number" id="pwr-bat" class="grow" min="0" max="65535" step="10" placeholder="мАч" title="Номинальная ёмкость, мАч (0 = неизвестно)">
-          <button class="btn acc" onclick="saveBattery(false)" title="Запомнить тип и ёмкость">Сохранить</button>
-          <button class="btn ghost" onclick="saveBattery(true)" title="Поставили свежую батарею: счётчик «использовано» начинается заново">Заменена</button>
+          <select id="pwr-chem" class="grow" title="Химия — задаёт кривую разряда и типичную ёмкость элемента, дальше всё можно поправить" onchange="pwrChemPreset()"></select>
         </div>
-        <div class="hint">Часы перерисовываются на границе интервала (при «раз в 5 мин» — в :00, :05, :10…), всё остальное время контроллер спит с выключенной панелью. Ночь считается по часам самого ценника. «Выкл» — перерисовка только по команде. Реклама — как часто ценник «светится» в эфире: реже = дольше ищется телефоном, но дешевле; картинке частая реклама ни к чему. Нужна прошивка v3.4.13+: ценник постарше эту карточку не понимает и живёт по прежним правилам — каждую минуту, реклама 2 с; здесь это будет показано, а настройки заблокированы до обновления. Оценки «мкА» и «хватит ещё» считает прошивка по своей модели тока (той же, что ведёт счётчик мАч) — это расчёт, а не измерение; ёмкость батареи и момент её замены ценник запоминает.</div>
+        <div class="brow" style="margin-top:6px">
+          <span class="muted">последов.</span>
+          <select id="pwr-ser" title="Элементов последовательно (напряжение × N)"></select>
+          <span class="muted">паралл.</span>
+          <select id="pwr-par" title="Цепочек параллельно (ёмкость × N)"></select>
+          <span class="muted">мАч/элемент</span>
+          <input type="number" id="pwr-cell" class="grow" min="0" max="65535" step="10" placeholder="мАч" title="Номинальная ёмкость ОДНОГО элемента, мАч (0 = неизвестно)">
+        </div>
+        <div class="muted" id="pwr-pack" style="margin-top:4px"></div>
+        <div class="brow" style="margin-top:6px">
+          <button class="btn acc" onclick="saveBattery(false)" title="Запомнить химию, схему и ёмкость">Сохранить</button>
+          <button class="btn ghost" onclick="saveBattery(true)" title="Поставили свежий комплект: счётчик «использовано» начинается заново">Заменена</button>
+        </div>
+        <div class="hint">Часы перерисовываются на границе интервала (при «раз в 5 мин» — в :00, :05, :10…), всё остальное время контроллер спит с выключенной панелью. Ночь считается по часам самого ценника. «Выкл» — перерисовка только по команде. Реклама — как часто ценник «светится» в эфире: реже = дольше ищется телефоном, но дешевле; картинке частая реклама ни к чему. Нужна прошивка v3.4.13+: ценник постарше эту карточку не понимает и живёт по прежним правилам — каждую минуту, реклама 2 с; здесь это будет показано, а настройки заблокированы до обновления. Оценки «мкА» и «хватит ещё» считает прошивка по своей модели тока (той же, что ведёт счётчик мАч) — это расчёт, а не измерение. Химия задаёт кривую разряда: процент «по напряжению» честен там, где АЦП видит (всё до 3.6 В — щелочные, таблетки, LiFePO4), а у 1S Li-ion верхняя половина кривой скрыта потолком АЦП и показывается как «≥ N %»; «по счётчику» не зависит от напряжения, но зависит от правильно указанной ёмкости и нажатой «Заменена». Ценник всё это запоминает.</div>
       </section>
 
       <section class="card m7">
@@ -2062,6 +2072,7 @@ function onNotify(ev) {
     if (line.startsWith('NAME:')) parseName(line);
     if (line.startsWith('meshrx=')) parseMeshrx(line);
     if (line.startsWith('PWR:')) parsePwr(line);
+    if (line.startsWith('PWRB:')) parsePwr(line);
     if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -5315,8 +5326,21 @@ const PWR_ADV_OPTS  = [[2, '2 с'], [5, '5 с'], [10, '10 с']];
 const PWR_HOUR_OPTS = [...Array(24).keys()].map(h => [h, String(h).padStart(2, '0') + ':00']);
 const PWR_DEFAULTS  = { day: 1, night: 5, from: 23, to: 7, advc: 2, advp: 5 };
 const PWR_IDS       = ['pwr-day', 'pwr-night', 'pwr-from', 'pwr-to', 'pwr-advc', 'pwr-advp'];
-// Тип батареи → типичная ёмкость. Номер = enum power_battery_type в прошивке.
-const PWR_BATT_TYPES = [[1, 'Li-ion / Li-Po', 370], [2, '2×AA / 2×AAA щелочные', 2000], [3, 'LiFePO4', 400], [4, 'NiMH', 800], [0, 'неизвестно / своё', 0]];
+// Химия → [id, подпись, мАч на элемент, S, P, номинал элемента мВ]. id = enum power_chem в прошивке.
+const PWR_CHEMS = [
+  [1, 'Li-ion / Li-Po (3.7 В)',              370, 1, 1, 3700],
+  [2, 'Щелочные AA/AAA/LR44 (1.5 В)',        2500, 2, 1, 1500],
+  [5, 'Литиевая таблетка CR2032/CR2450 (3 В)', 230, 1, 1, 3000],
+  [6, 'Литиевые AA/AAA 1.5 В (LiFeS2)',      3000, 2, 1, 1500],
+  [3, 'LiFePO4 (3.2 В)',                      500, 1, 1, 3200],
+  [4, 'NiMH (1.2 В)',                        2000, 2, 1, 1200],
+  [7, 'Постоянное питание (USB / сеть)',        0, 1, 1, 0],
+  [0, 'неизвестно / своё',                      0, 1, 1, 0],
+];
+const PWR_CHEM_MAINS = 7;
+const PWR_ADC_CEIL_MV = 3600;
+const PWR_CELLS = [[1, '1'], [2, '2'], [3, '3'], [4, '4']];
+function pwrChem(id) { return PWR_CHEMS.find(c => c[0] === id) || PWR_CHEMS[PWR_CHEMS.length - 1]; }
 let pwrPreviewT = null;
 const PWR_POLL_MS   = 30000;
 const PWR_MIN_FW    = '3.4.13';
@@ -5381,26 +5405,90 @@ function pwrEstText(kv, prefix) {
   if (d) t += ` · хватит ещё <b>${d}</b>`;
   return t;
 }
+function pwrPackSummary() {
+  const el = $('pwr-pack'); if (!el) return;
+  const c = pwrChem(+$('pwr-chem').value), ser = +$('pwr-ser').value, par = +$('pwr-par').value;
+  const cell = +($('pwr-cell').value || 0);
+  if (c[0] === PWR_CHEM_MAINS) { el.textContent = 'ничего не разряжается — срок не считается'; return; }
+  const cap = cell * par, vnom = c[5] * ser;
+  el.textContent = (cap ? `итого ${cap} мАч` : 'ёмкость не задана') + (vnom ? ` · ${(vnom / 1000).toFixed(1)} В номинал` : '') +
+    ((vnom && vnom > PWR_ADC_CEIL_MV) ? ' · выше 3.6 В АЦП не видит' : '');
+}
 function pwrRenderEstimate(kv) {
   const el = $('pwr-est'); if (!el) return;
-  if (!(kv.est > 0)) { el.textContent = '—'; return; }
-  let html = pwrEstText(kv, 'Сейчас');
-  if (kv.bat > 0) html += ` (использовано ${kv.used} из ${kv.bat} мАч)`;
-  if (kv.base > 0) {
-    const k = (kv.base / kv.est).toFixed(1);
-    html += `<br>Без экономии (mesh вкл, каждую минуту круглосуточно, реклама 2 с) ≈ ${kv.base} мкА — <b>в ${k}× больше</b>`;
+  const mains = kv.chem === PWR_CHEM_MAINS;
+  const cap = (kv.cell || 0) * (kv.par || 1);
+  let html = '';
+  if (kv.est > 0) {
+    html = mains
+      ? `Потребление ≈ <b>${kv.est} мкА</b> · ${(kv.est * 24 / 1000).toFixed(2)} мАч/сут · <b>постоянное питание — срок не ограничен</b>`
+      : pwrEstText(kv, 'Сейчас') + (cap > 0 ? ` (использовано ${kv.used} из ${cap} мАч)` : '');
+    if (kv.base > 0) {
+      const k = (kv.base / kv.est).toFixed(1);
+      html += `<br>Без экономии (mesh вкл, каждую минуту круглосуточно, реклама 2 с) ≈ ${kv.base} мкА — <b>в ${k}× больше</b>`;
+    }
   }
-  el.innerHTML = html;
+  if (!mains && kv.mv > 0) {
+    const parts = [];
+    if (kv.vsoc >= 0) parts.push(kv.vsat ? `по напряжению <b>≥ ${kv.vsoc}%</b> (АЦП в потолке 3.6 В, реально выше)` : `по напряжению <b>${kv.vsoc}%</b>`);
+    if (cap > 0) parts.push(`по счётчику <b>${Math.max(0, Math.min(100, Math.round((cap - kv.used) / cap * 100)))}%</b>`);
+    if (kv.soc >= 0 && cap > 0) parts.push(`на экране ценника <b>${kv.soc}%</b> (меньшее из двух)`);
+    if (parts.length) html += `<br>Заряд: ${parts.join(' · ')}`;
+  }
+  el.innerHTML = html || '—';
   const sb = $('sys-bat');
   if (sb) {
-    const tn = (PWR_BATT_TYPES.find(t => t[0] === kv.btype) || [0, 'неизвестно'])[1];
-    sb.textContent = kv.bat > 0 ? `${tn}, ${kv.bat} мАч` : 'ёмкость не задана — срок не считается';
-    sb.style.color = kv.bat > 0 ? 'var(--green)' : 'var(--orange)';
+    const c = pwrChem(kv.chem);
+    sb.textContent = mains ? c[1] : (cap > 0 ? `${c[1]}, ${kv.ser}S${kv.par}P, ${cap} мАч` : 'ёмкость не задана — срок не считается');
+    sb.style.color = (mains || cap > 0) ? 'var(--green)' : 'var(--orange)';
   }
 }
+// Батарейная карточка сверху: пока прошивка не знала химию, процент был
+// линейкой 3.0–3.6 В. С кривой — честный процент там, где АЦП видит, и
+// «≥ N%» там, где он упёрся в потолок.
+// Показываем то же, что рисует сам ценник (soc из PWRB = battery_percent):
+// по счётчику, если ёмкость задана, и по кривой — если она видна и ниже.
+function pwrRenderBatteryCard(kv) {
+  if (!(kv.mv > 0) || kv.chem === PWR_CHEM_MAINS || !(kv.soc >= 0)) return;
+  const cap = (kv.cell || 0) * (kv.par || 1);
+  const pct = kv.soc;
+  const byCounter = cap > 0;
+  const ceilingOnly = !byCounter && kv.vsat;           // только кривая, и та в потолке
+  const color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--orange)' : 'var(--red)';
+  const how = byCounter ? 'по расчёту' : 'по кривой';
+  const b = $('sys-batt'), bar = $('sys-batt-bar'), pl = $('sys-batt-pct');
+  if (b) b.innerHTML = `<span style="color:${color}">${kv.vsat ? '≥' : ''}${kv.mv} mV (${ceilingOnly ? '≥' : ''}${ceilingOnly ? kv.vsoc : pct}% ${how})</span>`;
+  if (bar) bar.style.width = (ceilingOnly ? 100 : pct) + '%';
+  if (pl) pl.textContent = ceilingOnly ? `≥${kv.vsoc}%` : `${pct}%`;
+  battChip(ceilingOnly ? 100 : pct, kv.mv, false);
+}
+function pwrChemPreset() {
+  const c = pwrChem(+$('pwr-chem').value);
+  pwrFill('pwr-ser', PWR_CELLS, c[3]); pwrFill('pwr-par', PWR_CELLS, c[4]);
+  const ci = $('pwr-cell'); if (ci) ci.value = c[2] || '';
+  pwrPackSummary(); pwrPreview();
+}
+function pwrPackKeys() {
+  const v = id => +$(id).value;
+  return `chem=${v('pwr-chem')},ser=${v('pwr-ser')},par=${v('pwr-par')},cell=${+($('pwr-cell').value || 0)}`;
+}
+async function saveBattery(newbat) {
+  if (!connected) { alert('Не подключено'); return; }
+  if (pwrSupported === false) { alert(`Эта прошивка (${sysState.fwVersion}) батарею не хранит — обновите до ${PWR_MIN_FW}+`); return; }
+  send(`PWR:${pwrPackKeys()}${newbat ? ',newbat=1' : ''}\n`);
+  const reply = await waitForLine(/^PWR:(?!.*dry=1)/, 4000);
+  if (reply) logI((newbat ? 'Комплект заменён: ' : 'Батарея: ') + reply.slice('PWR:'.length));
+  else logE('PWR: нет ответа');
+}
+let pwrDryAcc = {};   // a dry preview arrives as two lines too
 function parsePwr(line) {
-  const kv = {};
-  for (const m of line.slice('PWR:'.length).matchAll(/(\w+)=(-?\d+)/g)) kv[m[1]] = +m[2];
+  const second = line.startsWith('PWRB:');
+  const fresh = {};
+  for (const m of line.slice(second ? 'PWRB:'.length : 'PWR:'.length).matchAll(/(\w+)=(-?\d+)/g)) fresh[m[1]] = +m[2];
+  // PWR: opens a record, PWRB: completes it; either way render what we have.
+  let kv;
+  if (fresh.dry) { kv = second ? Object.assign(pwrDryAcc, fresh) : (pwrDryAcc = fresh); }
+  else           { kv = second ? Object.assign(pwrLast || {}, fresh) : fresh; }
   if (kv.dry) {
     // Предпросмотр несохранённого выбора: только строка оценки, селекты не трогаем.
     const pv = $('pwr-preview'); if (!pv) return;
@@ -5412,11 +5500,14 @@ function parsePwr(line) {
   pwrSupported = true;
   pwrSetEnabled(true);
   pwrSetAll(kv);
-  pwrFill('pwr-btype', PWR_BATT_TYPES.map(t => [t[0], t[1]]), kv.btype);
-  const bi = $('pwr-bat'); if (bi && document.activeElement !== bi) bi.value = kv.bat > 0 ? kv.bat : '';
+  pwrFill('pwr-chem', PWR_CHEMS.map(c => [c[0], c[1]]), kv.chem);
+  pwrFill('pwr-ser', PWR_CELLS, kv.ser); pwrFill('pwr-par', PWR_CELLS, kv.par);
+  const ci = $('pwr-cell'); if (ci && document.activeElement !== ci) ci.value = kv.cell > 0 ? kv.cell : '';
+  pwrPackSummary();
   pwrMarkKnown(true);
   pwrRender();
   pwrRenderEstimate(kv);
+  pwrRenderBatteryCard(kv);
   const pv = $('pwr-preview'); if (pv) { pv.hidden = true; pv.innerHTML = ''; }
   // Локальный отсчёт: раз в секунду вниз, на нуле — перечитать (ценник как
   // раз перерисовался, и у него уже новое next).
@@ -5435,24 +5526,9 @@ function pwrPreview() {
   pwrPreviewT = setTimeout(() => {
     if (!connected || pwrSupported === false) return;
     const v = id => +$(id).value;
-    const bat = +($('pwr-bat').value || 0), bt = v('pwr-btype');
-    send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')},bat=${bat},btype=${bt},dry=1\n`);
+    pwrPackSummary();
+    send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')},${pwrPackKeys()},dry=1\n`);
   }, 400);
-}
-function pwrBatPreset() {
-  const t = PWR_BATT_TYPES.find(x => x[0] === +$('pwr-btype').value);
-  const bi = $('pwr-bat');
-  if (t && t[2] > 0 && bi) bi.value = t[2];
-  pwrPreview();
-}
-async function saveBattery(newbat) {
-  if (!connected) { alert('Не подключено'); return; }
-  if (pwrSupported === false) { alert(`Эта прошивка (${sysState.fwVersion}) батарею не хранит — обновите до ${PWR_MIN_FW}+`); return; }
-  const bat = +($('pwr-bat').value || 0), bt = +$('pwr-btype').value;
-  send(`PWR:bat=${bat},btype=${bt}${newbat ? ',newbat=1' : ''}\n`);
-  const reply = await waitForLine(/^PWR:(?!.*dry=1)/, 4000);
-  if (reply) logI((newbat ? 'Батарея заменена: ' : 'Батарея: ') + reply.slice('PWR:'.length));
-  else logE('PWR: нет ответа');
 }
 // Запрос с одним повтором: TX-пул прошивки в 3 буфера может уронить ответ,
 // а старая прошивка (< 3.4.13) не ответит вовсе — тогда честно так и пишем.
@@ -5480,8 +5556,10 @@ function pwrReset() {
   pwrSupported = null;
   pwrSetEnabled(true);
   pwrSetAll(PWR_DEFAULTS);
-  pwrFill('pwr-btype', PWR_BATT_TYPES.map(t => [t[0], t[1]]), 0);
-  const bi = $('pwr-bat'); if (bi) bi.value = '';
+  pwrFill('pwr-chem', PWR_CHEMS.map(c => [c[0], c[1]]), 0);
+  pwrFill('pwr-ser', PWR_CELLS, 1); pwrFill('pwr-par', PWR_CELLS, 1);
+  const bi = $('pwr-cell'); if (bi) bi.value = '';
+  const pk = $('pwr-pack'); if (pk) pk.textContent = '';
   pwrMarkKnown(false);
   pwrStatus('—');
   const est = $('pwr-est'); if (est) est.textContent = '—';
@@ -5490,7 +5568,8 @@ function pwrReset() {
   if (!pwrReset.wired) {
     pwrReset.wired = true;
     for (const id of PWR_IDS) { const el = $(id); if (el) el.addEventListener('change', pwrPreview); }
-    if (bi) bi.addEventListener('input', pwrPreview);
+    if (bi) bi.addEventListener('input', () => { pwrPackSummary(); pwrPreview(); });
+    for (const id of ['pwr-ser', 'pwr-par']) { const el = $(id); if (el) el.addEventListener('change', () => { pwrPackSummary(); pwrPreview(); }); }
   }
 }
 async function applyPwr() {

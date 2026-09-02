@@ -1608,30 +1608,32 @@ static void cmd_meshrx(char *args)
                mesh_get_rx() ? "" : " (re-enable over NUS only)");
 }
 
-/* PWR — the sleep profile and the battery behind it.
+/* PWR — the sleep profile and the pack behind it.
  *
  *   PWR                       report
  *   PWR:key=val[,key=val...]  change, persist, report
  *
  * Profile keys: day/night = redraw interval in minutes (0 = never by
  * schedule), from/to = night window in hours, advc/advp = idle advertising in
- * seconds for clock / picture mode. Battery keys: bat = capacity in mAh
- * (0 = unknown), btype = enum power_battery_type, newbat=1 = "a fresh cell went
- * in" (restarts the used-since counter). dry=1 computes the estimate for the
- * given keys without saving or applying anything — a host previews a choice
- * with it before committing.
+ * seconds for clock / picture mode.
+ * Pack keys: chem = enum power_chem, ser/par = cells in series / strings in
+ * parallel (1-4), cell = mAh of one cell (0 = unknown), newbat=1 = a fresh
+ * pack went in (restarts the used-since counter). bat= is the older spelling
+ * of cell= with par=1; btype= of chem=.
+ * dry=1 computes the report for the given keys without saving or applying —
+ * a host previews a choice with it before committing.
  *
- * The report carries what a host needs to show the trade-off: night_now and
- * next (seconds to the next scheduled redraw, -1 = none), est (average µA the
- * model predicts for this profile in the current mode), base (the same for the
- * everything-on baseline), used (mAh since the battery epoch) and days (left
- * on the stated capacity at est, -1 when capacity is unknown). */
+ * Report, beyond the echo of the keys: night_now, next (seconds to the next
+ * scheduled redraw, -1 = none), mv (pack voltage as the ADC sees it), vsoc
+ * (charge from the chemistry curve, -1 = no curve), vsat (1 = the ADC is at
+ * its 3600 mV ceiling and vsoc is a lower bound), used (mAh since the pack
+ * epoch), est / base (average µA the model predicts for this profile and for
+ * the everything-on baseline), days (left on the pack at est: -1 unknown
+ * capacity, -2 mains — nothing depletes). */
 static void cmd_pwr(char *args)
 {
     struct power_profile p = *power_profile_get();
-    const struct power_battery *b0 = power_battery_get();
-    uint8_t  btype = b0->type;
-    uint16_t bmah  = b0->mah;
+    struct power_battery b = *power_battery_get();
     bool newbat = false, dry = false, touched_bat = false;
 
     if (args && *args) {
@@ -1643,18 +1645,22 @@ static void cmd_pwr(char *args)
             long val = eq ? strtol(eq + 1, &end, 10) : -1;
 
             if (!eq || !end || *end != '\0' || val < 0 || val > 65535) {
-                ble_printf("usage: PWR / PWR:day=1,night=5,from=23,to=7,advc=2,advp=5,bat=370,btype=1[,newbat=1][,dry=1]\r\n");
+                ble_printf("usage: PWR / PWR:day=1,night=5,from=23,to=7,advc=2,advp=5,chem=1,ser=1,par=1,cell=370[,newbat=1][,dry=1]\r\n");
                 return;
             }
             *eq = '\0';
-            if      (strcmp(kv, "day") == 0)    p.tick_day_min   = (uint8_t)MIN(val, 255);
-            else if (strcmp(kv, "night") == 0)  p.tick_night_min = (uint8_t)MIN(val, 255);
-            else if (strcmp(kv, "from") == 0)   p.night_from_h   = (uint8_t)MIN(val, 255);
-            else if (strcmp(kv, "to") == 0)     p.night_to_h     = (uint8_t)MIN(val, 255);
-            else if (strcmp(kv, "advc") == 0)   p.adv_clock_s    = (uint8_t)MIN(val, 255);
-            else if (strcmp(kv, "advp") == 0)   p.adv_picture_s  = (uint8_t)MIN(val, 255);
-            else if (strcmp(kv, "bat") == 0)    { bmah  = (uint16_t)val; touched_bat = true; }
-            else if (strcmp(kv, "btype") == 0)  { btype = (uint8_t)MIN(val, 255); touched_bat = true; }
+            uint8_t v8 = (uint8_t)MIN(val, 255);
+            if      (strcmp(kv, "day") == 0)    p.tick_day_min   = v8;
+            else if (strcmp(kv, "night") == 0)  p.tick_night_min = v8;
+            else if (strcmp(kv, "from") == 0)   p.night_from_h   = v8;
+            else if (strcmp(kv, "to") == 0)     p.night_to_h     = v8;
+            else if (strcmp(kv, "advc") == 0)   p.adv_clock_s    = v8;
+            else if (strcmp(kv, "advp") == 0)   p.adv_picture_s  = v8;
+            else if (strcmp(kv, "chem") == 0 || strcmp(kv, "btype") == 0) { b.chem = v8; touched_bat = true; }
+            else if (strcmp(kv, "ser") == 0)    { b.series   = v8; touched_bat = true; }
+            else if (strcmp(kv, "par") == 0)    { b.parallel = v8; touched_bat = true; }
+            else if (strcmp(kv, "cell") == 0)   { b.cell_mah = (uint16_t)val; touched_bat = true; }
+            else if (strcmp(kv, "bat") == 0)    { b.cell_mah = (uint16_t)val; b.parallel = 1; touched_bat = true; }
             else if (strcmp(kv, "newbat") == 0) { newbat = (val != 0); touched_bat = true; }
             else if (strcmp(kv, "dry") == 0)    dry = (val != 0);
             else {
@@ -1667,38 +1673,51 @@ static void cmd_pwr(char *args)
                 ble_printf("PWR: out of range (day/night 0-60, from/to 0-23, adv 1-10)\r\n");
                 return;
             }
-            if (touched_bat && power_battery_set(btype, bmah, newbat) != 0) {
-                ble_printf("PWR: bad battery type (0-4)\r\n");
+            if (touched_bat &&
+                power_battery_set(b.chem, b.series, b.parallel, b.cell_mah, newbat) != 0) {
+                ble_printf("PWR: bad pack (chem 0-7, ser/par 1-4)\r\n");
                 return;
             }
         }
     }
 
     const struct power_profile *live = dry ? &p : power_profile_get();
-    const struct power_battery *b = power_battery_get();
+    const struct power_battery *pack = dry ? &b : power_battery_get();
     bool picture = !display_manager_is_screensaver_active();
     int est  = display_manager_estimate_avg_ua(live, mesh_get_rx(), picture);
     int base = display_manager_estimate_avg_ua(power_profile_baseline(), true, picture);
     uint32_t used = power_battery_used_mah();
-    uint16_t cap = dry ? bmah : b->mah;
+    uint32_t cap = power_battery_capacity_mah(pack);
+    int mv = battery_read_mv();
+    bool vsat = false;
+    int vsoc = power_battery_soc_from_mv(pack, mv, &vsat);
     int days = -1;
 
-    if (cap > 0 && est > 0) {
+    if (pack->chem == POWER_CHEM_MAINS) {
+        days = -2;
+    } else if (cap > 0 && est > 0) {
         uint32_t left = (cap > used) ? cap - used : 0;
         /* mAh / (µA * 24 h / 1000) = days */
         days = (int)((uint64_t)left * 1000U / ((uint32_t)est * 24U));
     }
 
+    /* Two lines: ble_printf's buffer is 128 bytes and the whole report is
+     * not. PWR: carries the profile and the estimates, PWRB: the pack. Both
+     * repeat dry=1 so a host can tell a preview from the real thing. soc is
+     * the combined figure the panel gauge shows (battery_percent), so the
+     * page and the panel cannot disagree. */
     struct tm t;
     get_system_time(&t);
-    ble_printf("PWR:day=%d night=%d from=%d to=%d advc=%d advp=%d night_now=%d next=%d "
-               "bat=%u btype=%u used=%u est=%d base=%d days=%d%s\r\n",
+    ble_printf("PWR:day=%d night=%d from=%d to=%d advc=%d advp=%d night_now=%d next=%d est=%d base=%d days=%d%s\r\n",
                live->tick_day_min, live->tick_night_min, live->night_from_h, live->night_to_h,
                live->adv_clock_s, live->adv_picture_s,
                power_profile_is_night(t.tm_hour) ? 1 : 0,
                dry ? -1 : power_profile_seconds_to_tick(&t),
-               (unsigned)cap, (unsigned)(dry ? btype : b->type), (unsigned)used,
                est, base, days, dry ? " dry=1" : "");
+    ble_printf("PWRB:chem=%u ser=%u par=%u cell=%u mv=%d vsoc=%d vsat=%d used=%u soc=%d%s\r\n",
+               pack->chem, pack->series, pack->parallel, pack->cell_mah,
+               mv, vsoc, vsat ? 1 : 0, (unsigned)used,
+               dry ? -1 : battery_percent(mv), dry ? " dry=1" : "");
 }
 
 /* BCAST <all|g<N>|<6hex-id>> <CMD...> — flood a command to the fleet.
@@ -1815,7 +1834,7 @@ const struct shell_cmd commands[] = {
     {OP_BCAST,     "BCAST",       cmd_bcast,      "Flood a command: BCAST <all|g<N>|<6hex>> <CMD...>"},
     {OP_GROUP,     "GROUP",       cmd_group,      "Mesh group id: GROUP / GROUP <0-255>", CMD_MESH},
     {OP_MESHRX,    "MESHRX",      cmd_meshrx,     "Mesh receive: MESHRX / MESHRX ON|OFF (OFF saves ~0.2-0.3mA; node stops hearing floods)", CMD_MESH},
-    {OP_PWR,       "PWR:",        cmd_pwr,        "Sleep profile + battery: PWR:day=1,night=5,from=23,to=7,advc=2,advp=5,bat=370,btype=1[,newbat=1][,dry=1]", CMD_MESH},
+    {OP_PWR,       "PWR:",        cmd_pwr,        "Sleep profile + pack: PWR:day=1,night=5,from=23,to=7,advc=2,advp=5,chem=1,ser=1,par=1,cell=370[,newbat=1][,dry=1]", CMD_MESH},
     {OP_PWR,       "PWR",         cmd_pwr,        "Sleep profile: show (day/night redraw interval, night window, adv interval)", CMD_MESH},
     /* Security / identity */
     {OP_AUTH,      "AUTH",        cmd_auth,       "Auth: AUTH (get challenge) / AUTH <resp-hex>", CMD_NOAUTH},

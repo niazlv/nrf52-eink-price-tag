@@ -32,31 +32,61 @@ struct power_profile {
  * battery protection and the stats roll-up ride on its wake-ups. */
 #define POWER_PROFILE_MAX_SLEEP_S  (15 * 60)
 
-/* What the tag runs on. Type is informational (the web picks presets by it);
- * capacity feeds the days-left estimate; epoch is the cumulative energy
- * counter at the moment this battery went in, so "used" can restart at zero
- * without touching the all-time total. 0 mAh = unknown, no estimate. */
-enum power_battery_type {
-	POWER_BATT_UNKNOWN  = 0,
-	POWER_BATT_LIION    = 1,   /* Li-ion / Li-Po cell */
-	POWER_BATT_ALKALINE = 2,   /* 2xAA / 2xAAA alkaline */
-	POWER_BATT_LIFEPO4  = 3,
-	POWER_BATT_NIMH     = 4,
+/* What the tag runs on: a chemistry, how the cells are wired and what one cell
+ * holds. Chemistry gives a rest-voltage curve (state of charge from the pack
+ * voltage) and a nominal per-cell voltage; series x parallel turn per-cell
+ * numbers into pack numbers; the epoch is the cumulative energy counter at the
+ * moment this pack went in, so "used since install" restarts at zero without
+ * touching the all-time total. cell_mah 0 = unknown, no days-left estimate.
+ *
+ * One hard limit sits under all of this: the SAADC measures VDD at gain 1/6
+ * against 0.6 V and saturates at 3600 mV. A 1S Li-ion pack (3.0-4.2 V) is
+ * therefore only visible in the lower half of its curve; 2xAA, coin cells and
+ * anything else that lives under 3.6 V is visible end to end. When the reading
+ * sits at the ceiling the curve result is reported as a lower bound. */
+enum power_chem {
+	POWER_CHEM_UNKNOWN  = 0,   /* no curve, no nominal: capacity only */
+	POWER_CHEM_LIION    = 1,   /* Li-ion / Li-Po, 3.0-4.2 V, nominal 3.7 */
+	POWER_CHEM_ALKALINE = 2,   /* 1.5 V cells (AA/AAA/LR44...), 1.6 -> 0.9 */
+	POWER_CHEM_LIFEPO4  = 3,   /* 2.5-3.65 V, nominal 3.2 */
+	POWER_CHEM_NIMH     = 4,   /* 1.0-1.4 V, nominal 1.2 */
+	POWER_CHEM_LICOIN   = 5,   /* CR2032/CR2450 LiMnO2: 3.0 V flat, cliff ~2.0 */
+	POWER_CHEM_LIFES2   = 6,   /* 1.5 V lithium AA/AAA (LiFeS2): 1.8 -> 1.2, flat */
+	POWER_CHEM_MAINS    = 7,   /* USB / mains: nothing depletes, no estimate */
+	POWER_CHEM_COUNT
 };
 
 struct power_battery {
-	uint8_t  type;             /* enum power_battery_type */
+	uint8_t  chem;             /* enum power_chem */
+	uint8_t  series;           /* cells in series, 1..4 */
+	uint8_t  parallel;         /* strings in parallel, 1..4 */
 	uint8_t  _pad;
-	uint16_t mah;              /* nominal capacity, 0 = unknown */
+	uint16_t cell_mah;         /* nominal capacity of ONE cell, 0 = unknown */
+	uint16_t _pad2;
 	uint64_t epoch_uah_x1000;  /* persist energy total when it was installed */
 };
+
+#define POWER_BATT_MAX_CELLS 4
+#define POWER_ADC_CEILING_MV 3600   /* SAADC gain 1/6 x 0.6 V reference */
 
 const struct power_profile *power_profile_get(void);
 const struct power_battery *power_battery_get(void);
 
-/* Record the battery. new_battery also moves the epoch to now, i.e. "used
- * since install" restarts at zero. Persists under "pwr/b". */
-int power_battery_set(uint8_t type, uint16_t mah, bool new_battery);
+/* Record the pack. new_battery also moves the epoch to now, i.e. "used since
+ * install" restarts at zero. Persists under "pwr/b". -EINVAL out of range. */
+int power_battery_set(uint8_t chem, uint8_t series, uint8_t parallel,
+		      uint16_t cell_mah, bool new_battery);
+
+/* Pack capacity (cell x parallel), mAh; 0 = unknown. */
+uint32_t power_battery_capacity_mah(const struct power_battery *b);
+
+/* Pack nominal voltage (per-cell nominal x series), mV; 0 for no chemistry. */
+int power_battery_nominal_mv(const struct power_battery *b);
+
+/* State of charge from the pack voltage by the chemistry's rest-voltage curve,
+ * 0..100; -1 when the chemistry has no curve. *lower_bound is set when @p mv
+ * sits at the ADC ceiling: the pack is at least this full, maybe fuller. */
+int power_battery_soc_from_mv(const struct power_battery *b, int mv, bool *lower_bound);
 
 /* mAh drawn since the battery epoch, by the estimator. */
 uint32_t power_battery_used_mah(void);
