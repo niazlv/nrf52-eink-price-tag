@@ -1404,7 +1404,17 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <span class="muted">паралл.</span>
           <select id="pwr-par" title="Цепочек параллельно (ёмкость × N)"></select>
           <span class="muted">мАч/элемент</span>
-          <input type="number" id="pwr-cell" class="grow" min="0" max="65535" step="10" placeholder="мАч" title="Номинальная ёмкость ОДНОГО элемента, мАч (0 = неизвестно)">
+          <input type="number" id="pwr-cell" class="grow" min="0" max="65535" step="10" placeholder="мАч" list="pwr-cell-presets" title="Номинальная ёмкость ОДНОГО элемента, мАч (0 = неизвестно). В списке — типовые: AA 2500, AAA 1000, LR44 150, CR2032 230, CR2450 620, 18650 2600, вейп 370.">
+          <datalist id="pwr-cell-presets">
+            <option value="2500" label="AA щелочная"></option>
+            <option value="1000" label="AAA щелочная"></option>
+            <option value="150"  label="LR44 щелочная"></option>
+            <option value="200"  label="SR44 серебряная"></option>
+            <option value="230"  label="CR2032"></option>
+            <option value="620"  label="CR2450"></option>
+            <option value="370"  label="Li-Po из вейпа"></option>
+            <option value="2600" label="18650"></option>
+          </datalist>
         </div>
         <div class="muted" id="pwr-pack" style="margin-top:4px"></div>
         <div class="brow" style="margin-top:6px">
@@ -5380,7 +5390,7 @@ const PWR_IDS       = ['pwr-day', 'pwr-night', 'pwr-from', 'pwr-to', 'pwr-advc',
 // Химия → [id, подпись, мАч на элемент, S, P, номинал элемента мВ]. id = enum power_chem в прошивке.
 const PWR_CHEMS = [
   [1, 'Li-ion / Li-Po (3.7 В)',              370, 1, 1, 3700],
-  [2, 'Щелочные AA/AAA/LR44 (1.5 В)',        2500, 2, 1, 1500],
+  [2, 'Щелочные 1.5 В (AA/AAA/LR44…)',       2500, 2, 1, 1500],
   [5, 'Литиевая таблетка CR2032/CR2450 (3 В)', 230, 1, 1, 3000],
   [6, 'Литиевые AA/AAA 1.5 В (LiFeS2)',      3000, 2, 1, 1500],
   [3, 'LiFePO4 (3.2 В)',                      500, 1, 1, 3200],
@@ -5409,6 +5419,11 @@ function pwrMayPoll() {
 const PWR_MIN_FW    = '3.4.13';
 let pwrSupported = null;       // null = ещё не знаем, false = прошивка старее PWR_MIN_FW
 let pwrKnown = false;          // true = селекты отражают ответ ценника
+// Пользователь начал править карточку и ещё не нажал «Применить»/«Сохранить».
+// Пока так — ни один ответ ценника (а он приходит каждые 30 с) не трогает
+// поля: переписывать чужой несохранённый ввод недопустимо. Сбрасывается
+// применением, отключением и кнопкой «По умолчанию».
+let pwrDirty = false;
 let pwrLast  = null;           // последний разобранный ответ
 let pwrNext  = -1;             // локальный отсчёт секунд до перерисовки
 let pwrPollT = null, pwrTickT = null;
@@ -5434,6 +5449,18 @@ function pwrMarkKnown(known) {
 function pwrSetEnabled(on) {
   for (const id of PWR_IDS) { const el = $(id); if (el) el.disabled = !on; }
   for (const b of document.querySelectorAll('#pwr-btns button')) b.disabled = !on;
+}
+// Видимый признак, что в полях есть несохранённое.
+function pwrDirtyHint() {
+  const el = $('pwr-preview'); if (!el) return;
+  if (pwrDirty && !el.innerHTML) {
+    el.innerHTML = 'есть несохранённые изменения — нажми «Применить» (профиль) или «Сохранить» (батарея)';
+    el.hidden = false;
+  }
+}
+function pwrClearDirty() {
+  pwrDirty = false;
+  const el = $('pwr-preview'); if (el) { el.hidden = true; el.innerHTML = ''; }
 }
 function pwrStatus(text, color) {
   const el = $('sys-pwr'); if (!el) return;
@@ -5557,7 +5584,7 @@ async function saveBattery(newbat) {
   if (pwrSupported === false) { alert(`Эта прошивка (${sysState.fwVersion}) батарею не хранит — обновите до ${PWR_MIN_FW}+`); return; }
   send(`PWR:${pwrPackKeys()}${newbat ? ',newbat=1' : ''}\n`);
   const reply = await waitForLine(/^PWR:(?!.*dry=1)/, 4000);
-  if (reply) logI((newbat ? 'Комплект заменён: ' : 'Батарея: ') + reply.slice('PWR:'.length));
+  if (reply) { pwrClearDirty(); logI((newbat ? 'Комплект заменён: ' : 'Батарея: ') + reply.slice('PWR:'.length)); }
   else logE('PWR: нет ответа');
 }
 let pwrDryAcc = {};   // a dry preview arrives as two lines too
@@ -5574,16 +5601,22 @@ function parsePwr(line) {
     const pv = $('pwr-preview'); if (!pv) return;
     pv.innerHTML = pwrEstText(kv, 'С этими настройками') || '';
     pv.hidden = !pv.innerHTML;
+    pwrDirtyHint();          /* нечего показать — но про несохранённое скажем */
     return;
   }
   pwrLast = kv; pwrNext = kv.next;
   pwrSupported = true;
   pwrSetEnabled(true);
-  pwrSetAll(kv);
-  pwrFill('pwr-chem', PWR_CHEMS.map(c => [c[0], c[1]]), kv.chem);
-  pwrFill('pwr-ser', PWR_CELLS, kv.ser); pwrFill('pwr-par', PWR_CELLS, kv.par);
-  const ci = $('pwr-cell'); if (ci && document.activeElement !== ci) ci.value = kv.cell > 0 ? kv.cell : '';
-  pwrPackSummary();
+  // Значения полей трогаем только если пользователь ничего не правит: иначе
+  // ответ опроса затрёт несохранённый ввод прямо под руками.
+  if (!pwrDirty) {
+    pwrSetAll(kv);
+    pwrFill('pwr-chem', PWR_CHEMS.map(c => [c[0], c[1]]), kv.chem);
+    pwrFill('pwr-ser', PWR_CELLS, kv.ser); pwrFill('pwr-par', PWR_CELLS, kv.par);
+    const ci = $('pwr-cell');
+    if (ci && document.activeElement !== ci) ci.value = kv.cell > 0 ? kv.cell : '';
+    pwrPackSummary();
+  }
   pwrMarkKnown(true);
   pwrRender();
   pwrRenderEstimate(kv);
@@ -5639,6 +5672,7 @@ function pwrQuery() {
 function pwrReset() {
   pwrStopTimers();
   clearTimeout(pwrPreviewT);
+  pwrDirty = false;
   pwrLast = null; pwrNext = -1;
   pwrSupported = null;
   pwrSetEnabled(true);
@@ -5654,9 +5688,13 @@ function pwrReset() {
   const sb = $('sys-bat'); if (sb) { sb.textContent = '—'; sb.style.color = 'var(--fg2)'; }
   if (!pwrReset.wired) {
     pwrReset.wired = true;
-    for (const id of PWR_IDS) { const el = $(id); if (el) el.addEventListener('change', pwrPreview); }
-    if (bi) bi.addEventListener('input', () => { pwrPackSummary(); pwrPreview(); });
-    for (const id of ['pwr-ser', 'pwr-par']) { const el = $(id); if (el) el.addEventListener('change', () => { pwrPackSummary(); pwrPreview(); }); }
+    const touched = () => { pwrDirty = true; pwrDirtyHint(); };
+    for (const id of PWR_IDS) { const el = $(id); if (el) el.addEventListener('change', () => { touched(); pwrPreview(); }); }
+    if (bi) bi.addEventListener('input', () => { touched(); pwrPackSummary(); pwrPreview(); });
+    for (const id of ['pwr-ser', 'pwr-par', 'pwr-chem']) {
+      const el = $(id);
+      if (el) el.addEventListener('change', () => { touched(); pwrPackSummary(); pwrPreview(); });
+    }
   }
 }
 async function applyPwr() {
@@ -5668,7 +5706,7 @@ async function applyPwr() {
   const v = id => +$(id).value;
   send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')}\n`);
   const reply = await waitForLine(/^PWR:(?!.*dry=1)/, 4000);
-  if (reply) logI('Шаблон сна: ' + reply.slice('PWR:'.length));
+  if (reply) { pwrClearDirty(); logI('Шаблон сна: ' + reply.slice('PWR:'.length)); }
   else logE('PWR: нет ответа (прошивка старше v3.4.13?)');
 }
 function resetPwr() { pwrSetAll(PWR_DEFAULTS); applyPwr(); }
