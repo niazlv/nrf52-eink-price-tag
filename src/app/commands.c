@@ -2253,7 +2253,14 @@ static void cmd_thread(void *p1, void *p2, void *p3)
         k_fifo_put(&cmd_free, slot);
     }
 }
-K_THREAD_DEFINE(cmd_tid, 1280, cmd_thread, NULL, NULL, NULL, 7, 0, 0);
+/* 2048, not the 1280 this shipped with in 3.4.18-3.4.23: the queued handlers
+ * are the SAME blocking display/SPI paths the mesh thread sizes at 2560, and
+ * 1280 overflowed on CLEAR/CLEAN/UPDATE/PWR — with HW stack protection that
+ * faulted, and without reset-on-fatal the tag halted and went dark until a
+ * battery pull. reset-on-fatal (prj.conf) is the backstop; this makes the
+ * fault rare in the first place. RAM is reclaimed from the now-idle BT RX
+ * thread (it only assembles lines since 3.4.18). */
+K_THREAD_DEFINE(cmd_tid, 2048, cmd_thread, NULL, NULL, NULL, 7, 0, 0);
 
 /* Whatever must keep working while the command thread is busy for minutes. */
 static bool inline_on_rx_thread(const char *line)
