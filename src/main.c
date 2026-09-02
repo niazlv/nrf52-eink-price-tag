@@ -117,12 +117,14 @@ int main(void)
     power_profile_apply();
 
     // 5. Draw the first screen; the display thread takes over from here —
-    //    unless the previous firmware asked for a silent hand-over from
-    //    picture mode, in which case the panel keeps what it shows.
-    if (persist_take_boot_flags() & PERSIST_BF_RESUME_PICTURE) {
-        display_manager_boot_into_picture();
-    } else {
+    //    unless the stored display mode says this tag is showing a picture, in
+    //    which case we draw nothing at all. The panel is bistable, so the image
+    //    is still on it: after a reboot, and after a battery change years from
+    //    now, the picture comes back by itself and nobody has to re-send it.
+    if (power_display_saver_get()) {
         display_manager_update_status();
+    } else {
+        display_manager_boot_into_picture();
     }
 
     LOG_INF("System initialized");

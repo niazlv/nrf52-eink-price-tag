@@ -628,6 +628,7 @@ static void cmd_nuke(char *args)
 static void cmd_saver(char *args)
 {
     display_manager_enable_screensaver(true);
+    power_display_saver_store(true);      /* a deliberate choice: remember it */
     ble_printf("saver enabled\r\n");
 }
 
@@ -1000,6 +1001,10 @@ static void cmd_fapply(char *args)
         return;
     }
     display_manager_enable_screensaver(false);
+    /* A pushed frame is what "picture mode" means: remember it, so the tag
+     * still shows this picture after a reboot or a battery change instead of
+     * waking into the clock and painting over it. */
+    power_display_saver_store(false);
     k_msleep(150);  /* wait for screensaver thread to finish current cycle */
     int bw = fw_written, rw = rw_written;
     fw_written = 0;
@@ -1027,6 +1032,7 @@ static void cmd_ss(char *args)
     if (!args || !*args) { ble_printf("usage: SS:0/1\r\n"); return; }
     int en = atoi(args);
     display_manager_enable_screensaver(en != 0);
+    power_display_saver_store(en != 0);   /* a deliberate choice: remember it */
     ble_printf("screensaver %s\r\n", en ? "ON" : "OFF");
 }
 
@@ -1519,9 +1525,10 @@ static void cmd_dfu(char *args)
     bool was_picture = !display_manager_is_screensaver_active();
 
     if (silent) {
-        if (was_picture) {
-            persist_set_boot_flag(PERSIST_BF_RESUME_PICTURE);
-        }
+        /* Nothing to arrange for the reboot: the display mode lives in flash
+         * (power_display_saver_*), so a picture tag comes back a picture tag
+         * on its own. All this path has to do is not draw. */
+        ARG_UNUSED(was_picture);
         if (strncmp(args, "START", 5) == 0) {
             dfu_set_busy(true);
             ble_printf("DFU:ACK silent\r\n");

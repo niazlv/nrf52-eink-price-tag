@@ -72,6 +72,18 @@ struct power_battery {
 const struct power_profile *power_profile_get(void);
 const struct power_battery *power_battery_get(void);
 
+/* The display mode, persisted under "pwr/m" — in flash, so it survives a
+ * reboot AND a battery change. A tag left showing a picture comes back showing
+ * it when someone swaps the cell years later, instead of waking into the clock
+ * and painting over the image. true = clock/screensaver, false = picture.
+ *
+ * Only a deliberate choice is stored (SAVER, SS:, a pushed picture); the
+ * transient takeovers — CLEAN, CLS, the DFU screens, the test patterns — turn
+ * the screensaver off without touching what is remembered, or a normal update
+ * would leave the tag stuck on its "UPDATE COMPLETE" screen forever. */
+bool power_display_saver_get(void);
+void power_display_saver_store(bool clock_mode);
+
 /* Record the pack. new_battery also moves the epoch to now, i.e. "used since
  * install" restarts at zero. Persists under "pwr/b". -EINVAL out of range. */
 int power_battery_set(uint8_t chem, uint8_t series, uint8_t parallel,

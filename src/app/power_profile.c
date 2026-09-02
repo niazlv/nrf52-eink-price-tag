@@ -21,6 +21,9 @@ static struct power_profile profile = {
 };
 
 static struct power_battery battery = { .series = 1, .parallel = 1 };
+/* 1 = clock, 0 = picture. Default clock: a tag that has never been told
+ * otherwise behaves exactly as it always did. */
+static uint8_t saver_on = 1;
 
 static const struct power_profile baseline = {
 	.tick_day_min   = 1,
@@ -94,6 +97,22 @@ const struct power_profile *power_profile_baseline(void)
 const struct power_battery *power_battery_get(void)
 {
 	return &battery;
+}
+
+bool power_display_saver_get(void)
+{
+	return saver_on != 0;
+}
+
+void power_display_saver_store(bool clock_mode)
+{
+	uint8_t v = clock_mode ? 1 : 0;
+
+	if (v == saver_on) {
+		return;            /* no change: no flash write */
+	}
+	saver_on = v;
+	(void)settings_save_one("pwr/m", &saver_on, sizeof(saver_on));
 }
 
 static bool battery_valid(const struct power_battery *b)
@@ -240,6 +259,12 @@ int power_profile_set(const struct power_profile *p)
 static int pwr_settings_set(const char *name, size_t len,
 			    settings_read_cb read_cb, void *cb_arg)
 {
+	if (settings_name_steq(name, "m", NULL) && len == 1) {
+		if (read_cb(cb_arg, &saver_on, 1) >= 0) {
+			return 0;
+		}
+		return -ENOENT;
+	}
 	if (settings_name_steq(name, "b", NULL)) {
 		if (len == sizeof(battery)) {
 			struct power_battery tmp;
