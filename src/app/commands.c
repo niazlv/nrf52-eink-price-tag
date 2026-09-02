@@ -72,22 +72,25 @@ extern const struct shell_cmd commands[];
 #define CMD_QUEUE_DEPTH 2
 struct cmd_slot {
     void *fifo_reserved;            /* k_fifo bookkeeping */
+    bool is_opcode;                 /* line[] is an opcode payload, not text */
+    uint8_t opcode;
     char line[RX_BUF_SIZE];
 };
 static struct cmd_slot cmd_slots[CMD_QUEUE_DEPTH];
 static K_FIFO_DEFINE(cmd_free);     /* slots waiting to be filled */
 static K_FIFO_DEFINE(cmd_ready);    /* slots waiting to be run */
-static struct cmd_slot *rx_slot;    /* the slot the RX thread is filling, or NULL */
+static struct cmd_slot *rx_slot;    /* text line the RX thread is filling, or NULL */
 static bool rx_discard;             /* no slot was free: eat bytes to the next newline */
-/* rx_len counts into rx_slot->line; rx_buf below aliases it for the old code paths. */
-#define rx_buf (rx_slot->line)
+static struct cmd_slot *opc_slot;   /* opcode payload being received, or NULL */
 static int  rx_len;
 
 /* ── Binary opcode frame parser (NUS) ───────────────────────────────────────
  * A host may send a command as [OPC_MAGIC][opcode][len][payload] instead of a
  * text line, to save channel — this is the same inner PDU the mesh layer will
  * carry. The sentinel is only honored at a line boundary (rx_len == 0); the
- * payload accumulates into rx_buf (free while no text line is buffered). */
+ * payload accumulates into a queue slot of its own and runs on the command
+ * thread like a text line would. With no free slot the frame is counted out
+ * and dropped after one BUSY:cmd. */
 enum opc_state {
     OPC_NONE = 0,     /* not inside an opcode frame */
     OPC_WANT_OP,      /* expecting the opcode byte */
@@ -2113,6 +2116,10 @@ void commands_on_disconnect(void) {
         rx_slot = NULL;
     }
     opc_state = OPC_NONE;
+    if (opc_slot) {
+        k_fifo_put(&cmd_free, opc_slot);
+        opc_slot = NULL;
+    }
 
     /* The transfer, if any, went with the link. */
     dfu_set_busy(false);
@@ -2125,34 +2132,52 @@ void commands_on_disconnect(void) {
 
 /* Feed one byte into the binary opcode-frame state machine. On the final byte
  * the frame is dispatched through the shared opcode path. */
+static void opc_finish(void)
+{
+    opc_state = OPC_NONE;
+    if (!opc_slot) {
+        return;                     /* frame was being discarded */
+    }
+    opc_slot->is_opcode = true;
+    opc_slot->opcode = opc_opcode;
+    k_fifo_put(&cmd_ready, opc_slot);
+    opc_slot = NULL;
+}
+
 static void opc_feed_byte(uint8_t b)
 {
     switch (opc_state) {
     case OPC_WANT_OP:
         opc_opcode = b;
+        opc_slot = k_fifo_get(&cmd_free, K_NO_WAIT);
+        if (!opc_slot) {
+            ble_printf("BUSY:cmd\r\n");
+        }
         opc_state = OPC_WANT_LEN;
         break;
     case OPC_WANT_LEN:
         opc_len = b;
         opc_idx = 0;
         if (opc_len == 0) {
-            rx_buf[0] = '\0';
-            opc_state = OPC_NONE;
-            cmd_dispatch_opcode(opc_opcode, rx_buf, CMD_ORIGIN_NUS);
+            if (opc_slot) {
+                opc_slot->line[0] = '\0';
+            }
+            opc_finish();
         } else {
             opc_state = OPC_WANT_PAYLOAD;
         }
         break;
     case OPC_WANT_PAYLOAD:
-        if (opc_idx < RX_BUF_SIZE - 1) {
-            rx_buf[opc_idx] = (char)b;
+        if (opc_slot && opc_idx < RX_BUF_SIZE - 1) {
+            opc_slot->line[opc_idx] = (char)b;
         }
         opc_idx++;
         if (opc_idx >= opc_len) {
-            uint8_t n = MIN(opc_len, (uint8_t)(RX_BUF_SIZE - 1));
-            rx_buf[n] = '\0';
-            opc_state = OPC_NONE;
-            cmd_dispatch_opcode(opc_opcode, rx_buf, CMD_ORIGIN_NUS);
+            if (opc_slot) {
+                uint8_t n = MIN(opc_len, (uint8_t)(RX_BUF_SIZE - 1));
+                opc_slot->line[n] = '\0';
+            }
+            opc_finish();
         }
         break;
     default:
@@ -2189,7 +2214,12 @@ static void cmd_thread(void *p1, void *p2, void *p3)
     while (1) {
         struct cmd_slot *slot = k_fifo_get(&cmd_ready, K_FOREVER);
 
-        dispatch_line(slot->line);
+        if (slot->is_opcode) {
+            cmd_dispatch_opcode(slot->opcode, slot->line, CMD_ORIGIN_NUS);
+        } else {
+            dispatch_line(slot->line);
+        }
+        slot->is_opcode = false;
         k_fifo_put(&cmd_free, slot);
     }
 }
@@ -2203,6 +2233,7 @@ static bool inline_on_rx_thread(const char *line)
 
 static void enqueue_line(struct cmd_slot *slot)
 {
+    slot->is_opcode = false;
     if (inline_on_rx_thread(slot->line)) {
         dispatch_line(slot->line);
         k_fifo_put(&cmd_free, slot);
