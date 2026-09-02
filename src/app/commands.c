@@ -1471,11 +1471,14 @@ static void cmd_sysinfo(char *args)
                mah_x1000 / 1000, mah_x1000 % 1000, cur_ua,
                persist_boot_count(), persist_fw_update_count(),
                persist_refreshes_total(), persist_refreshes_since_fw());
-    /* Identity + security on the same logical line (host buffers until '\n'). */
-    ble_printf(" layout=%d serial=%s sec=%d authed=%d panel=%s phy=%d\r\n",
+    /* Identity + security on the same logical line (host buffers until '\n').
+     * mode= is what the panel is doing — a host uses it to default a silent
+     * update on when a picture would otherwise be lost. */
+    ble_printf(" layout=%d serial=%s sec=%d authed=%d panel=%s phy=%d mode=%s\r\n",
                APP_LAYOUT_ID, factory_serial(),
                secauth_enforced() ? 1 : 0, secauth_is_authed() ? 1 : 0,
-               display_manager_panel_name(), ble_service_get_phy());
+               display_manager_panel_name(), ble_service_get_phy(),
+               display_manager_is_screensaver_active() ? "clock" : "pic");
 }
 
 /* STATS — read persisted statistics (live RAM copy + flash record), for manual

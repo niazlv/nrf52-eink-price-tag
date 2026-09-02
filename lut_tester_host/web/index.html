@@ -1460,8 +1460,8 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
           <div class="pbar" style="height:7px"><div class="pfill" id="dfu-prog" style="width:0%"></div></div>
           <div id="dfu-prog-text"></div>
         </div>
-        <label class="kv" style="margin-top:10px;cursor:pointer" title="Не рисовать экраны обновления. Если ценник показывал картинку, после перезагрузки он её и оставит — не уйдёт в часы. Нужна прошивка 3.4.20+, старая просто нарисует экраны как обычно.">
-          <span>Тихое обновление <span class="sub">не трогать экран</span></span>
+        <label class="kv" style="margin-top:10px;cursor:pointer" title="Не рисовать экраны обновления. Если ценник показывал картинку, после перезагрузки он её и оставит — не уйдёт в часы. Галочка сама повторяет режим ценника (картинка → включена), пока вы её не переключите. Нужна прошивка 3.4.20+, старая просто нарисует экраны как обычно.">
+          <span>Тихое обновление <span class="sub">не трогать экран · по умолчанию как ценник</span></span>
           <input type="checkbox" id="dfu-silent" onchange="dfuSilentSave()">
         </label>
         <div class="brow" style="margin-top:8px">
@@ -2037,6 +2037,7 @@ function onBleDisc() {
   smpChar = null;
   if (smpPendingReject) smpPendingReject(new Error('связь с ценником оборвалась'));
   sysState.authed = false; sysState.secOn = false;
+  sysState.picture = null; dfuSilentTouched = false;
   sysState.wallUnix = null; autoTimeDoneThisConn = false;
   autoAuthTried = false; authBusy = false;
   setStatus('Не подключено', false);
@@ -5275,6 +5276,7 @@ const sysState = {
   panel: '128x296', // SYSINFO panel=WxH (physical); see PANELS
   secOn: false,     // device access gate active
   authed: false,    // this connection authenticated
+  picture: null,    // SYSINFO mode=pic|clock (3.4.22+); null = the firmware does not say
   wallUnix: null,   // device wall clock (unix sec), из STATS wall=
 };
 
@@ -5754,6 +5756,9 @@ function parseSysinfo(line) {
   const secM = data.match(/\bsec=(\d+)/);
   const authedM = data.match(/authed=(\d+)/);
   const panelM = data.match(/panel=(\d+)x(\d+)/);
+  const modeM = data.match(/\bmode=(pic|clock)/);
+  sysState.picture = modeM ? modeM[1] === 'pic' : null;
+  dfuSilentFollowTag();
   const cntM = { boots: data.match(/boots=(\d+)/), fwupd: data.match(/fwupd=(\d+)/),
                  refr: data.match(/\brefr=(\d+)/), refrfw: data.match(/refrfw=(\d+)/) };
 
@@ -6657,8 +6662,21 @@ function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
 
 // «Тихое обновление»: DFU:START/DONE с атрибутом SILENT — прошивка не рисует
 // экраны обновления и, если была в режиме картинки, после ребута остаётся в нём.
+// По умолчанию галочка повторяет режим ценника (SYSINFO mode=): стояла
+// картинка — тихо, часы — обычно. Пока вы её не тронули в этой сессии, она
+// следует за ценником; тронули — ваше слово до отключения. Старая прошивка
+// режим не сообщает — тогда берётся то, что запомнил браузер.
+let dfuSilentTouched = false;
 function dfuSilent() { const el = $('dfu-silent'); return !!(el && el.checked); }
-function dfuSilentSave() { try { localStorage.setItem('dfu-silent', dfuSilent() ? '1' : '0'); } catch {} }
+function dfuSilentSave() {
+  dfuSilentTouched = true;
+  try { localStorage.setItem('dfu-silent', dfuSilent() ? '1' : '0'); } catch {}
+}
+function dfuSilentFollowTag() {
+  const el = $('dfu-silent'); if (!el || dfuSilentTouched) return;
+  if (sysState.picture !== null) el.checked = sysState.picture;
+  else { try { el.checked = localStorage.getItem('dfu-silent') === '1'; } catch {} }
+}
 
 async function dfuStartUpload() {
   if (!dfuFirmwareData || dfuUploading) return;
