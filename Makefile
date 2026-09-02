@@ -119,13 +119,11 @@ export ZEPHYR_SDK_INSTALL_DIR   := $(TOOLCHAIN_DIR)/opt/zephyr-sdk
 export PATH := $(TOOLCHAIN_DIR)/bin:$(TOOLCHAIN_DIR)/usr/bin:$(TOOLCHAIN_DIR)/usr/local/bin:$(TOOLCHAIN_DIR)/opt/bin:$(TOOLCHAIN_DIR)/opt/nanopb/generator-bin:$(TOOLCHAIN_DIR)/opt/zephyr-sdk/arm-zephyr-eabi/bin:$(PATH)
 
 # CMake extra args — time injected into every build unit via zephyr_compile_definitions.
-CMAKE_EXTRA := \
-	-DAPP_BUILD_YEAR=$(BUILD_YEAR)   \
-	-DAPP_BUILD_MONTH=$(BUILD_MONTH) \
-	-DAPP_BUILD_DAY=$(BUILD_DAY)     \
-	-DAPP_BUILD_HOUR=$(BUILD_HOUR)   \
-	-DAPP_BUILD_MIN=$(BUILD_MIN)     \
-	-DAPP_BUILD_SEC=$(BUILD_SEC)
+# Nothing to inject: the application takes its own build timestamp in
+# CMakeLists.txt. Passing it here never worked — every -D after `--` lands in
+# the sysbuild cache, not in this image — and the BUILD_* values above are
+# still used for the log line and the OTA manifest date.
+CMAKE_EXTRA :=
 
 .PHONY: build flash flash-gdb flash-openocd flash-retry clean pristine publish deploy web release v2-genkey test
 

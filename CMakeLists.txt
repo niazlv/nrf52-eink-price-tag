@@ -8,18 +8,38 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(eink_tag)
 
-# Inject build timestamp as C preprocessor defines when passed from Makefile.
-if(DEFINED APP_BUILD_YEAR)
-  zephyr_compile_definitions(
-    APP_BUILD_YEAR=${APP_BUILD_YEAR}
-    APP_BUILD_MONTH=${APP_BUILD_MONTH}
-    APP_BUILD_DAY=${APP_BUILD_DAY}
-    APP_BUILD_HOUR=${APP_BUILD_HOUR}
-    APP_BUILD_MIN=${APP_BUILD_MIN}
-    APP_BUILD_SEC=${APP_BUILD_SEC}
-  )
-  message(STATUS "Build time: ${APP_BUILD_YEAR}-${APP_BUILD_MONTH}-${APP_BUILD_DAY} ${APP_BUILD_HOUR}:${APP_BUILD_MIN}:${APP_BUILD_SEC}")
+# Build timestamp, taken here rather than passed in.
+#
+# It used to come from the Makefile as -DAPP_BUILD_YEAR=... after `--`, but
+# every -D there goes to the SYSBUILD cache and never reaches this image, so
+# the block below was simply never entered: SYSINFO printed no build= field
+# (the web showed "Сборка —") and system_time_init() fell back to
+# __DATE__/__TIME__, which is per translation unit and only right on a
+# pristine build. Reading the clock here removes the plumbing and the trap
+# both — CMake re-runs on every pristine build, which is what `make build`
+# does. A value passed in still wins, so the old override keeps working.
+if(NOT DEFINED APP_BUILD_YEAR)
+  string(TIMESTAMP APP_BUILD_YEAR  "%Y")
+  string(TIMESTAMP APP_BUILD_MONTH "%m")
+  string(TIMESTAMP APP_BUILD_DAY   "%d")
+  string(TIMESTAMP APP_BUILD_HOUR  "%H")
+  string(TIMESTAMP APP_BUILD_MIN   "%M")
+  string(TIMESTAMP APP_BUILD_SEC   "%S")
+  # Strip leading zeros: 08 and 09 are invalid octal literals in C.
+  foreach(part APP_BUILD_MONTH APP_BUILD_DAY APP_BUILD_HOUR APP_BUILD_MIN APP_BUILD_SEC)
+    math(EXPR ${part} "${${part}} + 0" OUTPUT_FORMAT DECIMAL)
+  endforeach()
 endif()
+
+zephyr_compile_definitions(
+  APP_BUILD_YEAR=${APP_BUILD_YEAR}
+  APP_BUILD_MONTH=${APP_BUILD_MONTH}
+  APP_BUILD_DAY=${APP_BUILD_DAY}
+  APP_BUILD_HOUR=${APP_BUILD_HOUR}
+  APP_BUILD_MIN=${APP_BUILD_MIN}
+  APP_BUILD_SEC=${APP_BUILD_SEC}
+)
+message(STATUS "Build time: ${APP_BUILD_YEAR}-${APP_BUILD_MONTH}-${APP_BUILD_DAY} ${APP_BUILD_HOUR}:${APP_BUILD_MIN}:${APP_BUILD_SEC}")
 
 # Portable display library (lib/) — no Zephyr dependency except the port file.
 # See lib/README.md for reusing it outside this project.
