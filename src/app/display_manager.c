@@ -93,6 +93,12 @@ static int64_t static_saver_last_full_ms = 0;
  * that gives up on the lock must leave the request standing. */
 static bool full_refresh_requested = false;
 
+/* Image mode only: someone rendered a frame into the buffers from another
+ * thread and wants it on the panel. Set by display_manager_request_frame_update()
+ * (the DFU screens), consumed by the display thread — so the BLE RX thread
+ * never sits inside an ~8 s full refresh with SMP traffic queued behind it. */
+static bool frame_update_requested = false;
+
 static int screensaver_mode = SCREENSAVER_MODE_STATIC;
 
 /* Rough current model for the on-screen mAh estimator. This is not a coulomb
@@ -1358,6 +1364,12 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
                 display_manager_update_status();
             }
         }
+        if (!screensaver_enabled && frame_update_requested) {
+            frame_update_requested = false;
+            cur_scene = NULL;           /* the buffers are the frame; replay nothing */
+            cur_scene_arg = NULL;
+            perform_display_update();
+        }
 
         if (!screensaver_enabled) {
             /* Image mode: nothing to draw, but the top of this loop is ALSO
@@ -1399,6 +1411,17 @@ void display_manager_request_full_update(void) {
         full_refresh_requested = true;
     }
     display_manager_force_update();
+}
+
+/* Put whatever is in the frame buffers on the panel with a full refresh, from
+ * the display thread. For callers on the BLE RX thread that must return at
+ * once — a synchronous perform_display_update() there stalls every GATT
+ * exchange for the length of the refresh, which is how DFU screens used to
+ * kill the very transfer they announced. Image mode only; with the saver on,
+ * display_manager_request_full_update() is the equivalent. */
+void display_manager_request_frame_update(void) {
+    frame_update_requested = true;
+    k_sem_give(&sem_screensaver_wake);
 }
 
 void display_manager_force_update(void) {

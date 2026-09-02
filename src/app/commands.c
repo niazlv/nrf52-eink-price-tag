@@ -20,6 +20,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/sys/reboot.h>
+#ifdef CONFIG_MCUMGR_MGMT_NOTIFICATION_HOOKS
+#include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
+#endif
+
+/* The DFU busy window (defined with the dispatcher, used by cmd_dfu above it). */
+static void dfu_set_busy(bool on);
 #include <app_version.h>
 #include <pm_config.h>
 
@@ -1471,12 +1477,15 @@ static void cmd_stats(char *args)
 /* DFU:START — host notifies that OTA upload is beginning.
  * DFU:DONE — host notifies that OTA upload completed.
  * Show a status screen so the user knows not to disconnect. */
+/* The screens are rendered here, on the BLE RX thread, but the refresh itself
+ * is handed to the display thread: a synchronous full refresh here used to
+ * hold this thread for ~8 s right when the phone started streaming the image,
+ * and the phone gave up on the stalled GATT exchange. */
 static void cmd_dfu(char *args)
 {
     int w = graphics_get_width();
 
     display_manager_enable_screensaver(false);
-    k_msleep(100);
     graphics_clear(GFX_WHITE);
 
     if (strncmp(args, "START", 5) == 0) {
@@ -1488,7 +1497,8 @@ static void cmd_dfu(char *args)
         graphics_draw_rect(20, 80, w - 40, 16, GFX_BLACK);
         graphics_fill_rect(22, 82, 20, 12, GFX_BLACK);
         graphics_draw_string(w / 2 - 40, 105, "Please wait...");
-        display_manager_force_update();
+        dfu_set_busy(true);
+        display_manager_request_frame_update();
         ble_printf("DFU:ACK\r\n");
     } else if (strncmp(args, "DONE", 4) == 0) {
         graphics_fill_rect(0, 0, w, 18, GFX_BLACK);
@@ -1499,7 +1509,8 @@ static void cmd_dfu(char *args)
         graphics_fill_rect(22, 64, w - 44, 12, GFX_BLACK);
         graphics_draw_string_color(w / 2 - 75, 90, "Reboot to apply", GFX_RED);
         graphics_draw_string(w / 2 - 60, 110, "(or send REBOOT)");
-        display_manager_force_update();
+        dfu_set_busy(false);
+        display_manager_request_frame_update();
         ble_printf("DFU:DONE_ACK\r\n");
     } else {
         ble_printf("DFU:usage START|DONE\r\n");
@@ -1950,9 +1961,89 @@ void cmd_dispatch_opcode(uint8_t opcode, char *args, enum cmd_origin origin)
 
 /* ── Dispatch a single complete text line ────────────────────────────────── */
 
+/* ── DFU busy gate ──────────────────────────────────────────────────────
+ *
+ * While an image is being transferred the BLE link is the transfer. Web
+ * Bluetooth cannot run two GATT operations at once, and on our side every
+ * text command runs on the BLE RX thread — a command that takes the display
+ * lock, waits on a panel refresh or queues notifications behind a saturated
+ * TX pool stalls the SMP exchange that is in flight, and the phone reports
+ * "GATT operation failed for unknown reason" and aborts the update.
+ *
+ * So for the duration of a transfer the dispatcher accepts only what the
+ * update itself needs — DFU:, REBOOT, SYSINFO, HOST: — and answers everything
+ * else with one short BUSY:dfu line. The window opens on DFU:START or on the
+ * first SMP upload chunk (mcumgr hook, so a host that never says DFU:START is
+ * covered too) and closes on DFU:DONE, on the upload finishing or aborting,
+ * on disconnect, or after ten idle minutes if the host simply vanished. */
+static bool dfu_busy;
+static struct k_work_delayable dfu_busy_timeout;
+#define DFU_BUSY_TIMEOUT K_MINUTES(10)
+
+static void dfu_busy_expire(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    dfu_busy = false;
+}
+
+static void dfu_set_busy(bool on)
+{
+    dfu_busy = on;
+    if (on) {
+        k_work_reschedule(&dfu_busy_timeout, DFU_BUSY_TIMEOUT);
+    } else {
+        k_work_cancel_delayable(&dfu_busy_timeout);
+    }
+}
+
+static bool allowed_while_dfu(const char *line)
+{
+    return strncmp(line, "DFU:", 4) == 0 ||
+           strcmp(line, "REBOOT") == 0 ||
+           strncmp(line, "SYSINFO", 7) == 0 ||
+           strncmp(line, "HOST:", 5) == 0;
+}
+
+#ifdef CONFIG_MCUMGR_MGMT_NOTIFICATION_HOOKS
+static enum mgmt_cb_return dfu_mgmt_cb(uint32_t event, enum mgmt_cb_return prev_status,
+                                       int32_t *rc, uint16_t *group, bool *abort_more,
+                                       void *data, size_t data_size)
+{
+    ARG_UNUSED(prev_status); ARG_UNUSED(rc); ARG_UNUSED(group);
+    ARG_UNUSED(abort_more); ARG_UNUSED(data); ARG_UNUSED(data_size);
+
+    switch (event) {
+    case MGMT_EVT_OP_IMG_MGMT_DFU_STARTED:
+        dfu_set_busy(true);
+        break;
+    case MGMT_EVT_OP_IMG_MGMT_DFU_CHUNK:
+        if (dfu_busy) {
+            k_work_reschedule(&dfu_busy_timeout, DFU_BUSY_TIMEOUT);
+        }
+        break;
+    case MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED:
+    case MGMT_EVT_OP_IMG_MGMT_DFU_PENDING:
+        dfu_set_busy(false);
+        break;
+    default:
+        break;
+    }
+    return MGMT_CB_OK;
+}
+
+static struct mgmt_callback dfu_mgmt_callback = {
+    .callback = dfu_mgmt_cb,
+    .event_id = MGMT_EVT_OP_IMG_MGMT_ALL,
+};
+#endif
+
 static void dispatch_line(const char *line)
 {
     const char *args = "";
+    if (dfu_busy && !allowed_while_dfu(line)) {
+        ble_printf("BUSY:dfu\r\n");
+        return;
+    }
     const struct shell_cmd *c = match_line(line, &args);
     if (c) {
         run_command(c, (char *)args);   /* text is an alias for the entry's opcode */
@@ -1965,6 +2056,10 @@ static void dispatch_line(const char *line)
 
 void commands_init(void) {
     k_work_init_delayable(&vs_watchdog_work, vs_watchdog_handler);
+    k_work_init_delayable(&dfu_busy_timeout, dfu_busy_expire);
+#ifdef CONFIG_MCUMGR_MGMT_NOTIFICATION_HOOKS
+    mgmt_callback_register(&dfu_mgmt_callback);
+#endif
 }
 
 void commands_on_disconnect(void) {
@@ -1997,6 +2092,9 @@ void commands_on_disconnect(void) {
     /* Discard any half-received text line or opcode frame from the old link. */
     rx_len = 0;
     opc_state = OPC_NONE;
+
+    /* The transfer, if any, went with the link. */
+    dfu_set_busy(false);
 }
 
 /* Feed one byte into the binary opcode-frame state machine. On the final byte

@@ -2045,6 +2045,9 @@ function onBleDisc() {
   // а старая прошивка на MESHRX вообще не ответит.
   const mrx = $('sys-meshrx');
   if (mrx) { mrx.textContent = '—'; mrx.style.color = 'var(--fg2)'; }
+  for (const id of [...Object.values(STAT_IDS), 'st-flash']) {
+    const el = $(id); if (el) { el.textContent = '—'; if (id === 'st-flash') el.style.color = 'var(--fg2)'; }
+  }
   pwrReset();
   logI('Disconnected');
   // OTA: an expected drop after REBOOT → dial back in; an offer belonged to the tag we lost.
@@ -2073,6 +2076,7 @@ function onNotify(ev) {
     if (line.startsWith('meshrx=')) parseMeshrx(line);
     if (line.startsWith('PWR:')) parsePwr(line);
     if (line.startsWith('PWRB:')) parsePwr(line);
+    if (line.startsWith('BUSY:dfu')) logI('Ценник занят обновлением — команда отложена');
     if (line.startsWith('AUTH:')) handleAuthLine(line);
     if (line.startsWith('BATT:LOW') || line.startsWith('BATT:SHUTDOWN')) parseBattAlert(line);
     if (line.startsWith('LUT:') && line[5] === ':') parseLget(line);
@@ -5275,22 +5279,29 @@ const BATT_CAPACITY_MAH = 350;
 const BATT_V_FULL = 3600;
 const BATT_V_EMPTY = 3000;
 
+let _sysinfoTimers = [];
 function requestSysinfo() {
   if (!connected) return;
+  // The tag's BLE TX pool holds 3 notifications and ble_printf gives up after
+  // a short retry, less than one idle connection interval (100–200 ms), so a
+  // burst of replies loses its tail silently — which is how the STATS fields
+  // (and the wall clock that drives auto time-set) stayed «—» while SYSINFO,
+  // first out of the gate, always arrived. SYSINFO alone is already four
+  // notifications; everything else goes out spaced wider than an interval, so
+  // no reply burst outgrows the pool. Firmware <3.4.1 answers no MESHRX at all.
+  _sysinfoTimers.forEach(clearTimeout); _sysinfoTimers = [];
+  const later = (ms, fn) => _sysinfoTimers.push(setTimeout(() => { if (connected) fn(); }, ms));
   send('SYSINFO\n');
-  send('BATT\n');
-  send('STATS\n');
-  send('NAME\n');
-  // MESHRX — НЕ в общем залпе: TX-пул нотификаций прошивки — 3 буфера, и
-  // ответ последней команды пачки терялся (всегда прочерк). Спрашиваем после
-  // паузы, и ещё раз — если ответ так и не пришёл (прошивка ≤3.4.2 без
-  // ретрая в ble_printf). Прошивка <3.4.1 не отвечает вовсе — останется «—».
-  setTimeout(() => { if (connected) send('MESHRX\n'); }, 600);
-  setTimeout(() => {
-    const el = $('sys-meshrx');
-    if (connected && el && el.textContent === '—') send('MESHRX\n');
-  }, 2500);
-  setTimeout(pwrQuery, 1400);
+  later(350,  () => { send('BATT\n'); send('NAME\n'); });
+  later(700,  () => send('MESHRX\n'));
+  later(1050, () => send('STATS\n'));       // two lines: live counters + flash snapshot
+  later(1400, pwrQuery);
+  // Re-ask what did not answer (firmware ≤3.4.2 never retried a dropped reply).
+  later(2500, () => {
+    const mrx = $('sys-meshrx'), fl = $('st-flash');
+    if (mrx && mrx.textContent === '—') send('MESHRX\n');
+    if (fl && fl.textContent === '—') later(350, () => send('STATS\n'));
+  });
 }
 
 // ── Mesh-приём (MESHRX) ───────────────────────────────────────────
@@ -5515,16 +5526,21 @@ function parsePwr(line) {
   pwrTickT = setInterval(() => {
     if (!connected) { pwrStopTimers(); return; }
     if (pwrNext > 0) { pwrNext--; pwrRender(); }
-    if (pwrNext === 0) { pwrNext = -2; send('PWR\n'); }   // -2: ждём ответа, не спамим
+    // -2: ждём ответа, не спамим. Во время OTA не шлём вовсе: любая NUS-запись
+    // параллельно SMP-передаче — это «GATT operation failed» на телефоне.
+    if (pwrNext === 0) { pwrNext = -2; if (!otaBusy()) send('PWR\n'); }
   }, 1000);
-  if (!pwrPollT) pwrPollT = setInterval(() => { if (connected) send('PWR\n'); else pwrStopTimers(); }, PWR_POLL_MS);
+  if (!pwrPollT) pwrPollT = setInterval(() => {
+    if (!connected) { pwrStopTimers(); return; }
+    if (!otaBusy()) send('PWR\n');
+  }, PWR_POLL_MS);
 }
 // Предпросмотр: любой сдвиг селекта → через 400 мс спросить прошивку «а если так?»
 // (dry=1 — считает, но не сохраняет и не применяет).
 function pwrPreview() {
   clearTimeout(pwrPreviewT);
   pwrPreviewT = setTimeout(() => {
-    if (!connected || pwrSupported === false) return;
+    if (!connected || pwrSupported === false || otaBusy()) return;
     const v = id => +$(id).value;
     pwrPackSummary();
     send(`PWR:day=${v('pwr-day')},night=${v('pwr-night')},from=${v('pwr-from')},to=${v('pwr-to')},advc=${v('pwr-advc')},advp=${v('pwr-advp')},${pwrPackKeys()},dry=1\n`);
@@ -5533,7 +5549,7 @@ function pwrPreview() {
 // Запрос с одним повтором: TX-пул прошивки в 3 буфера может уронить ответ,
 // а старая прошивка (< 3.4.13) не ответит вовсе — тогда честно так и пишем.
 function pwrQuery() {
-  if (!connected) return;
+  if (!connected || otaBusy()) return;
   // SYSINFO уходит первым и к этому моменту уже разобран: версия известна,
   // и на старой прошивке мы не ждём таймаута, а сразу говорим, в чём дело.
   if (sysState.fwVersion && versionCompare(sysState.fwVersion, PWR_MIN_FW) < 0) {
@@ -5624,15 +5640,21 @@ async function resetName() {
 
 // STATS:uptime=<s> wall=<unix> boots=<n> fwupd=<n> refr=<n> refrfw=<n>
 // STATS:flash=<none|valid|consumed> fl_uptime=<s> fl_wall=<unix>
+// Persisted counters (Загрузок / Обновлений ПО / Обновл. экрана / …с прошивки):
+// fed by both SYSINFO and STATS, whichever arrives.
+const STAT_IDS = { boots: 'st-boots', fwupd: 'st-fwupd', refr: 'st-refr', refrfw: 'st-refrfw' };
+function setStatCounters(v) {
+  for (const [k, id] of Object.entries(STAT_IDS)) {
+    if (v[k] != null) { const el = $(id); if (el) el.textContent = v[k]; }
+  }
+}
+
 function parseStats(line) {
   const d = line.slice('STATS:'.length);
   const g = (re) => { const m = d.match(re); return m ? m[1] : null; };
   if (/boots=/.test(d)) {
-    const set = (id, v) => { if (v !== null) $(id).textContent = v; };
-    set('st-boots',  g(/boots=(\d+)/));
-    set('st-fwupd',  g(/fwupd=(\d+)/));
-    set('st-refr',   g(/refr=(\d+)/));
-    set('st-refrfw', g(/refrfw=(\d+)/));
+    setStatCounters({ boots: g(/boots=(\d+)/), fwupd: g(/fwupd=(\d+)/),
+                      refr: g(/\brefr=(\d+)/), refrfw: g(/refrfw=(\d+)/) });
     const wall = g(/\bwall=(\d+)/);
     if (wall !== null) {
       sysState.wallUnix = +wall;
@@ -5663,6 +5685,8 @@ function parseSysinfo(line) {
   const secM = data.match(/\bsec=(\d+)/);
   const authedM = data.match(/authed=(\d+)/);
   const panelM = data.match(/panel=(\d+)x(\d+)/);
+  const cntM = { boots: data.match(/boots=(\d+)/), fwupd: data.match(/fwupd=(\d+)/),
+                 refr: data.match(/\brefr=(\d+)/), refrfw: data.match(/refrfw=(\d+)/) };
 
   // Firmware before 3.4.4 does not report the panel: it only ever drove 128x296.
   sysState.panel = panelM ? `${panelM[1]}x${panelM[2]}` : '128x296';
@@ -5678,6 +5702,9 @@ function parseSysinfo(line) {
   if (secM) sysState.secOn = secM[1] === '1';
   if (authedM) sysState.authed = authedM[1] === '1';
   sysState.lastUpdate = new Date();
+  // Since the persisted-stats firmware SYSINFO repeats boots/fwupd/refr/refrfw;
+  // STATS used to be their only source and rode at the tail of the connect burst.
+  setStatCounters(Object.fromEntries(Object.entries(cntM).map(([k, m]) => [k, m ? m[1] : null])));
 
   updateSysUI();
   updateAuthUI();
@@ -6094,7 +6121,11 @@ function otaBusy() { return OTA_BUSY.includes(ota.phase); }
 function otaSet(phase, patch = {}) {
   clearTimeout(ota.hideT);
   if (phase !== ota.phase) { ota.muted = false; ota.aborted = false; ota.stalled = false; ota.msg = ''; }
+  const wasBusy = otaBusy();
   Object.assign(ota, patch, { phase });
+  // Обновление кончилось на живой связи (ошибка / отмена): опрос профиля
+  // был погашен на время передачи — вернуть его.
+  if (wasBusy && !otaBusy() && connected) setTimeout(pwrQuery, 1500);
   if (phase === 'done') {
     ota.hideT = setTimeout(() => {
       if (ota.phase !== 'done') return;
@@ -6592,6 +6623,9 @@ async function dfuStartUpload() {
 
   dfuUploading = true;
   dfuAbortFlag = false;
+  // Тишина в эфире на время передачи: периодические опросы (PWR и его
+  // отсчёт) гасим, иначе они влезают между SMP-записями и валят обновление.
+  pwrStopTimers(); clearTimeout(pwrPreviewT);
   $('dfu-btn-upload').disabled = true;
   $('dfu-btn-abort').disabled = false;
   $('dfu-prog').style.width = '0%';

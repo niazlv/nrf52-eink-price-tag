@@ -527,19 +527,23 @@ void ble_printf(const char *fmt, ...) {
     }
     if (len > 0) {
         /* The ATT/L2CAP TX pools hold only 3 buffers each; a burst of replies
-         * (the web app queries SYSINFO/BATT/STATS/NAME/MESHRX back-to-back on
-         * connect) overruns them on a slow idle connection interval, and the
-         * tail reply was silently lost every time. Retry briefly — the pool
-         * drains on the BT TX path, not on this thread, and command handlers
-         * already block here far longer (a full refresh holds this thread for
-         * seconds). Bounded, so a caller holding display_lock delays at most
-         * ~120 ms instead of deadlocking. */
+         * (SYSINFO alone is four notifications) overruns them on the idle
+         * connection interval, and the tail reply was silently lost. Retry —
+         * the pool drains on the BT TX path, not on this thread, and command
+         * handlers already block here far longer (a full refresh holds this
+         * thread for seconds). The budget must cover one idle interval, up to
+         * 200 ms (conn_param_idle), or the reply that misses the current
+         * connection event is gone before the next one; 300 ms does, and still
+         * bounds how long a caller holding display_lock can be delayed. */
         int rc = ble_service_send(buf, len);
         for (int tries = 0;
-             (rc == -ENOMEM || rc == -EAGAIN || rc == -ENOBUFS) && tries < 6;
+             (rc == -ENOMEM || rc == -EAGAIN || rc == -ENOBUFS) && tries < 15;
              tries++) {
             k_sleep(K_MSEC(20));
             rc = ble_service_send(buf, len);
+        }
+        if (rc) {
+            LOG_WRN("BLE reply dropped (rc %d) after retries", rc);
         }
         LOG_INF("%s", buf); // Also log to RTT/UART
     }

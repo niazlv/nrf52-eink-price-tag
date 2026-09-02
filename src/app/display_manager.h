@@ -103,6 +103,14 @@ void display_manager_force_update(void);
 void display_manager_request_full_update(void);
 
 /**
+ * @brief Image mode: show the current frame buffers with a full refresh, asynchronously
+ *
+ * Returns at once; the display thread does the refresh. Use from the BLE RX
+ * thread instead of a synchronous update.
+ */
+void display_manager_request_frame_update(void);
+
+/**
  * @brief Re-estimate the persisted energy total after a power-model change
  *
  * A no-op unless the stored record predates the current model revision. Must be
