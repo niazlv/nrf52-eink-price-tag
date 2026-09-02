@@ -6340,7 +6340,10 @@ function otaReconnectCancel() { otaReconnGen++; otaReconnActive = false; }
 async function otaReconnect() {
   const gen = ++otaReconnGen, dev = bleDevice;
   if (!dev) { otaSet('reboot', { stalled: true, msg: 'подключись к ценнику, чтобы проверить обновление' }); return; }
-  const t0 = Date.now(), budget = 90000, delay = 7000;
+  // Три минуты: прошивка 3.4.23+ первые 90 с после старта рекламирует быстро,
+  // но ценник на старой прошивке в режиме картинки с рекламой 10 с ловится
+  // долго — 90 с ему не хватало.
+  const t0 = Date.now(), budget = 180000, delay = 7000;
   otaReconnActive = true;
   otaSet('reboot', { stalled: false, msg: 'ценник перезагружается и меняет образ…' });
   setStatus('Ценник перезагружается…', false, 'busy');
@@ -6366,7 +6369,7 @@ async function otaReconnect() {
     }
     if (gen !== otaReconnGen || connected) return;
     setStatus('Не подключено', false);
-    otaSet('reboot', { stalled: true, msg: 'ценник не вернулся за 90 с — разбуди его и нажми «Подключить»' });
+    otaSet('reboot', { stalled: true, msg: 'ценник не вернулся за 3 мин — проверь его в сканере (nRF Connect); если не виден, передёрни питание и нажми «Подключить»' });
   } finally {
     clearInterval(tick);
     if (gen === otaReconnGen) otaReconnActive = false;

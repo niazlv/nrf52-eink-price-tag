@@ -25,21 +25,37 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
+#ifdef CONFIG_MCUBOOT_IMG_MANAGER
+static void confirm_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (!boot_is_img_confirmed()) {
+        int rc = boot_write_img_confirmed();
+        if (rc) {
+            LOG_ERR("OTA confirm failed: %d", rc);
+        } else {
+            LOG_INF("OTA image confirmed");
+        }
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(confirm_work, confirm_handler);
+#endif
+
 int main(void)
 {
     LOG_INF("Starting Application...");
 
 #ifdef CONFIG_MCUBOOT_IMG_MANAGER
-    /* Confirm the running image FIRST, before any other init.
-     * Moving this here prevents revert if later init is slow or fails. */
-    if (!boot_is_img_confirmed()) {
-        int confirm_rc = boot_write_img_confirmed();
-        if (confirm_rc) {
-            LOG_ERR("Early OTA confirm failed: %d", confirm_rc);
-        } else {
-            LOG_INF("OTA image confirmed (early)");
-        }
-    }
+    /* Confirm the running image only once it has demonstrably run: 15 s in,
+     * from the system work queue. Confirming in the first line of main() made
+     * a crashing image permanent — the reset it caused booted the same image
+     * again, forever, and the only way back was a wire. Unconfirmed, a reset
+     * within this window makes MCUboot swap the previous image back in, and
+     * the tag comes back on the firmware that worked. Init here takes well
+     * under two seconds, so a healthy image always gets confirmed; the one
+     * cost is a power cycle inside the first 15 s of a new image, which
+     * simply means updating again. */
+    k_work_schedule(&confirm_work, K_SECONDS(15));
 #endif
 
     // 1. Init Base Peripherals

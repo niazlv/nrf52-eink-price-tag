@@ -66,6 +66,14 @@ bool ble_service_get_streaming_mode(void);
 void ble_service_set_idle_adv_interval_s(uint8_t seconds);
 
 /**
+ * @brief Restart advertising if it should be running and is not
+ *
+ * Cheap self-heal for a periodic caller: idle, allowed, no beacon, yet not
+ * advertising means a start failed and its retry chain died with it.
+ */
+void ble_service_ensure_advertising(void);
+
+/**
  * @brief Current runtime advertising/GAP name.
  */
 const char *ble_service_get_device_name(void);

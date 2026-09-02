@@ -38,6 +38,17 @@ LOG_MODULE_REGISTER(ble_service, LOG_LEVEL_INF);
 static struct bt_conn *current_conn;
 static struct bt_conn *auth_conn;
 static struct k_work adv_work;
+/* Advertising must never silently die. A failed start is retried, and for the
+ * first while after any boot the tag advertises FAST whatever the sleep
+ * profile says — a phone that just rebooted it (OTA) is waiting to reconnect,
+ * and a 10 s picture-mode interval is a needle in a haystack for it. After
+ * ADV_BOOT_FAST_MS the settle work restarts advertising on the profile's
+ * interval. */
+static struct k_work_delayable adv_retry_work;
+static struct k_work_delayable adv_settle_work;
+#define ADV_BOOT_FAST_MS   90000
+#define ADV_RETRY_MS        1000
+static int64_t adv_boot_fast_until;
 static ble_rx_callback_t app_rx_cb;
 static bool ble_connected = false;
 static bool ble_streaming_mode = false;
@@ -183,8 +194,9 @@ static void advertising_start(void)
 
 static void adv_work_handler(struct k_work *work)
 {
+	bool boot_burst = k_uptime_get() < adv_boot_fast_until;
 	const struct bt_le_adv_param *param =
-		ble_streaming_mode ? &adv_param_fast : &adv_param_idle;
+		(ble_streaming_mode || boot_burst) ? &adv_param_fast : &adv_param_idle;
 	const struct bt_data ad[] = {
 		BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 		BT_DATA(BT_DATA_NAME_COMPLETE, device_name, strlen(device_name)),
@@ -214,12 +226,39 @@ static void adv_work_handler(struct k_work *work)
 	}
 
 	if (err) {
-		LOG_ERR("Advertising failed (err %d)", err);
+		/* Not a verdict, a moment: the controller may be mid-scan-start or
+		 * mid-beacon. Try again in a second, and keep trying — an invisible
+		 * tag is the one failure that needs a hand on the battery. */
+		LOG_ERR("Advertising failed (err %d), retrying", err);
+		k_work_reschedule(&adv_retry_work, K_MSEC(ADV_RETRY_MS));
 		return;
 	}
 
 	adv_running = true;
-	LOG_INF("Advertising %s as %s", ble_streaming_mode ? "fast" : "idle", device_name);
+	LOG_INF("Advertising %s as %s", (ble_streaming_mode || boot_burst) ? "fast" : "idle", device_name);
+}
+
+static void adv_retry_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	advertising_start();
+}
+
+/* End of the boot burst: back to the profile's interval, if we are the one
+ * advertising (a connection or a beacon in progress restores on its own). */
+static void adv_settle_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (adv_running && !ble_streaming_mode) {
+		advertising_start();
+	}
+}
+
+void ble_service_ensure_advertising(void)
+{
+	if (advertising_allowed && !current_conn && !beacon_active && !adv_running) {
+		advertising_start();
+	}
 }
 
 void ble_service_set_idle_adv_interval_s(uint8_t seconds)
@@ -457,6 +496,10 @@ int ble_service_init(ble_rx_callback_t rx_cb) {
 	if (err) LOG_ERR("NUS init err: %d", err);
 
 	k_work_init(&adv_work, adv_work_handler);
+	k_work_init_delayable(&adv_retry_work, adv_retry_handler);
+	k_work_init_delayable(&adv_settle_work, adv_settle_handler);
+	adv_boot_fast_until = k_uptime_get() + ADV_BOOT_FAST_MS;
+	k_work_schedule(&adv_settle_work, K_MSEC(ADV_BOOT_FAST_MS));
 	advertising_allowed = true;
 	advertising_start();
 

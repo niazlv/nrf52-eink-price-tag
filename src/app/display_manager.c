@@ -1320,6 +1320,11 @@ static void screensaver_thread(void *p1, void *p2, void *p3) {
             /* Roll cumulative stats forward in retained RAM. RAM-only. */
             power_estimate_account_now();   /* folds the idle interval in too */
             persist_tick();
+
+            /* Self-heal: idle and allowed yet not advertising means a start
+             * failed and its retry chain died with it. Thirty seconds is the
+             * longest the tag may ever be invisible for that reason. */
+            ble_service_ensure_advertising();
         }
 
         if (bstate == BATT_CRITICAL || bstate == BATT_SHUTDOWN) {
