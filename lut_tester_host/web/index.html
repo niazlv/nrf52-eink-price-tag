@@ -459,19 +459,34 @@ input[type=text].lc{   /* specificity ≥ the generic input rule, on every break
 body.sending .send-btn{opacity:.45;pointer-events:none}
 body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-inset-bottom))}
 
+/* ── Firmware update toast: one element walks the whole OTA (ota* in JS):
+   available → downloading → uploading (progress track) → rebooting → done / error ── */
 #fw-toast{
   position:fixed;left:50%;top:calc(10px + env(safe-area-inset-top));transform:translateX(-50%);z-index:100;
-  display:flex;gap:11px;align-items:center;
+  display:flex;flex-direction:column;
   background:linear-gradient(180deg,#101830,#0c1220);border:1px solid #2a4a80;border-radius:13px;
-  padding:9px 9px 9px 14px;font-size:12.5px;color:var(--fg);
-  box-shadow:0 16px 48px -16px #000;max-width:min(92vw,440px);
+  font-size:12.5px;color:var(--fg);overflow:hidden;
+  box-shadow:0 16px 48px -16px #000;width:max-content;min-width:min(92vw,340px);max-width:min(92vw,440px);
   animation:tfade .2s ease;touch-action:pan-y;cursor:grab;user-select:none;
 }
 #fw-toast[hidden]{display:none}
-#fw-toast .fwt-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
-#fw-toast .fwt-ver{font-weight:700}
-#fw-toast .fwt-sub{font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#fw-toast .fwt-row{display:flex;gap:11px;align-items:center;padding:9px 9px 9px 14px;min-width:0}
+#fw-toast .fwt-ico{font-size:16px;flex-shrink:0;width:18px;text-align:center;color:var(--accent)}
+#fw-toast .fwt-txt{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+#fw-toast .fwt-ver{font-weight:700;font-variant-numeric:tabular-nums}
+#fw-toast .fwt-sub{font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 #fw-toast .fwt-x{padding:4px 8px}
+#fw-toast .fwt-track{height:3px;background:var(--bg4)}
+#fw-toast .fwt-track[hidden]{display:none}
+#fw-toast .fwt-fill{height:100%;width:0;background:var(--accent);transition:width .25s}
+#fw-toast.busy .fwt-fill{animation:sbpulse 1s ease-in-out infinite}
+#fw-toast.ok  {border-color:#1e4030;background:linear-gradient(180deg,#0f2418,#0c1a12)}
+#fw-toast.ok  .fwt-ico{color:var(--green)}  #fw-toast.ok  .fwt-fill{background:var(--green)}
+#fw-toast.err {border-color:#4a2020;background:linear-gradient(180deg,#2a1414,#1a0e0e)}
+#fw-toast.err .fwt-ico{color:var(--red)}    #fw-toast.err .fwt-fill{background:var(--red)}
+#fw-toast.warn{border-color:#4a3010}
+#fw-toast.warn .fwt-ico{color:var(--orange)} #fw-toast.warn .fwt-fill{background:var(--orange)}
+#dfu-card{scroll-margin-top:10px}
 
 /* ── System tab ── */
 #dfu-banner{border-color:#2a4a80;background:linear-gradient(180deg,#101830,#0c1220);animation:tfade .3s ease}
@@ -1282,7 +1297,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
             <div class="muted" id="dfu-banner-notes" style="margin-top:2px"></div>
           </div>
           <button class="btn acc big" onclick="startOtaUpdate()">⬆ Обновить</button>
-          <button class="btn ghost sm" onclick="$('dfu-banner').style.display='none'" aria-label="Скрыть">✕</button>
+          <button class="btn ghost sm" onclick="otaDismissBanner()" aria-label="Скрыть">✕</button>
         </div>
       </div>
 
@@ -1412,7 +1427,7 @@ body:has(#send-bar:not([hidden])) #ui-toast{bottom:calc(82px + env(safe-area-ins
     </div>
 
     <div class="pcol">
-      <section class="card m3">
+      <section class="card m3" id="dfu-card">
         <div class="ctitle">Обновление прошивки <span class="sub">OTA · DFU</span></div>
         <div class="dropzone" id="dfu-drop" onclick="$('dfu-file').click()">
           <div class="dz-t">📦 app_update.bin</div>
@@ -1918,6 +1933,7 @@ async function gattConnectRetry(device, tries = 3) {
 
 async function bleConnect() {
   if (connected) { bleDevice && bleDevice.gatt.disconnect(); return; }
+  otaReconnectCancel();          // a manual connect takes over from the post-OTA wait
   if (!navigator.bluetooth) {
     alert('Web Bluetooth не поддерживается.\nОткрой в Chrome и разреши bluetooth.');
     return;
@@ -1944,25 +1960,7 @@ async function bleConnect() {
       optionalServices: [NUS_SVC, SMP_SVC_UUID],
     });
     bleDevice.addEventListener('gattserverdisconnected', onBleDisc);
-    const server  = await gattConnectRetry(bleDevice);
-    const service = await server.getPrimaryService(NUS_SVC);
-    rxChar = await service.getCharacteristic(NUS_RX);
-    txChar = await service.getCharacteristic(NUS_TX);
-    await txChar.startNotifications();
-    txChar.addEventListener('characteristicvaluechanged', onNotify);
-    connected = true;
-    autoTimeDoneThisConn = false;   // новая сессия → снова можно авто-выставить время
-    sysState.wallUnix = null;
-    mtu = 498; // reset to optimistic; sendBytes will shrink on first oversized write
-    updateMtuDisplay();
-    setStatus(`Подключено → ${bleDevice.name}`, true);
-    $('btn-conn').textContent = 'Отключить';
-    currentDeviceName = bleDevice.name || '';   // стартовое имя; NAME: уточнит/обновит
-    nfcRefresh();   // имя ценника теперь известно → построить ссылку для метки
-    logI(`Connected to ${bleDevice.name}`);
-    await sleep(400);
-    sendRaw_('HOST:1');
-    onSysConnect();
+    await bleAttach(bleDevice);
   } catch(e) {
     // Closing the device chooser is a normal outcome, not a failure to shout about.
     const cancelled = /cancel/i.test(e.message);
@@ -1978,6 +1976,31 @@ async function bleConnect() {
   }
 }
 
+// Everything after the chooser: GATT, NUS, status, first commands. Shared by
+// the Connect button and the post-OTA reconnect (same device object, no
+// chooser; quiet = single connect attempt, the caller loops).
+async function bleAttach(device, opts = {}) {
+  const server  = opts.quiet ? await device.gatt.connect() : await gattConnectRetry(device);
+  const service = await server.getPrimaryService(NUS_SVC);
+  rxChar = await service.getCharacteristic(NUS_RX);
+  txChar = await service.getCharacteristic(NUS_TX);
+  await txChar.startNotifications();
+  txChar.addEventListener('characteristicvaluechanged', onNotify);
+  connected = true;
+  autoTimeDoneThisConn = false;   // новая сессия → снова можно авто-выставить время
+  sysState.wallUnix = null;
+  mtu = 498; // reset to optimistic; sendBytes will shrink on first oversized write
+  updateMtuDisplay();
+  setStatus(`Подключено → ${device.name}`, true);
+  $('btn-conn').textContent = 'Отключить';
+  currentDeviceName = device.name || '';   // стартовое имя; NAME: уточнит/обновит
+  nfcRefresh();   // имя ценника теперь известно → построить ссылку для метки
+  logI(`Connected to ${device.name}`);
+  await sleep(400);
+  sendRaw_('HOST:1');
+  onSysConnect();
+}
+
 // Освобождаем ценник при закрытии окна/приложения,
 // иначе фоновая PWA держит единственный слот подключения nRF52
 window.addEventListener('pagehide', () => {
@@ -1987,6 +2010,7 @@ window.addEventListener('pagehide', () => {
 function onBleDisc() {
   connected = false;
   smpChar = null;
+  if (smpPendingReject) smpPendingReject(new Error('связь с ценником оборвалась'));
   sysState.authed = false; sysState.secOn = false;
   sysState.wallUnix = null; autoTimeDoneThisConn = false;
   autoAuthTried = false; authBusy = false;
@@ -1994,7 +2018,6 @@ function onBleDisc() {
   $('btn-conn').textContent = 'Подключить';
   liveStop();                    // a dropped link ends any stream indicator
   battChip(null);                // the charge belongs to the tag we just lost
-  navBadge('nav-sys', false);
   currentDeviceName = '';
   nfcRefresh();
   // Не тащим статус приёма на следующий ценник: у него он может быть другим,
@@ -2003,6 +2026,10 @@ function onBleDisc() {
   if (mrx) { mrx.textContent = '—'; mrx.style.color = 'var(--fg2)'; }
   pwrReset();
   logI('Disconnected');
+  // OTA: an expected drop after REBOOT → dial back in; an offer belonged to the tag we lost.
+  if (ota.phase === 'reboot') { if (!otaReconnActive) otaReconnect(); }
+  else if (ota.phase === 'avail') otaSet('idle');
+  else otaRender();
 }
 
 function onNotify(ev) {
@@ -2453,15 +2480,15 @@ function uiToast(msg, kind = '', ms = 3500) {
 // ═══════════════════════════════════════════════════════════════════
 //  Tab switching
 // ═══════════════════════════════════════════════════════════════════
-function tab(name) {
+function tab(name, opts = {}) {
   const names = ['tag','anim','lut','sys'];
   document.querySelectorAll('.tab').forEach((el,i) =>
     el.classList.toggle('on', names[i] === name));
   document.querySelectorAll('.tp').forEach(el =>
     el.classList.toggle('on', el.id === 'tp-'+name));
-  if (isPhoneLayout()) window.scrollTo({ top: 0 });
+  if (isPhoneLayout() && !opts.keepScroll) window.scrollTo({ top: 0 });   // keepScroll: the caller scrolls itself
   if (name === 'lut') setTimeout(drawWf, 60);
-  if (name === 'sys') requestSysinfo();
+  if (name === 'sys' && !opts.quiet) requestSysinfo();   // quiet: OTA switches here itself
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -5480,6 +5507,7 @@ function parseSysinfo(line) {
 
   updateSysUI();
   updateAuthUI();
+  otaOnSysinfo();         // back after the OTA reboot? decide done / failed first
   checkVersionMismatch();
   maybeAutoSetTime();   // build/uptime могли прийти позже STATS — пробуем и тут
 
@@ -5863,69 +5891,229 @@ async function checkForUpdate() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  OTA state — one object drives the top toast (#fw-toast), the card in
+//  the System tab (#dfu-banner) and the dot on the System tab:
+//    idle → avail → download → upload → mark → reboot → done
+//                                   ↘ error (retry / ✕) ↗
+//  Everything that used to poke those elements directly goes through
+//  otaSet()/otaRender(), so a SYSINFO arriving mid-update can no longer
+//  repaint the toast as "update available" while the tag still runs the
+//  old version — that is why it used to come back right after «Обновить».
+// ═══════════════════════════════════════════════════════════════════
+const ota = {
+  phase: 'idle',
+  ver: '', from: '', size: 0, notes: '',   // target version · what the tag runs now
+  src: 'server',          // server (manifest) | file (hand-picked app_update.bin)
+  label: '',              // image file name
+  pct: 0, msg: '',        // progress · one-line detail under the title
+  aborted: false,         // error came from the Stop button
+  stalled: false,         // reboot: the tag did not come back / did not reboot
+  muted: false,           // ✕ during a busy phase: keep working, hide the toast
+  toastDismissedVer: null, bannerDismissedVer: null,
+  hideT: null,
+};
+const OTA_BUSY = ['download', 'upload', 'mark', 'reboot'];
+const OTA_ICON = { avail: '⬆', download: '⇣', upload: '↑', mark: '⟳', reboot: '⟳', done: '✓', error: '✗' };
+function otaBusy() { return OTA_BUSY.includes(ota.phase); }
+
+function otaSet(phase, patch = {}) {
+  clearTimeout(ota.hideT);
+  if (phase !== ota.phase) { ota.muted = false; ota.aborted = false; ota.stalled = false; ota.msg = ''; }
+  Object.assign(ota, patch, { phase });
+  if (phase === 'done') {
+    ota.hideT = setTimeout(() => {
+      if (ota.phase !== 'done') return;
+      otaSet('idle');
+      checkVersionMismatch();              // a yet-newer image may have appeared meanwhile
+    }, 8000);
+  }
+  otaRender();
+}
+function otaProgress(pct, msg) {           // upload hot path: no phase change
+  ota.pct = pct; ota.msg = msg;
+  otaRender();
+}
+
+function otaRender() {
+  const p = ota.phase;
+  const kb = ota.size ? (ota.size / 1024).toFixed(1) + ' KB' : '';
+  // System-tab card + nav dot = "there is something to install"
+  const offer = (p === 'avail' || p === 'error') && ota.src === 'server' && !!ota.ver
+                && ota.bannerDismissedVer !== ota.ver;
+  const banner = $('dfu-banner');
+  if (banner) {
+    banner.style.display = offer ? '' : 'none';
+    if (offer) {
+      $('dfu-banner-ver').textContent = `v${ota.ver}`;
+      $('dfu-banner-size').textContent = kb;
+      $('dfu-banner-notes').textContent = ota.notes || '';
+    }
+  }
+  navBadge('nav-sys', offer || otaBusy());
+
+  const el = $('fw-toast');
+  if (!el) return;                         // markup sits below this script — wireOtaToast() renders again
+  let show = true, cls = '', go = '', goCls = 'acc', pct = null, pulse = false, sub = ota.msg;
+  let title = ota.ver ? `Обновление → v${ota.ver}` : `Загрузка ${ota.label || 'прошивки'}`;
+  switch (p) {
+    case 'idle':
+      show = false; break;
+    case 'avail':
+      show = ota.toastDismissedVer !== ota.ver;
+      title = `Обновление ценника v${ota.ver}`;
+      sub = [ota.notes, kb].filter(Boolean).join(' · ') || 'Нажми «Обновить»';
+      go = 'Обновить'; break;
+    case 'download':
+      sub = sub || 'скачиваю образ с сервера…'; pct = 100; pulse = true; break;
+    case 'upload':
+      title += ` · ${ota.pct}%`; pct = ota.pct; go = 'Стоп'; goCls = 'bad'; break;
+    case 'mark':
+      pct = 100; pulse = true; break;
+    case 'reboot':
+      pct = 100; pulse = !ota.stalled; cls = ota.stalled ? 'warn' : '';
+      if (ota.stalled) go = connected ? 'Перезагрузить' : 'Подключить';
+      break;
+    case 'done':
+      cls = 'ok'; pct = 100;
+      title = ota.ver ? `Ценник обновлён до v${ota.ver}` : `Прошивка загружена · v${sysState.fwVersion || '?'}`;
+      break;
+    case 'error':
+      cls = 'err'; title = ota.aborted ? 'Загрузка остановлена' : 'Обновление не удалось';
+      go = 'Повторить'; break;
+  }
+  if (ota.muted) show = false;
+  const wasHidden = el.hidden;
+  el.hidden = !show;
+  if (!show) return;
+  el.className = cls + (pulse ? ' busy' : '');
+  $('fw-toast-ico').textContent = OTA_ICON[p] || '⬆';
+  $('fw-toast-ver').textContent = title;
+  $('fw-toast-sub').textContent = sub || '';
+  const goBtn = $('fw-toast-go');
+  goBtn.hidden = !go; goBtn.textContent = go; goBtn.className = `btn ${goCls} big`;
+  $('fw-toast-track').hidden = pct == null;
+  $('fw-toast-fill').style.width = (pct ?? 0) + '%';
+  if (wasHidden) {                         // fresh appearance: undo a previous swipe
+    el.style.transition = ''; el.style.transform = 'translateX(-50%)'; el.style.opacity = '1';
+  }
+}
+
+// ✕ or a sideways swipe on the toast.
+function otaDismiss() {
+  switch (ota.phase) {
+    case 'avail':  ota.toastDismissedVer = ota.ver; break;          // known — stop nagging with this version
+    case 'error':  ota.toastDismissedVer = ota.ver;
+                   ota.phase = ota.src === 'server' && ota.ver ? 'avail' : 'idle'; break;
+    case 'done':   clearTimeout(ota.hideT); ota.phase = 'idle'; break;
+    case 'reboot':                                                   // stop waiting; a manual connect still finishes the story
+      if (!ota.stalled) { otaReconnectCancel(); if (!connected) setStatus('Не подключено', false); }
+      ota.muted = true; break;
+    default:       ota.muted = true;                                 // download/upload/mark: keep going, the result pops back up
+  }
+  otaRender();
+}
+function otaDismissBanner() {              // ✕ on the System-tab card
+  ota.bannerDismissedVer = ota.ver;
+  otaRender();
+}
+function otaGo() {                         // the toast's action button
+  switch (ota.phase) {
+    case 'avail':  startOtaUpdate(); break;
+    case 'upload': dfuAbort(); break;
+    case 'reboot': if (connected) { otaSet('reboot', { stalled: false, msg: 'перезагрузка ценника…' }); dfuReset(); }
+                   else otaReconnect();
+                   break;
+    case 'error':  if (ota.src === 'server') startOtaUpdate(); else dfuStartUpload(); break;
+  }
+}
+// Take the user to where the update is visible: System tab, DFU card in view.
+function otaShowSys() {
+  tab('sys', { quiet: true, keepScroll: true });   // no SYSINFO burst on top of the SMP traffic; one scroll, ours
+  const card = $('dfu-card'), toast = $('fw-toast');
+  if (!card) return;
+  // Instant and synchronous, like tab()'s own scroll: a smooth scroll or a rAF
+  // never runs in a backgrounded tab, and the jump is the whole point here.
+  const under = isPhoneLayout() && toast && !toast.hidden ? toast.getBoundingClientRect().bottom + 12 : 10;
+  card.style.scrollMarginTop = under + 'px';       // the fixed toast must not cover the card
+  card.scrollIntoView({ behavior: 'auto', block: 'start' });
+}
+
+// First SYSINFO after the post-update reboot: did the new image take?
+function otaOnSysinfo() {
+  if (ota.phase !== 'reboot' || !sysState.fwVersion) return;
+  otaReconnectCancel();
+  if (!ota.ver || versionCompare(sysState.fwVersion, ota.ver) >= 0) {
+    otaSet('done', { msg: ota.from && ota.from !== sysState.fwVersion ? `было v${ota.from}` : '' });
+    dfuLog(`✓ Ценник вернулся на v${sysState.fwVersion}`, 'ok');
+  } else {
+    otaSet('error', { msg: `ценник всё ещё на v${sysState.fwVersion} — образ не применился, смотри лог DFU` });
+    dfuLog(`✗ После перезагрузки прошивка v${sysState.fwVersion}, ожидалась v${ota.ver} — образ не применился`, 'err');
+  }
+}
+
 function checkVersionMismatch() {
   if (!serverManifest || !sysState.fwVersion) return;
+  if (otaBusy()) return;                   // progress owns the toast; re-evaluated when it ends
+  if (ota.phase === 'error') return;       // keep the failure on screen until ✕ / Повторить
   const v = pickVariant(serverManifest, sysState.layout);
-  if (!v || !v.version) { $('dfu-banner').style.display = 'none'; navBadge('nav-sys', false); hideFwToast(); return; }
-  if (versionCompare(v.version, sysState.fwVersion) > 0) {
-    showUpdateBanner(v.version, v.size, v.notes);
-    showFwToast(v.version, v.size, v.notes);
-  } else {
-    $('dfu-banner').style.display = 'none';
-    navBadge('nav-sys', false);
-    hideFwToast();
+  if (v && v.version && versionCompare(v.version, sysState.fwVersion) > 0) {
+    otaSet('avail', { ver: v.version, from: sysState.fwVersion, size: v.size || 0, notes: v.notes || '',
+                      src: 'server', label: v.file || '', pct: 0, msg: '' });
+  } else if (ota.phase === 'avail') {
+    otaSet('idle');                        // installed (or the manifest went back): nothing to offer
+  }
+  // 'done' stays until its own timer clears it
+}
+
+// ── Reconnect after the OTA reboot ──────────────────────────────────
+// Web Bluetooth lets us call gatt.connect() on a device the user already
+// picked, so after REBOOT we give MCUboot time to swap the image and dial
+// back in without a chooser. The first SYSINFO closes the loop in
+// otaOnSysinfo(): same-or-newer version = done, older = failed.
+let otaReconnGen = 0, otaReconnActive = false;
+function otaReconnectCancel() { otaReconnGen++; otaReconnActive = false; }
+async function otaReconnect() {
+  const gen = ++otaReconnGen, dev = bleDevice;
+  if (!dev) { otaSet('reboot', { stalled: true, msg: 'подключись к ценнику, чтобы проверить обновление' }); return; }
+  const t0 = Date.now(), budget = 90000, delay = 7000;
+  otaReconnActive = true;
+  otaSet('reboot', { stalled: false, msg: 'ценник перезагружается и меняет образ…' });
+  setStatus('Ценник перезагружается…', false, 'busy');
+  const tick = setInterval(() => {
+    if (gen !== otaReconnGen || ota.phase !== 'reboot' || connected) { clearInterval(tick); return; }
+    const sec = Math.round((Date.now() - t0) / 1000);
+    if (sec * 1000 >= delay) otaSet('reboot', { msg: `жду ценник после перезагрузки… ${sec} с` });
+  }, 1000);
+  try {
+    await sleep(delay);
+    for (let n = 1; ; n++) {
+      if (gen !== otaReconnGen || connected) return;
+      try {
+        await bleAttach(dev, { quiet: true });
+        return;                            // parseSysinfo → otaOnSysinfo() decides done / failed
+      } catch (e) {
+        if (gen !== otaReconnGen) return;
+        try { dev.gatt.disconnect(); } catch {}
+        logI(`Переподключение после обновления (${n}): ${e.message}`);
+        if (Date.now() - t0 >= budget) break;
+        await sleep(2500);
+      }
+    }
+    if (gen !== otaReconnGen || connected) return;
+    setStatus('Не подключено', false);
+    otaSet('reboot', { stalled: true, msg: 'ценник не вернулся за 90 с — разбуди его и нажми «Подключить»' });
+  } finally {
+    clearInterval(tick);
+    if (gen === otaReconnGen) otaReconnActive = false;
   }
 }
 
-function versionCompare(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] || 0, nb = pb[i] || 0;
-    if (na > nb) return 1;
-    if (na < nb) return -1;
-  }
-  return 0;
-}
-
-function showUpdateBanner(version, size, notes) {
-  $('dfu-banner').style.display = '';
-  navBadge('nav-sys', true);        // dot on the System tab until it is installed
-  $('dfu-banner-ver').textContent = `v${version}`;
-  $('dfu-banner-size').textContent = size ? (size / 1024).toFixed(1) + ' KB' : '';
-  $('dfu-banner-notes').textContent = notes || '';
-}
-
-// ── Мини-тост «доступно обновление прошивки» ────────────────────────
-// Всплывает сверху, когда на сервере есть версия новее установленной.
-// Смахивается в сторону (или ✕). Смахнутую версию запоминаем, чтобы
-// не дёргать пользователя повторно тем же обновлением.
-let fwToastDismissedVer = null;
-function showFwToast(version, size, notes) {
-  if (fwToastDismissedVer === version) return;     // эту версию уже смахнули
-  const el = $('fw-toast');
-  $('fw-toast-ver').textContent = `Обновление ценника v${version}`;
-  const sizeKb = size ? (size / 1024).toFixed(1) + ' KB' : '';
-  $('fw-toast-sub').textContent = [notes, sizeKb].filter(Boolean).join(' · ') || 'Нажми «Обновить»';
-  el._fwVer = version;
-  el.hidden = false;
-  el.style.transition = '';
-  el.style.transform = 'translateX(-50%)';
-  el.style.opacity = '1';
-}
-function hideFwToast() {
-  $('fw-toast').hidden = true;
-}
-function dismissFwToast() {
-  const el = $('fw-toast');
-  fwToastDismissedVer = el._fwVer || null;   // не показывать снова эту же версию
-  el.hidden = true;
-}
-function wireFwToast() {
+function wireOtaToast() {
   const el = $('fw-toast');
   if (!el) return;   // #fw-toast объявлен ниже по документу — ждём DOMContentLoaded
-  $('fw-toast-go').addEventListener('click', () => { hideFwToast(); startOtaUpdate(); });
-  $('fw-toast-x').addEventListener('click', dismissFwToast);
+  $('fw-toast-go').addEventListener('click', otaGo);
+  $('fw-toast-x').addEventListener('click', otaDismiss);
 
   // Свайп-в-сторону для скрытия (pointer = mouse + touch).
   let startX = 0, dx = 0, dragging = false;
@@ -5948,7 +6136,7 @@ function wireFwToast() {
       el.style.transition = 'transform .2s ease, opacity .2s ease';
       el.style.transform = `translateX(calc(-50% + ${dx > 0 ? 500 : -500}px))`;
       el.style.opacity = '0';
-      setTimeout(dismissFwToast, 200);
+      setTimeout(otaDismiss, 200);
     } else {                                    // вернуть на место
       el.style.transition = 'transform .2s ease, opacity .2s ease';
       el.style.transform = 'translateX(-50%)';
@@ -5959,23 +6147,40 @@ function wireFwToast() {
   el.addEventListener('pointermove', onMove);
   el.addEventListener('pointerup', onUp);
   el.addEventListener('pointercancel', onUp);
+  otaRender();      // state set before the markup existed (early manifest check)
 }
 // #fw-toast в DOM появляется ниже этого скрипта → откладываем подключение.
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireFwToast);
-else wireFwToast();
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireOtaToast);
+else wireOtaToast();
+
+function versionCompare(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0, nb = pb[i] || 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
 
 async function startOtaUpdate() {
-  if (!serverManifest) return;
+  if (!serverManifest) { uiToast('Сначала проверь сервер обновлений (Система → Проверить)', 'err'); return; }
+  if (dfuUploading) { otaShowSys(); return; }            // already running — just show it
   const v = pickVariant(serverManifest, sysState.layout);
   if (!v || !v.file) {
-    dfuLog('Для layout=' + (sysState.layout ?? '?') + ' нет образа в манифесте — обновление отменено', 'err');
+    const m = 'Для layout=' + (sysState.layout ?? '?') + ' нет образа в манифесте — обновление отменено';
+    dfuLog(m, 'err'); uiToast(m, 'err');
     return;
   }
-  tab('sys');
+  otaSet('download', { ver: v.version, from: sysState.fwVersion || '', size: v.size || 0, notes: v.notes || '',
+                       src: 'server', label: v.file, pct: 0, msg: '' });
+  otaShowSys();
   // Download the image matching THIS device's layout.
   const url = serverManifest._baseUrl + '/' + v.file;
   dfuLog('Образ для layout=' + v.layout + ': ' + v.file, 'inf');
   dfuLog('Скачивание с сервера: ' + url, 'inf');
+  $('dfu-prog').style.width = '0%';
   $('dfu-prog-text').textContent = 'Скачивание…';
 
   try {
@@ -6012,10 +6217,14 @@ async function startOtaUpdate() {
     if (connected) {
       await sleep(200);
       dfuStartUpload();
+    } else {
+      $('dfu-prog-text').textContent = 'Образ скачан — подключись к ценнику';
+      otaSet('error', { msg: 'образ скачан, но ценник не подключён — подключись и нажми «Загрузить в ценник»' });
     }
   } catch (e) {
     dfuLog('Ошибка скачивания: ' + e.message, 'err');
     $('dfu-prog-text').textContent = 'Ошибка';
+    otaSet('error', { msg: 'скачивание: ' + e.message });
   }
 }
 
@@ -6054,6 +6263,7 @@ let dfuUploading = false;
 let dfuAbortFlag = false;
 let smpSeq = 0;
 let smpPendingResolve = null;
+let smpPendingReject = null;     // onBleDisc fails the in-flight request instead of waiting out its timeout
 let smpReassembly = null;
 let smpExpectedLen = 0;
 
@@ -6172,8 +6382,9 @@ function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
     const msg = new Uint8Array(8 + cborData.length);
     msg.set(hdr); msg.set(cborData, 8);
 
-    const timer = setTimeout(() => { smpPendingResolve = null; reject(new Error('SMP timeout')); }, timeoutMs);
-    smpPendingResolve = (data) => { clearTimeout(timer); resolve(data); };
+    const timer = setTimeout(() => { smpPendingResolve = smpPendingReject = null; reject(new Error('SMP timeout')); }, timeoutMs);
+    smpPendingResolve = (data) => { clearTimeout(timer); smpPendingReject = null; resolve(data); };
+    smpPendingReject  = (err)  => { clearTimeout(timer); smpPendingResolve = smpPendingReject = null; reject(err); };
     smpReassembly = null; smpExpectedLen = 0;
 
     try {
@@ -6181,23 +6392,37 @@ function smpRequest(op, group, cmdId, payload, timeoutMs = 30000) {
       for (let i = 0; i < msg.length; i += chunkSz) {
         await smpChar.writeValueWithoutResponse(msg.slice(i, i + chunkSz));
       }
-    } catch (e) { clearTimeout(timer); smpPendingResolve = null; reject(e); }
+    } catch (e) { clearTimeout(timer); smpPendingResolve = smpPendingReject = null; reject(e); }
   });
 }
 
 async function dfuStartUpload() {
   if (!dfuFirmwareData || dfuUploading) return;
+  // A hand-picked file («Загрузить в ценник») gets the same progress toast as a
+  // server update; a server image that is re-sent by hand keeps its version.
+  if (!otaBusy()) {
+    const sameImage = ota.src === 'server' && ota.ver && dfuFileName === ota.label;
+    otaSet('upload', sameImage ? { pct: 0, msg: '' }
+      : { ver: '', from: sysState.fwVersion || '', src: 'file', label: dfuFileName,
+          size: dfuFirmwareData.length, notes: '', pct: 0, msg: '' });
+  }
   if (sysState.secOn && !sysState.authed) {
     dfuLog('Ценник запаролен — сначала разблокируй (введи пароль → 🔓 Разблокировать)', 'wrn');
+    otaSet('error', { msg: 'ценник запаролен — сначала разблокируй его в «Системе»' });
     return;
   }
-  if (!await dfuEnsureSmp()) return;
+  if (!await dfuEnsureSmp()) {
+    otaSet('error', { msg: connected ? 'SMP сервис недоступен — смотри лог DFU' : 'ценник не подключён' });
+    return;
+  }
 
   dfuUploading = true;
   dfuAbortFlag = false;
   $('dfu-btn-upload').disabled = true;
   $('dfu-btn-abort').disabled = false;
+  $('dfu-prog').style.width = '0%';
   dfuLog('Начало загрузки…', 'inf');
+  otaSet('upload', { pct: 0, msg: 'стираю slot 1…' });
 
   const total = dfuFirmwareData.length;
   let offset = 0;
@@ -6243,10 +6468,12 @@ async function dfuStartUpload() {
       const eta = elapsed / offset * (total - offset);
       $('dfu-prog').style.width = pct + '%';
       $('dfu-prog-text').textContent = `${pct}% · ${(offset/1024).toFixed(1)}/${(total/1024).toFixed(1)} KB · ${speed.toFixed(1)} KB/s · ETA ${eta.toFixed(0)}s`;
+      otaProgress(pct, `${Math.round(offset/1024)}/${Math.round(total/1024)} KB · ${speed.toFixed(1)} KB/s · ещё ${eta.toFixed(0)} с`);
     }
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     dfuLog(`✓ Загрузка завершена за ${elapsed}s`, 'ok');
     $('dfu-prog-text').textContent = `✓ Готово (${elapsed}s)`;
+    otaSet('mark', { msg: `загружено за ${elapsed} с · проверяю образ…` });
 
     // Notify firmware: DFU complete
     if (connected && rxChar) {
@@ -6264,15 +6491,23 @@ async function dfuStartUpload() {
     if (marked) {
       dfuLog('Авто-перезагрузка для применения обновления через 2с…', 'inf');
       $('dfu-prog-text').textContent = '✓ Готово — перезагрузка…';
+      otaSet('reboot', { msg: 'образ принят · перезагрузка через 2 с…' });
       await sleep(2000);
-      await dfuReset();   // REBOOT по NUS → BLE отвалится (onBleDisc)
-      dfuLog('Ценник перезагружается. Переподключись через ~10с — время выставится автоматически.', 'ok');
+      otaSet('reboot', { msg: 'перезагрузка ценника…' });
+      await dfuReset();   // REBOOT по NUS → BLE отвалится → onBleDisc() запустит otaReconnect()
+      dfuLog('Ценник перезагружается — переподключусь сам, как только он вернётся.', 'ok');
+      setTimeout(() => {  // the link never dropped: the tag ignored REBOOT
+        if (ota.phase === 'reboot' && connected && !otaReconnActive)
+          otaSet('reboot', { stalled: true, msg: 'ценник не перезагрузился — нажми «Перезагрузить»' });
+      }, 10000);
     } else {
       dfuLog('Слот не помечен — авто-перезагрузка пропущена. Проверь лог и при необходимости нажми Test/Reboot вручную.', 'wrn');
+      otaSet('error', { msg: 'образ не помечен для загрузки — смотри лог DFU (Test / Reboot вручную)' });
     }
   } catch (e) {
     dfuLog('✕ ' + e.message, 'err');
     $('dfu-prog-text').textContent = 'Ошибка: ' + e.message;
+    otaSet('error', { msg: e.message, aborted: dfuAbortFlag });
   } finally {
     dfuUploading = false;
     $('dfu-btn-upload').disabled = false;
@@ -6537,15 +6772,18 @@ try {
   <button class="btn acc" id="sw-reload">Обновить</button>
 </div>
 
-<!-- Firmware update toast (swipe sideways to dismiss; see fwToast* in JS) -->
+<!-- Firmware update toast: available → progress → done / error (swipe sideways to hide; see ota* in JS) -->
 <div id="fw-toast" hidden>
-  <span style="font-size:16px">⬆</span>
-  <div class="fwt-txt">
-    <span class="fwt-ver" id="fw-toast-ver">Доступно обновление ценника</span>
-    <span class="fwt-sub" id="fw-toast-sub"></span>
+  <div class="fwt-row">
+    <span class="fwt-ico" id="fw-toast-ico">⬆</span>
+    <div class="fwt-txt">
+      <span class="fwt-ver" id="fw-toast-ver">Доступно обновление ценника</span>
+      <span class="fwt-sub" id="fw-toast-sub"></span>
+    </div>
+    <button class="btn acc big" id="fw-toast-go">Обновить</button>
+    <button class="btn ghost fwt-x" id="fw-toast-x" title="Скрыть">✕</button>
   </div>
-  <button class="btn acc big" id="fw-toast-go">Обновить</button>
-  <button class="btn ghost fwt-x" id="fw-toast-x" title="Скрыть">✕</button>
+  <div class="fwt-track" id="fw-toast-track" hidden><div class="fwt-fill" id="fw-toast-fill"></div></div>
 </div>
 
 <script>
