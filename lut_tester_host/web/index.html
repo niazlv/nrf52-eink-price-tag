@@ -5318,10 +5318,16 @@ function renderRemaining() {
   $('sys-remain').textContent = `${remain.toFixed(0)} mAh` + (declared ? ` из ${cap}` : ' (от 350 по умолчанию)');
   if (est > 0) {
     const days = remain / (est * 24 / 1000);
-    const etaStr = days >= 1 ? `~${days.toFixed(0)} дн.` : `~${(days * 24).toFixed(1)} ч`;
+    // Дни / месяцы / годы — та же шкала, что в карточке «Энергосбережение»,
+    // чтобы два места на экране не расходились в формулировке.
+    const etaStr = days >= 1 ? pwrDaysText(Math.round(days)) : `~${(days * 24).toFixed(1)} ч`;
     $('sys-eta').textContent = `${etaStr} (оценка при ${est} мкА)`;
+  } else if (!connected) {
+    $('sys-eta').textContent = '—';
+  } else if (pwrSupported === false) {
+    $('sys-eta').textContent = '— (нужна прошивка 3.4.13+)';
   } else {
-    $('sys-eta').textContent = declared ? '—' : '— (нужна прошивка 3.4.13+)';
+    $('sys-eta').textContent = '— (жду ответ ценника)';
   }
 }
 // ADC ceiling is 3600 mV (gain 1/6, ref 0.6V). Above that = "full/charging".
@@ -5412,8 +5418,17 @@ function markDeviceBusy(ms) { deviceBusyUntil = Math.max(deviceBusyUntil, Date.n
 // не идёт OTA, не льётся картинка (sendLock), не крутится поток/анимация
 // (liveTimer), ценник не занят чисткой. Любая NUS-запись поверх чужой — это
 // «GATT operation already in progress» на телефоне.
+// Занят ли эфир ПРЯМО СЕЙЧАС. Именно «сейчас»: ota.phase='reboot' со
+// stalled=true означает, что обновление сдалось и ждёт человека — эфир при
+// этом свободен, а раньше такой залипший статус навсегда выключал опрос
+// профиля, и «Осталось (ожид.)» оставалось прочерком до перезагрузки страницы.
+function airBusy() {
+  if (ota.phase === 'download' || ota.phase === 'upload' || ota.phase === 'mark') return true;
+  if (ota.phase === 'reboot' && !ota.stalled) return true;   // ждём возврата ценника
+  return false;
+}
 function pwrMayPoll() {
-  return connected && curTab === 'sys' && !otaBusy() && !sendLock &&
+  return connected && curTab === 'sys' && !airBusy() && !sendLock &&
          liveTimer === null && Date.now() >= deviceBusyUntil;
 }
 const PWR_MIN_FW    = '3.4.13';
