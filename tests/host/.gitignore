@@ -3,3 +3,6 @@
 !*.h
 !Makefile
 !.gitignore
+# the stub headers live in subdirectories
+!stubs/
+!stubs/**/
