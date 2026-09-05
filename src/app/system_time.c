@@ -5,6 +5,9 @@
 
 static int64_t time_offset_sec = 0;
 
+#if !defined(APP_BUILD_YEAR)
+/* Only the __DATE__ fallback needs this; CMakeLists.txt always defines the
+ * APP_BUILD_* stamp, so in the normal build it would be an unused function. */
 static int get_month_index(const char *m) {
     const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     for (int i=0; i<12; i++) {
@@ -12,6 +15,7 @@ static int get_month_index(const char *m) {
     }
     return 1; // Default
 }
+#endif
 
 void system_time_init(void) {
 #if defined(APP_BUILD_YEAR)

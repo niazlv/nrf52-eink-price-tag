@@ -13,8 +13,13 @@
  * Every device ships knowing this key. It is replaceable at runtime by a peer
  * that proves knowledge of the *current* key (SETKEY); the replacement lives in
  * NVS and takes precedence. A factory_data-provisioned key also overrides this
- * default. CHANGE THESE BYTES before a production batch and keep them out of any
- * public copy of the sources. */
+ * default.
+ *
+ * This repository is public, so this key is too: it protects a tag against an
+ * accidental or casual peer, not a determined one — the same trade the
+ * committed MCUboot key makes (see the note in .gitignore). A fleet that needs
+ * real access control changes the key over NUS with SETKEY (persisted in NVS)
+ * or provisions one in factory_data; both take precedence over these bytes. */
 static const uint8_t default_key[SEC_KEY_LEN] = {
 	0x9e, 0x1c, 0x47, 0xb3, 0x52, 0xa8, 0x0f, 0xd6,
 	0x71, 0x2b, 0xc4, 0x88, 0x3a, 0xe5, 0x96, 0x10,
