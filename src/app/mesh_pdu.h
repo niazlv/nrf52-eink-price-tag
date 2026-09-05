@@ -66,11 +66,13 @@ uint8_t mesh_pdu_max_payload(uint8_t dst_type);
  * the MAC is NOT checked here (see mesh_pdu_verify). */
 bool mesh_pdu_parse(const uint8_t *pdu, uint8_t len, struct mesh_pdu_view *v);
 
-/* Check the trailing MAC of a parsed PDU against @p key. */
+/* Check the trailing MAC of a PDU against @p key. False on a malformed PDU,
+ * a wrong MAC, or an AES failure. */
 bool mesh_pdu_verify(const uint8_t *pdu, uint8_t len, mesh_aes_fn aes, const uint8_t key[16]);
 
 /* Assemble and sign a PDU into @p out (>= MESH_PDU_MAX bytes).
- * @return the PDU length, or -1 if the payload does not fit for @p dst_type. */
+ * @return the PDU length, or -1 if the payload does not fit for @p dst_type
+ *         or the AES callback failed. */
 int mesh_pdu_build(uint8_t *out, uint8_t ttl, uint16_t seq, const uint8_t src[3],
 		   uint8_t dst_type, const uint8_t *dst,
 		   uint8_t opcode, const uint8_t *payload, uint8_t plen,
@@ -84,8 +86,10 @@ void mesh_pdu_set_ttl(uint8_t *pdu, uint8_t ttl);
  * PDU functions above use the first MESH_MAC_LEN bytes of it. Subkeys are
  * cached against a copy of the key, so back-to-back calls with the same key
  * cost one AES block per 16 bytes of message and nothing more. Not
- * thread-safe: call from one thread at a time. */
-void mesh_cmac(mesh_aes_fn aes, const uint8_t key[16],
+ * thread-safe: call from one thread at a time.
+ * @return false if the AES callback failed; @p out is then unspecified and
+ *         nothing was cached (a failed derivation must not poison the key). */
+bool mesh_cmac(mesh_aes_fn aes, const uint8_t key[16],
 	       const uint8_t *msg, size_t len, uint8_t out[16]);
 
 /* ── Replay protection list ─────────────────────────────────────────────────
@@ -96,22 +100,33 @@ void mesh_cmac(mesh_aes_fn aes, const uint8_t key[16],
  * or lies inside the window and has not been seen. Everything else — an exact
  * duplicate, a relay echo, a replay of a captured PDU — is dropped.
  *
+
  * Sequence numbers are 16-bit and compared with serial arithmetic, so the
- * counter may wrap. A source whose counter went backwards — old firmware
- * restarted it at zero on every boot, and a wiped tag starts over — would be
- * locked out forever by a strict rule. The one concession: a source not heard
- * from for MESH_RPL_EXPIRE_S is forgotten, and whatever it sends next is
- * taken at face value. That re-opens replay against a tag for exactly one
- * source, only after that source has been silent a whole week, and only
- * until it speaks again; a deliberate trade for not bricking the mesh on a
- * wiped gateway. (BT Mesh's answer is "re-provision the node"; this fleet
- * has no provisioner.)
+ * counter may wrap. The arithmetic has one blind spot: once a source has
+ * advanced 32768 past a captured PDU, that PDU reads as "newer" again. The
+ * originator only advances by real broadcasts (mesh.c saves the counter on
+ * every one, so a reboot costs a single step), which puts that at tens of
+ * thousands of BCASTs after the capture — years for this fleet.
+ *
+ * A source whose counter went backwards — old firmware restarted it at zero
+ * on every boot, and a wiped tag starts over — would be locked out forever by
+ * a strict rule. The one concession: a source not heard from for
+ * MESH_RPL_EXPIRE_S is forgotten, and whatever it sends next is taken at face
+ * value. That re-opens replay against a tag for exactly one source, only
+ * after that source has been silent a whole week, and only until it speaks
+ * again; a deliberate trade for not bricking the mesh on a wiped gateway.
+ * The silence is measured in the receiving tag's own uptime and restarts
+ * with each of its reboots (there is no trustworthy wall clock after a power
+ * loss), so the week is a floor, not an exact figure; the operator's direct
+ * remedy is MESHRX FORGET over NUS, which drops the whole list. (BT Mesh's
+ * answer is "re-provision the node"; this fleet has no provisioner.)
  *
  * Slots are few (RAM is counted in bytes on this tag); the least recently
  * heard source is evicted when a ninth one appears, which makes its old PDUs
- * replayable once until it is re-learned. The struct is persisted as-is by
- * mesh.c so a reboot does not reset the windows; last_s is uptime-based and
- * is zeroed on load, so the silence clock restarts with the tag. */
+ * replayable once until it is re-learned. mesh.c persists the list so a
+ * reboot does not reset it — not the struct, but the compact (src, seq) form
+ * from mesh_rpl_export(): layout-independent, and a loaded entry treats
+ * everything at or below its seq as seen. */
 #define MESH_RPL_SLOTS    8
 #define MESH_RPL_WINDOW   32
 #define MESH_RPL_EXPIRE_S (7u * 24u * 3600u)
@@ -137,8 +152,19 @@ bool mesh_rpl_check(const struct mesh_rpl *r, const uint8_t src[3], uint16_t seq
  * entry would let anyone poison the window and get real commands dropped. */
 void mesh_rpl_commit(struct mesh_rpl *r, const uint8_t src[3], uint16_t seq, uint32_t now_s);
 
-/* Forget all sources (used when the table loaded from flash is rejected). */
+/* Forget all sources. */
 void mesh_rpl_reset(struct mesh_rpl *r);
+
+/* Persistent form: [version:1] then, per used slot, [src:3][seq:2 LE]. The
+ * windows and the silence clock are not stored — a loaded entry rejects
+ * everything at or below its seq, which is the safe reading after a reboot.
+ * Export returns the number of bytes written (0 if @p cap is too small for
+ * the header); import replaces the whole list and returns false on a blob
+ * it does not understand (the list is then empty). */
+#define MESH_RPL_BLOB_VER 1
+#define MESH_RPL_BLOB_MAX (1 + MESH_RPL_SLOTS * 5)
+size_t mesh_rpl_export(const struct mesh_rpl *r, uint8_t *out, size_t cap);
+bool   mesh_rpl_import(struct mesh_rpl *r, const uint8_t *in, size_t len);
 
 #ifdef __cplusplus
 }

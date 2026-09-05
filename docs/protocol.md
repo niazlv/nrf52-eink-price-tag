@@ -132,7 +132,7 @@ A picture is `FW:` lines (and `RW:` lines on a two-plane panel) followed by
 
 | Op | Text | Args | Reply | Flags |
 | --- | --- | --- | --- | --- |
-| 80 | `MESHRX` | none, `ON`/`1`, `OFF`/`0` | `meshrx=on` / `meshrx=off (re-enable over NUS only)` | M |
+| 80 | `MESHRX` | none, `ON`/`1`, `OFF`/`0`, `FORGET` | `meshrx=on` / `meshrx=off (re-enable over NUS only)`; `FORGET` drops the replay list and answers `meshrx=on rpl=clearing` — over the connected link only, a flooded `FORGET` is ignored | M |
 | 81 | `PWR` / `PWR:` | none, or `key=val,…` | see [PWR](#pwr) | M |
 
 ## Reply lines a host parses
@@ -220,11 +220,17 @@ most 27 bytes:
 - `mac` = the first 4 bytes of AES-CMAC (RFC 4493) under the fleet's secauth
   key over everything before it, with the TTL nibble zeroed. Relays
   decrement TTL and re-beacon; TTL starts at 4.
-- `seq` is per source, persisted across reboots on the originator. Receivers
-  keep a 32-entry sliding window per source (8 sources, least recently heard
-  evicted) and drop anything already seen or older than the window, so a
-  captured PDU cannot be replayed. A source not heard from for seven days is
-  forgotten and re-admitted at whatever it sends next.
+- `seq` is per source. The originator saves the last value it used on every
+  broadcast and resumes one past it after a reboot; a tag with no saved value
+  starts at 1024. Receivers keep a 32-entry sliding window per source (8
+  sources, least recently heard evicted), persisted as (src, highest seq),
+  and drop anything already seen or older than the window, so a captured PDU
+  cannot be replayed. A source not heard from for seven days of the
+  receiver's uptime is forgotten and re-admitted at whatever it sends next;
+  `MESHRX FORGET` over the connected link forgets all of them at once. Both
+  exist for a source whose counter went backwards (old firmware, wiped
+  settings). Serial arithmetic on 16 bits has one blind spot: a PDU captured
+  more than 32768 broadcasts ago reads as new again.
 - Only broadcast-safe commands run from a flood, and their replies are
   discarded. Heavy commands (DFU, VSTREAM, the LUT editor, FW/RW) stay on
   the connected link.

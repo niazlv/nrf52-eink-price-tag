@@ -21,17 +21,22 @@ static void shift_left(const uint8_t in[16], uint8_t out[16])
 static uint8_t cached_key[16], cached_k1[16], cached_k2[16];
 static bool cache_valid;
 
-static void subkeys(mesh_aes_fn aes, const uint8_t *k, uint8_t k1[16], uint8_t k2[16])
+static bool subkeys(mesh_aes_fn aes, const uint8_t *k, uint8_t k1[16], uint8_t k2[16])
 {
 	if (cache_valid && memcmp(cached_key, k, 16) == 0) {
 		memcpy(k1, cached_k1, 16);
 		memcpy(k2, cached_k2, 16);
-		return;
+		return true;
 	}
 
 	uint8_t zero[16] = {0}, l[16];
 
-	aes(k, zero, l);
+	/* A failed block must not be cached: one transient controller error
+	 * would otherwise leave garbage subkeys in place until the key changes,
+	 * and every MAC after it would be wrong with nothing to say so. */
+	if (aes(k, zero, l) != 0) {
+		return false;
+	}
 	shift_left(l, k1);
 	if (l[0] & 0x80) {
 		k1[15] ^= 0x87;
@@ -45,14 +50,17 @@ static void subkeys(mesh_aes_fn aes, const uint8_t *k, uint8_t k1[16], uint8_t k
 	memcpy(cached_k1, k1, 16);
 	memcpy(cached_k2, k2, 16);
 	cache_valid = true;
+	return true;
 }
 
-void mesh_cmac(mesh_aes_fn aes, const uint8_t key[16],
+bool mesh_cmac(mesh_aes_fn aes, const uint8_t key[16],
 	       const uint8_t *msg, size_t len, uint8_t out[16])
 {
 	uint8_t k1[16], k2[16], x[16] = {0}, y[16], last[16];
 
-	subkeys(aes, key, k1, k2);
+	if (!subkeys(aes, key, k1, k2)) {
+		return false;
+	}
 
 	size_t blocks = (len + 15) / 16;
 	bool complete;
@@ -84,24 +92,29 @@ void mesh_cmac(mesh_aes_fn aes, const uint8_t key[16],
 		for (int i = 0; i < 16; i++) {
 			y[i] = x[i] ^ msg[16 * b + i];
 		}
-		aes(key, y, x);
+		if (aes(key, y, x) != 0) {
+			return false;
+		}
 	}
 	for (int i = 0; i < 16; i++) {
 		y[i] = x[i] ^ last[i];
 	}
-	aes(key, y, out);
+	return aes(key, y, out) == 0;
 }
 
 /* MAC input: the PDU body with the TTL nibble cleared. */
-static void mac_over_body(const uint8_t *pdu, uint8_t body_len,
+static bool mac_over_body(const uint8_t *pdu, uint8_t body_len,
 			  mesh_aes_fn aes, const uint8_t key[16], uint8_t out[MESH_MAC_LEN])
 {
 	uint8_t tmp[MESH_PDU_MAX], full[16];
 
 	memcpy(tmp, pdu, body_len);
 	tmp[1] &= 0xF0;
-	mesh_cmac(aes, key, tmp, body_len, full);
+	if (!mesh_cmac(aes, key, tmp, body_len, full)) {
+		return false;
+	}
 	memcpy(out, full, MESH_MAC_LEN);
+	return true;
 }
 
 /* ── PDU layout ─────────────────────────────────────────────────────────── */
@@ -159,7 +172,9 @@ bool mesh_pdu_verify(const uint8_t *pdu, uint8_t len, mesh_aes_fn aes, const uin
 	if (!mesh_pdu_parse(pdu, len, &v)) {
 		return false;
 	}
-	mac_over_body(pdu, v.body_len, aes, key, want);
+	if (!mac_over_body(pdu, v.body_len, aes, key, want)) {
+		return false;
+	}
 	return memcmp(want, v.mac, MESH_MAC_LEN) == 0;
 }
 
@@ -191,7 +206,9 @@ int mesh_pdu_build(uint8_t *out, uint8_t ttl, uint16_t seq, const uint8_t src[3]
 		memcpy(&out[p], payload, plen);
 		p += plen;
 	}
-	mac_over_body(out, p, aes, key, &out[p]);
+	if (!mac_over_body(out, p, aes, key, &out[p])) {
+		return -1;
+	}
 	p += MESH_MAC_LEN;
 	return p;
 }
@@ -291,4 +308,54 @@ void mesh_rpl_commit(struct mesh_rpl *r, const uint8_t src[3], uint16_t seq, uin
 void mesh_rpl_reset(struct mesh_rpl *r)
 {
 	memset(r, 0, sizeof(*r));
+}
+
+size_t mesh_rpl_export(const struct mesh_rpl *r, uint8_t *out, size_t cap)
+{
+	size_t p = 0;
+
+	if (cap < 1) {
+		return 0;
+	}
+	out[p++] = MESH_RPL_BLOB_VER;
+	for (int i = 0; i < MESH_RPL_SLOTS; i++) {
+		const struct mesh_rpl_ent *e = &r->e[i];
+
+		if (!e->used) {
+			continue;
+		}
+		if (p + 5 > cap) {
+			break;
+		}
+		memcpy(&out[p], e->src, 3);
+		p += 3;
+		out[p++] = (uint8_t)(e->seq & 0xFF);
+		out[p++] = (uint8_t)(e->seq >> 8);
+	}
+	return p;
+}
+
+bool mesh_rpl_import(struct mesh_rpl *r, const uint8_t *in, size_t len)
+{
+	mesh_rpl_reset(r);
+	if (len < 1 || in[0] != MESH_RPL_BLOB_VER || (len - 1) % 5 != 0) {
+		return false;
+	}
+
+	size_t n = (len - 1) / 5;
+
+	if (n > MESH_RPL_SLOTS) {
+		n = MESH_RPL_SLOTS;
+	}
+	for (size_t i = 0; i < n; i++) {
+		const uint8_t *p = &in[1 + 5 * i];
+		struct mesh_rpl_ent *e = &r->e[i];
+
+		memcpy(e->src, p, 3);
+		e->used = 1;
+		e->seq = (uint16_t)(p[3] | (p[4] << 8));
+		e->win = 0xFFFFFFFFu;   /* at or below the highest: seen */
+		e->last_s = 0;
+	}
+	return true;
 }

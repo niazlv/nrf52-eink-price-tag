@@ -338,6 +338,84 @@ static void test_rpl_check_is_pure(void)
 	T_ASSERT(memcmp(&before, &r, sizeof(r)) == 0);   /* a forgery cannot poison it */
 }
 
+/* ── a failing AES block must not poison the subkey cache ───────────────── */
+static int aes_fail(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+{
+	(void)key; (void)in; (void)out;
+	return -1;
+}
+
+static void test_aes_failure_is_reported_and_not_cached(void)
+{
+	uint8_t key[16], msg[16], mac[16], pdu[MESH_PDU_MAX];
+	const uint8_t src[3] = {1, 2, 3};
+
+	unhex("2b7e151628aed2a6abf7158809cf4f3c", key, 16);
+	unhex("6bc1bee22e409f96e93d7e117393172a", msg, 16);
+
+	/* Force a cache miss on this key by using another key first, then fail. */
+	uint8_t other[16] = {0x11};
+	T_ASSERT(mesh_cmac(aes_fn, other, msg, 16, mac));
+	T_ASSERT(!mesh_cmac(aes_fail, key, msg, 16, mac));
+	/* The next call with a working AES must derive fresh subkeys and match
+	 * the RFC vector — not reuse whatever the failed call left behind. */
+	T_ASSERT(mesh_cmac(aes_fn, key, msg, 16, mac));
+	T_ASSERT(eq_hex(mac, "070a16b46b4d4144f79bdd9dd04a287c", 16));
+
+	/* Same key cached now; a failure mid-message must still be reported. */
+	T_ASSERT(!mesh_cmac(aes_fail, key, msg, 16, mac));
+	T_ASSERT_EQ(mesh_pdu_build(pdu, 4, 1, src, MESH_PDU_DST_ALL, NULL, 0x19,
+				   (const uint8_t *)"3", 1, aes_fail, other), -1);
+	int len = mesh_pdu_build(pdu, 4, 1, src, MESH_PDU_DST_ALL, NULL, 0x19,
+				 (const uint8_t *)"3", 1, aes_fn, key);
+	T_ASSERT(len > 0);
+	T_ASSERT(mesh_pdu_verify(pdu, (uint8_t)len, aes_fn, key));
+	T_ASSERT(!mesh_pdu_verify(pdu, (uint8_t)len, aes_fail, key));
+}
+
+/* ── persistent form: (src, seq) only, windows closed on load ───────────── */
+static void test_rpl_export_import(void)
+{
+	struct mesh_rpl r, back;
+	uint8_t blob[MESH_RPL_BLOB_MAX];
+	const uint8_t a[3] = {0xA0, 0xA1, 0xA2}, b[3] = {0xB0, 0xB1, 0xB2};
+
+	mesh_rpl_reset(&r);
+	/* An empty list is a one-byte blob that imports to an empty list. */
+	T_ASSERT_EQ(mesh_rpl_export(&r, blob, sizeof(blob)), 1);
+	T_ASSERT(mesh_rpl_import(&back, blob, 1));
+	T_ASSERT(mesh_rpl_check(&back, a, 0, 0));
+
+	mesh_rpl_commit(&r, a, 100, 0);
+	mesh_rpl_commit(&r, a, 105, 0);
+	mesh_rpl_commit(&r, b, 0xFFF0, 0);
+	T_ASSERT_EQ(mesh_rpl_export(&r, blob, sizeof(blob)), 1 + 2 * 5);
+	T_ASSERT_EQ(blob[0], MESH_RPL_BLOB_VER);
+	T_ASSERT(mesh_rpl_import(&back, blob, 1 + 2 * 5));
+
+	/* The highest seq survives; everything at or below it now counts as
+	 * seen (103 was never heard, but after a reboot we cannot know). */
+	T_ASSERT(!mesh_rpl_check(&back, a, 105, 0));
+	T_ASSERT(!mesh_rpl_check(&back, a, 103, 0));
+	T_ASSERT(!mesh_rpl_check(&back, a, 100, 0));
+	T_ASSERT(mesh_rpl_check(&back, a, 106, 0));
+	T_ASSERT(!mesh_rpl_check(&back, b, 0xFFF0, 0));
+	T_ASSERT(mesh_rpl_check(&back, b, 1, 0));           /* wrapped: newer */
+
+	/* Garbage is refused and leaves the list empty rather than half-loaded. */
+	blob[0] = 0x7F;
+	T_ASSERT(!mesh_rpl_import(&back, blob, 1 + 2 * 5));
+	T_ASSERT(mesh_rpl_check(&back, a, 0, 0));
+	blob[0] = MESH_RPL_BLOB_VER;
+	T_ASSERT(!mesh_rpl_import(&back, blob, 1 + 2 * 5 - 1));  /* not a whole entry */
+	T_ASSERT(!mesh_rpl_import(&back, blob, 0));
+
+	/* The export never writes past cap, and a truncated cap drops whole
+	 * entries only. */
+	T_ASSERT_EQ(mesh_rpl_export(&r, blob, 8), 6);
+	T_ASSERT_EQ(mesh_rpl_export(&r, blob, 0), 0);
+}
+
 int main(void)
 {
 	T_RUN(test_aes_fips197);
@@ -352,5 +430,7 @@ int main(void)
 	T_RUN(test_rpl_forgets_after_silence);
 	T_RUN(test_rpl_eviction);
 	T_RUN(test_rpl_check_is_pure);
+	T_RUN(test_aes_failure_is_reported_and_not_cached);
+	T_RUN(test_rpl_export_import);
 	return t_report("mesh_pdu");
 }

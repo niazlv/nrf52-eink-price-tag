@@ -3,7 +3,6 @@
 #include "commands.h"
 #include "cmd_opcodes.h"
 #include "secauth.h"
-#include "persist.h"
 #include "ble/ble_service.h"
 
 #include <zephyr/kernel.h>
@@ -53,64 +52,57 @@ static bool     scanning;           /* live state of bt_le_scan */
  * first broadcasts were silently dropped as duplicates, and any captured PDU
  * could be replayed once the 16-entry dedup ring had forgotten it.
  *
- * Now the counter is checkpointed to settings every SEQ_SAVE_STEP values,
- * and a boot resumes one step past the checkpoint — the PDUs actually sent
- * since the checkpoint can only have used the values below that. With no
- * checkpoint at all (first boot on this firmware) it seeds from the boot
- * counter, which the retained-RAM stats keep across reboots and updates, so
- * even the very first PDU on new firmware is newer than anything the old
- * firmware ever sent. Resolved lazily, on the first originate: the boot
- * counter is only final after persist_post_settings(), which runs after
- * mesh_init().
+ * Now the last value used is saved to settings ("mesh/seq") on every
+ * originate, and a boot resumes one past it. A BCAST is a user action, a few
+ * a day at most, so the flash cost is nothing; and advancing only by real
+ * broadcasts is what keeps the 16-bit serial arithmetic far from its 32768
+ * blind spot (mesh_pdu.h). A tag with no saved counter — first boot on this
+ * firmware, or wiped settings — starts at SEQ_FIRST, above anything the old
+ * firmware ever reached within one boot, so an upgraded gateway is newer
+ * than its own past to every peer.
  *
  * Rolling out: a tag still on the old firmware restarts at zero on every
  * boot, and a peer on this firmware then ignores it for a week (mesh_pdu.h,
- * MESH_RPL_EXPIRE_S). Update the tag used as the gateway first. */
-#define SEQ_SAVE_STEP 64
-static uint16_t my_seq;
-static bool     my_seq_ready;
-static uint16_t seq_saved;          /* persisted "mesh/seq" */
-static bool     seq_saved_present;
+ * MESH_RPL_EXPIRE_S) or until MESHRX FORGET. Update the gateway first. */
+#define SEQ_FIRST 1024u
+static uint16_t my_seq = SEQ_FIRST;    /* next value to use; settings load may raise it */
 
 static uint16_t next_seq(void)
 {
-	if (!my_seq_ready) {
-		my_seq = seq_saved_present
-			 ? (uint16_t)(seq_saved + SEQ_SAVE_STEP)
-			 : (uint16_t)(persist_boot_count() * SEQ_SAVE_STEP);
-		my_seq_ready = true;
-	}
-
 	uint16_t s = my_seq++;
 
-	if ((s % SEQ_SAVE_STEP) == 0) {
-		uint16_t v = s;
-
-		(void)settings_save_one("mesh/seq", &v, sizeof(v));
-	}
+	(void)settings_save_one("mesh/seq", &s, sizeof(s));
 	return s;
 }
 
 /* ── Replay list ────────────────────────────────────────────────────────────
  *
- * Written only on the mesh thread; the spinlock covers the snapshot the save
- * job takes. Persisted under "mesh/rpl" so a reboot — every OTA is one — does
- * not hand an attacker a fresh pass through their captured PDUs. Saves are
- * coalesced: k_work_schedule() on an already-pending item is a no-op, so a
- * stream of flooded commands costs one flash write per ten seconds, not one
- * per PDU — and the unsaved window is never longer than that. The write runs
- * on the mesh
- * thread (JOB_SAVE) rather than the system workqueue: settings + NVS + the
- * flash driver want more stack than the 1280-byte workqueue has to spare. */
+ * Touched only on the mesh thread (commit, save, forget), so it needs no
+ * lock. Persisted under "mesh/rpl" in the compact form from mesh_pdu.h, so a
+ * reboot — every OTA is one — does not hand an attacker a fresh pass through
+ * their captured PDUs.
+ *
+ * When to write: a PDU accepted RPL_SAVE_MIN_S or more after the last write
+ * is saved right away, before its handler runs — that handler may hold this
+ * thread for minutes (a flooded NUKE), and the unsaved window must not grow
+ * with it. PDUs accepted inside that quiet period are covered by one
+ * deferred write RPL_SAVE_MIN_S after the first of them (k_work_schedule on
+ * a pending item is a no-op, so a burst costs one write, not one per PDU).
+ * The deferred write still runs on this thread (JOB_SAVE) rather than on the
+ * system workqueue: settings + NVS + the flash driver want more stack than
+ * the 1280-byte workqueue has to spare. */
 static struct mesh_rpl rpl;
-static struct k_spinlock rpl_lock;
 static struct k_work_delayable rpl_save_work;
-#define RPL_SAVE_DELAY K_SECONDS(10)
+static uint32_t rpl_saved_s;        /* uptime of the last write */
+static bool     rpl_dirty;          /* commits since that write */
+#define RPL_SAVE_MIN_S 10
+#define RPL_SAVE_DELAY K_SECONDS(RPL_SAVE_MIN_S)
 
 /* ── Work item / job queue ──────────────────────────────────────────────── */
-#define JOB_RX   0
-#define JOB_ORIG 1
-#define JOB_SAVE 2
+#define JOB_RX     0
+#define JOB_ORIG   1
+#define JOB_SAVE   2
+#define JOB_FORGET 3
 struct mesh_job {
     uint8_t kind;
     uint8_t len;
@@ -127,17 +119,29 @@ static void rpl_save_fn(struct k_work *work)
     ARG_UNUSED(work);
     struct mesh_job job = { .kind = JOB_SAVE };
 
-    (void)k_msgq_put(&mesh_q, &job, K_NO_WAIT);
+    if (k_msgq_put(&mesh_q, &job, K_NO_WAIT) != 0) {
+        /* The queue is full of RX jobs. Losing this flush would leave the
+         * burst it covers unsaved until the next PDU happens to arrive, so
+         * come back in a second instead. */
+        (void)k_work_reschedule(&rpl_save_work, K_SECONDS(1));
+    }
 }
 
-static void rpl_save_now(void)
+/* Mesh thread only. */
+static void rpl_save_now(uint32_t now_s)
 {
-    struct mesh_rpl snap;
-    k_spinlock_key_t key = k_spin_lock(&rpl_lock);
+    uint8_t blob[MESH_RPL_BLOB_MAX];
+    size_t n = mesh_rpl_export(&rpl, blob, sizeof(blob));
 
-    snap = rpl;
-    k_spin_unlock(&rpl_lock, key);
-    (void)settings_save_one("mesh/rpl", &snap, sizeof(snap));
+    if (n && settings_save_one("mesh/rpl", blob, n) == 0) {
+        rpl_saved_s = now_s;
+        rpl_dirty = false;
+    }
+}
+
+static uint32_t uptime_s(void)
+{
+    return (uint32_t)(k_uptime_get() / 1000);
 }
 
 /* ── TX beacon ring (drained on the system workqueue) ───────────────────── */
@@ -218,7 +222,7 @@ static void mesh_handle_pdu(const uint8_t *pdu, uint8_t len, bool trusted)
         return;
     }
 
-    uint32_t now_s = (uint32_t)(k_uptime_get() / 1000);
+    uint32_t now_s = uptime_s();
 
     if (!trusted) {
         /* Cheap reject first: a PDU already handled — a relay echo, a
@@ -239,11 +243,13 @@ static void mesh_handle_pdu(const uint8_t *pdu, uint8_t len, bool trusted)
                        * forgery cannot poison the window */
         }
 
-        k_spinlock_key_t k = k_spin_lock(&rpl_lock);
-
         mesh_rpl_commit(&rpl, v.src, v.seq, now_s);
-        k_spin_unlock(&rpl_lock, k);
-        (void)k_work_schedule(&rpl_save_work, RPL_SAVE_DELAY);
+        rpl_dirty = true;
+        if (rpl_saved_s == 0 || (now_s - rpl_saved_s) >= RPL_SAVE_MIN_S) {
+            rpl_save_now(now_s);          /* before the handler below can block */
+        } else {
+            (void)k_work_schedule(&rpl_save_work, RPL_SAVE_DELAY);
+        }
     }
 
     /* Relay first (with TTL-1) so the flood keeps spreading even if the local
@@ -312,7 +318,14 @@ static void mesh_thread_fn(void *a, void *b, void *c)
             mesh_do_originate(job.data, job.len);
             break;
         case JOB_SAVE:
-            rpl_save_now();
+            if (rpl_dirty) {
+                rpl_save_now(uptime_s());
+            }
+            break;
+        case JOB_FORGET:
+            mesh_rpl_reset(&rpl);
+            rpl_dirty = true;
+            rpl_save_now(uptime_s());
             break;
         default:
             mesh_handle_pdu(job.data, job.len, false);
@@ -416,6 +429,13 @@ static void mesh_scan_start(void)
 
 bool mesh_get_rx(void) { return rx_enabled != 0; }
 
+int mesh_forget_peers(void)
+{
+    struct mesh_job job = { .kind = JOB_FORGET };
+
+    return k_msgq_put(&mesh_q, &job, K_NO_WAIT);
+}
+
 int mesh_set_rx(bool enable)
 {
     rx_enabled = enable ? 1 : 0;
@@ -441,22 +461,24 @@ static int mesh_settings_set(const char *name, size_t len,
             return 0;
         }
     }
-    if (settings_name_steq(name, "seq", NULL) && len == sizeof(seq_saved)) {
-        if (read_cb(cb_arg, &seq_saved, sizeof(seq_saved)) >= 0) {
-            seq_saved_present = true;
+    if (settings_name_steq(name, "seq", NULL) && len == sizeof(uint16_t)) {
+        uint16_t last;
+
+        if (read_cb(cb_arg, &last, sizeof(last)) >= 0) {
+            my_seq = (uint16_t)(last + 1);   /* resume one past the last one sent */
             return 0;
         }
     }
-    if (settings_name_steq(name, "rpl", NULL) && len == sizeof(rpl)) {
-        if (read_cb(cb_arg, &rpl, sizeof(rpl)) >= 0) {
-            /* last_s is uptime-based: after a reboot every source counts as
-             * heard "just now", so the restart grace needs a fresh silence. */
-            for (int i = 0; i < MESH_RPL_SLOTS; i++) {
-                rpl.e[i].last_s = 0;
-            }
+    if (settings_name_steq(name, "rpl", NULL) && len <= MESH_RPL_BLOB_MAX) {
+        uint8_t blob[MESH_RPL_BLOB_MAX];
+
+        /* A blob this firmware does not understand leaves the list empty:
+         * one replay pass after such an update is the price of a format
+         * change, and mesh_rpl_import() is written so the format need not
+         * change with the struct. */
+        if (read_cb(cb_arg, blob, len) >= 0 && mesh_rpl_import(&rpl, blob, len)) {
             return 0;
         }
-        mesh_rpl_reset(&rpl);
     }
     return -ENOENT;
 }

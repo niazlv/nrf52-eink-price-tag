@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "mesh_pdu.h"
 
 /*
  * Minimal connectionless flood-mesh between tags (managed flooding, the same
@@ -16,19 +17,18 @@
  * it is one of the addressees (ALL / its group / its id).
  *
  * Security: each PDU carries a 4-byte truncated AES-CMAC over the fleet secauth
- * key (so random devices can't inject), plus a per-source sequence number that a
- * small cache uses to drop duplicates/loops and replays.
- *
- * Wire PDU (inside manufacturer-data AD, company 0xFFFF, <= 27 bytes):
- *   [MAGIC:1][ver<<4|ttl:1][seq:2 LE][src:3][dst_type:1][dst:0/1/3][opcode:1]
- *   [payload:N][mac:4]
- * The TTL nibble is excluded from the MAC (relays mutate it).
+ * key (so random devices can't inject), plus a per-source sequence number
+ * checked against a persisted sliding window, so duplicates, relay echoes and
+ * replays of captured PDUs are dropped. The wire format, the MAC and the
+ * window live in mesh_pdu.h; this file is the radio, the threads and the
+ * persistence around them.
  */
 
+/* Destination types, by their wire values. */
 enum mesh_dst {
-    MESH_DST_ALL   = 0,   /* every tag */
-    MESH_DST_GROUP = 1,   /* tags whose group id matches dst[0] */
-    MESH_DST_ID    = 2,   /* the single tag whose node id matches dst[0..2] */
+    MESH_DST_ALL   = MESH_PDU_DST_ALL,     /* every tag */
+    MESH_DST_GROUP = MESH_PDU_DST_GROUP,   /* tags whose group id matches dst[0] */
+    MESH_DST_ID    = MESH_PDU_DST_ID,      /* the single tag whose node id matches dst[0..2] */
 };
 
 /* Resolve node id, start scanning, spawn the dispatch thread. Call once after
@@ -68,5 +68,12 @@ int     mesh_set_group(uint8_t gid);
  * turning it back on over the mesh is therefore impossible, only over NUS. */
 bool mesh_get_rx(void);
 int  mesh_set_rx(bool enable);
+
+/* Drop the replay-protection list: every source starts over at whatever it
+ * sends next. The operator's remedy for a gateway whose counter went
+ * backwards (wiped settings) — see mesh_pdu.h. Runs on the mesh thread;
+ * returns 0 if queued, else the k_msgq error. Must only be reachable over the
+ * connected link, never from a flood. */
+int mesh_forget_peers(void);
 
 #endif /* APP_MESH_H */

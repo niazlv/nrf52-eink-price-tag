@@ -33,7 +33,7 @@ Two consequences of that table drive most of the rules below:
 | --- | --- | --- | --- |
 | `display_lock` | recursive mutex | The panel bus and the frame buffers, across the display, command, mesh threads and the workqueue. | Held across a full refresh, so a waiter can block ~15 s. Never hold it across `ble_printf`. The display thread takes it with a 2 s timeout (`DISPLAY_LOCK_OR_SKIP`) and skips a frame rather than freeze battery protection behind a 15-minute `NUKE`. `update_partial_nowait` releases it with BUSY still high, by design. |
 | `persist` spinlock | spinlock | The retained-RAM stats block. | Short critical sections only; CRC resealed on every write. |
-| `tx_lock`, `rpl_lock` | spinlocks | Mesh beacon ring; replay-list snapshot for the save job. | The replay list is written only on the mesh thread; the lock covers the copy the save takes. |
+| `tx_lock` | spinlock | Mesh beacon ring (filled on the mesh thread, drained on the system workqueue). | The replay list needs no lock: commit, save and forget all run on the mesh thread. |
 | `cmd_free` / `cmd_ready` | k_fifo pair | The two 256-byte command slots. | The RX thread fills a slot in place, the command thread executes it in place: one copy, no queue buffer. Disconnect purges `cmd_ready`. |
 
 Reply delivery: `ble_printf` formats into a 128-byte buffer and sends one
@@ -99,8 +99,8 @@ Settings keys, by module:
 | `sec/k`, `sec/en` | `secauth.c` | 16-byte runtime key; access-gate flag. |
 | `pwr/p`, `pwr/b`, `pwr/m` | `power_profile.c` | Sleep profile; battery pack record; display mode (1 clock / 0 picture). Older, shorter blobs are migrated on load. |
 | `mesh/g`, `mesh/rx` | `mesh.c` | Group id; observer scan on/off. |
-| `mesh/seq` | `mesh.c` | Originator sequence checkpoint, every 64 PDUs; a boot resumes one step past it. |
-| `mesh/rpl` | `mesh.c` | The replay-protection list (8 sources), written at most once per 10 s of mesh traffic. |
+| `mesh/seq` | `mesh.c` | The last sequence number this tag originated, written on every `BCAST`; a boot resumes one past it. |
+| `mesh/rpl` | `mesh.c` | The replay-protection list as compact (src, seq) pairs, at most 41 B; written at most once per 10 s of mesh traffic, and always before a handler that may block. `MESHRX FORGET` clears it. |
 | `ps/d` | `persist.c` | Flash snapshot of the stats block, written on low battery and before a firmware update; marked consumed once carried forward. |
 
 ## Budgets

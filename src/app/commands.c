@@ -1659,12 +1659,23 @@ static void cmd_meshrx(char *args)
 {
     if (args && *args) {
         bool on;
+        if (strcasecmp(args, "forget") == 0) {
+            /* Drop the replay list. Over the connected link only: a flooded
+             * FORGET would open every tag in the fleet to replay at once, so
+             * from the mesh thread it is silently ignored. */
+            if (mesh_is_dispatch_thread()) {
+                return;
+            }
+            ble_printf("meshrx=%s rpl=%s\r\n", mesh_get_rx() ? "on" : "off",
+                       mesh_forget_peers() == 0 ? "clearing" : "busy");
+            return;
+        }
         if (strcasecmp(args, "on") == 0 || strcmp(args, "1") == 0) {
             on = true;
         } else if (strcasecmp(args, "off") == 0 || strcmp(args, "0") == 0) {
             on = false;
         } else {
-            ble_printf("usage: MESHRX / MESHRX ON|OFF\r\n");
+            ble_printf("usage: MESHRX / MESHRX ON|OFF / MESHRX FORGET\r\n");
             return;
         }
         mesh_set_rx(on);
@@ -1900,7 +1911,7 @@ const struct shell_cmd commands[] = {
     /* Mesh broadcast */
     {OP_BCAST,     "BCAST",       cmd_bcast,      "Flood a command: BCAST <all|g<N>|<6hex>> <CMD...>"},
     {OP_GROUP,     "GROUP",       cmd_group,      "Mesh group id: GROUP / GROUP <0-255>", CMD_MESH},
-    {OP_MESHRX,    "MESHRX",      cmd_meshrx,     "Mesh receive: MESHRX / MESHRX ON|OFF (OFF saves ~0.2-0.3mA; node stops hearing floods)", CMD_MESH},
+    {OP_MESHRX,    "MESHRX",      cmd_meshrx,     "Mesh receive: MESHRX / MESHRX ON|OFF (OFF saves ~0.2-0.3mA; node stops hearing floods) / MESHRX FORGET (drop the replay list; NUS only)", CMD_MESH},
     {OP_PWR,       "PWR:",        cmd_pwr,        "Sleep profile + pack: PWR:day=1,night=5,from=23,to=7,advc=2,advp=5,chem=1,ser=1,par=1,cell=370[,newbat=1][,dry=1]", CMD_MESH},
     {OP_PWR,       "PWR",         cmd_pwr,        "Sleep profile: show (day/night redraw interval, night window, adv interval)", CMD_MESH},
     /* Security / identity */
