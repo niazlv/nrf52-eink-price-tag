@@ -5,6 +5,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/byteorder.h>
 #include <errno.h>
 #include <string.h>
 
@@ -286,17 +287,12 @@ static int pwr_settings_set(const char *name, size_t len,
 			uint8_t raw[12];
 
 			if (read_cb(cb_arg, raw, sizeof(raw)) >= 0 && raw[0] <= POWER_CHEM_NIMH) {
-				uint64_t epoch = 0;
-
-				for (int i = 7; i >= 0; i--) {
-					epoch = (epoch << 8) | raw[4 + i];
-				}
 				battery.chem = raw[0];
 				battery.series = (raw[0] == POWER_CHEM_ALKALINE ||
 						  raw[0] == POWER_CHEM_NIMH) ? 2 : 1;
 				battery.parallel = 1;
-				battery.cell_mah = (uint16_t)(raw[2] | (raw[3] << 8));
-				battery.epoch_uah_x1000 = epoch;
+				battery.cell_mah = sys_get_le16(&raw[2]);
+				battery.epoch_uah_x1000 = sys_get_le64(&raw[4]);
 				return 0;
 			}
 		}
