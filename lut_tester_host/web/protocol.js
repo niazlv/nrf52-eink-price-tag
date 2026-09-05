@@ -97,12 +97,13 @@ const Proto = (() => {
 
   // TELE:full time=8707ms lut=BALANCED / TELE:fast time=112ms lut=TURBO /
   // TELE:fapply time=700ms bw=4736 rw=0 lut=… — refresh timings, by kind.
+  const TELE_TIME_RE = /time=(\d+)ms?/;
   function parseTele(line) {
-    const ms = key => num(grab(line, new RegExp(`${key}=(\\d+)ms?`)));
+    const t = num(grab(line, TELE_TIME_RE));
     const r = { fapply: null, fast: null, full: null, lut: grab(line, /lut=(\S+)/) };
-    if (line.includes('fapply') || line.includes('FAPPLY')) r.fapply = ms('time');
-    if (line.includes(':fast')) r.fast = ms('time');
-    if (line.includes(':full') || line.includes('UPDATE')) r.full = ms('time');
+    if (line.includes('fapply') || line.includes('FAPPLY')) r.fapply = t;
+    if (line.includes(':fast')) r.fast = t;
+    if (line.includes(':full') || line.includes('UPDATE')) r.full = t;
     return r;
   }
 

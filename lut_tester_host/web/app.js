@@ -281,6 +281,11 @@ const ANIM_LUT = new Uint8Array([
 let bleDevice=null, rxChar=null, txChar=null;
 let connected=false, mtu=498; // optimistic (firmware ATT MTU 498); shrinks on InvalidModificationError
 let rxBuf='';
+// One streaming decoder for the whole link: NUS notifications are cut at the
+// ATT payload boundary, not at character boundaries, so a Cyrillic reply that
+// spans two notifications must be decoded as one stream or the split
+// character comes out as two U+FFFD.
+let rxDec = new TextDecoder();
 let lut = new Uint8Array(FACTORY_LUT);
 let lgetBuf = Array(7).fill(null);
 let tele = {fap:null, fast:null, full:null, lut_name:null};
@@ -500,6 +505,7 @@ window.addEventListener('pagehide', () => {
 });
 
 function onBleDisc() {
+  rxBuf = ''; rxDec = new TextDecoder();   // a half-received line belongs to the old link
   connected = false;
   smpChar = null;
   if (smpPendingReject) smpPendingReject(new Error('связь с ценником оборвалась'));
@@ -529,7 +535,7 @@ function onBleDisc() {
 }
 
 function onNotify(ev) {
-  rxBuf += new TextDecoder().decode(ev.target.value);
+  rxBuf += rxDec.decode(ev.target.value, { stream: true });
   let nl;
   while ((nl = rxBuf.indexOf('\n')) >= 0) {
     const line = rxBuf.slice(0, nl).trim();
