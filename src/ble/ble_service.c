@@ -623,7 +623,7 @@ void ble_printf(const char *fmt, ...) {
          * happen until the handler returns: the reply is lost anyway and every
          * other work item — beacon pump, advertising retry — stalls 300 ms
          * behind it. The vstream watchdog is the one caller on that thread. */
-        int max_tries = (k_current_get() == &k_sys_work_q.thread) ? 0 : 15;
+        int max_tries = (k_current_get() == k_work_queue_thread_get(&k_sys_work_q)) ? 0 : 15;
         int rc = ble_service_send(buf, len);
         for (int tries = 0;
              (rc == -ENOMEM || rc == -EAGAIN || rc == -ENOBUFS) && tries < max_tries;
