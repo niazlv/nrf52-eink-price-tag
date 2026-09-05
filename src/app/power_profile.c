@@ -274,18 +274,29 @@ static int pwr_settings_set(const char *name, size_t len,
 				return 0;
 			}
 		} else if (len == 12) {
-			/* The one-day-old first layout: {type, pad, mah, epoch}. The
-			 * type numbers 1..4 carry over as chemistries; "mah" was the
-			 * pack, which for the 2-cell chemistries means 2S1P. */
-			struct { uint8_t type, pad; uint16_t mah; uint64_t epoch; } old;
+			/* The one-day-old first layout, 12 bytes on the wire:
+			 * type@0, pad@1, mah@2-3 LE, epoch@4-11 LE. The type numbers
+			 * 1..4 carry over as chemistries; "mah" was the pack, which for
+			 * the 2-cell chemistries means 2S1P.
+			 *
+			 * Decoded byte by byte on purpose. This used to read the blob
+			 * into a {u8, u8, u16, u64} struct, which the ABI pads to 16
+			 * bytes with the epoch at offset 8 — so a 12-byte record left
+			 * the epoch half garbage. Caught by tests/host/test_power_profile.c. */
+			uint8_t raw[12];
 
-			if (read_cb(cb_arg, &old, sizeof(old)) >= 0 && old.type <= POWER_CHEM_NIMH) {
-				battery.chem = old.type;
-				battery.series = (old.type == POWER_CHEM_ALKALINE ||
-						  old.type == POWER_CHEM_NIMH) ? 2 : 1;
+			if (read_cb(cb_arg, raw, sizeof(raw)) >= 0 && raw[0] <= POWER_CHEM_NIMH) {
+				uint64_t epoch = 0;
+
+				for (int i = 7; i >= 0; i--) {
+					epoch = (epoch << 8) | raw[4 + i];
+				}
+				battery.chem = raw[0];
+				battery.series = (raw[0] == POWER_CHEM_ALKALINE ||
+						  raw[0] == POWER_CHEM_NIMH) ? 2 : 1;
 				battery.parallel = 1;
-				battery.cell_mah = old.mah;
-				battery.epoch_uah_x1000 = old.epoch;
+				battery.cell_mah = (uint16_t)(raw[2] | (raw[3] << 8));
+				battery.epoch_uah_x1000 = epoch;
 				return 0;
 			}
 		}
