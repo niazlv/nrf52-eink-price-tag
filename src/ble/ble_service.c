@@ -617,9 +617,16 @@ void ble_printf(const char *fmt, ...) {
          * 200 ms (conn_param_idle), or the reply that misses the current
          * connection event is gone before the next one; 300 ms does, and still
          * bounds how long a caller holding display_lock can be delayed. */
+        /* Except on the system workqueue. In this host the TX processor that
+         * frees those pools is itself a work item there (hci_core.c tx_work),
+         * so sleeping in a workqueue handler waits on a drain that cannot
+         * happen until the handler returns: the reply is lost anyway and every
+         * other work item — beacon pump, advertising retry — stalls 300 ms
+         * behind it. The vstream watchdog is the one caller on that thread. */
+        int max_tries = (k_current_get() == &k_sys_work_q.thread) ? 0 : 15;
         int rc = ble_service_send(buf, len);
         for (int tries = 0;
-             (rc == -ENOMEM || rc == -EAGAIN || rc == -ENOBUFS) && tries < 15;
+             (rc == -ENOMEM || rc == -EAGAIN || rc == -ENOBUFS) && tries < max_tries;
              tries++) {
             k_sleep(K_MSEC(20));
             rc = ble_service_send(buf, len);
