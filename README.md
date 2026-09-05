@@ -53,6 +53,9 @@ How the tags were cracked open, in Russian:
 - [`docs/display-optimization.md`](docs/display-optimization.md) — how a
   762 ms partial refresh became 112 ms, including the two dead ends and the
   burn-in that came with them.
+- [`docs/architecture.md`](docs/architecture.md) — the threads, the locks, the
+  boot order and what is persisted where; [`docs/protocol.md`](docs/protocol.md)
+  — every command, every reply line, the opcode frame and the mesh PDU.
 
 ---
 
@@ -68,7 +71,8 @@ src/              this firmware (Zephyr / nRF Connect SDK)
 examples/
   eink_demo/      minimal app built on lib/ alone
 lut_tester_host/  host tooling: LUT editor GUI, video streamer, DFU, PWA
-docs/             reverse-engineering write-ups
+docs/             reverse-engineering write-ups, architecture, protocol
+tests/            host tests: C (lib/, src/app) and node (web parsers)
 scripts/          build and flashing helpers
 boards/           board overlays
 ```
@@ -139,6 +143,17 @@ make release        # both, merged into one manifest
 An OTA size guard fails the build before publishing an image MCUboot would
 accept but silently refuse to swap.
 
+### Tests
+
+```sh
+make test                              # host-side C tests: lib/ + the pure parts of src/app
+node --test tests/web/protocol.test.js # the web app's reply-line parsers
+```
+
+The C tests need only a C compiler (they run under ASan and UBSan); the
+Zephyr-facing modules compile against small stubs in `tests/host/stubs/`.
+Both suites run in GitHub Actions on every push.
+
 ### The first flash
 
 A stock tag has to be programmed once over SWD — there is no wireless way in
@@ -172,7 +187,9 @@ implemented exactly once. `HELP` lists everything the running firmware knows.
 repository, with everything it can do: images with dithering, text, animation
 and video streaming, the 70-byte waveform editor with its live plot and
 DC-balance bars, screensaver and display modes, time, battery and stats, and
-OTA updates at [`/dfu.html`](https://pwa.price-tag.sorewa.ru/dfu.html).
+OTA updates from the System tab. ([`/dfu.html`](https://pwa.price-tag.sorewa.ru/dfu.html)
+is an older standalone uploader kept as a fallback; it has none of the
+reconnect and busy-window handling the main app grew since.)
 
 It talks to a tag over Web Bluetooth straight from the browser — nothing to
 build or install on the host side. **It only finds tags that already run this
@@ -183,13 +200,17 @@ Web Bluetooth means Chrome, Edge or Opera on desktop and Android; Safari, iOS
 and Firefox do not implement it.
 
 It is a static bundle, so it runs from any host you point it at — `make deploy`
-publishes it.
+publishes it. The shell is four files: `index.html` (markup), `style.css`,
+[`protocol.js`](lut_tester_host/web/protocol.js) — the tag's reply lines decoded,
+pure functions with node tests — and `app.js`, everything else; `sw.js` lists
+them all so the installed app keeps working offline and updates as one
+snapshot.
 
 ### From a terminal
 
 ```sh
 pip install -r lut_tester_host/requirements.txt
-python3 lut_tester_host/lut_tester.py          # LUT editor + device control GUI
+python3 lut_tester_host/lut_tester.py          # LUT editor + device control GUI (Tk; the web app has superseded it)
 python3 lut_tester_host/vstream_player.py …    # stream video to the panel
 python3 lut_tester_host/dfu_upload.py …        # OTA from the command line
 ```
